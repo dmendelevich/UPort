@@ -1,0 +1,23 @@
+Metadata-Version: 2.1
+Name: tradernet
+Version: 0.1.3
+Summary: Interact with Tradernet API
+Home-page: https://github.com/kazanzhy/tradernet
+Author: Dmytro Kazanzhy
+Author-email: dkazanzhy@gmail.com
+License: MIT license
+Download-URL: https://github.com/kazanzhy/tradernet/tarball/main
+Keywords: tradernet
+Platform: UNKNOWN
+Classifier: Development Status :: 2 - Pre-Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Natural Language :: English
+Classifier: Programming Language :: Python :: 3
+Requires-Python: >=3.6
+License-File: LICENSE
+Requires-Dist: urllib3
+Requires-Dist: requests
+
+UNKNOWN
+
