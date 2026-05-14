@@ -153,3 +153,35 @@ class FreedomBrokerSyncManager:
             "synced_assets": synced_assets_count,
             "mode": logging_mode
         }
+
+    def sync_account_orders_workflow(account_number: str) -> bool:
+        """
+        Координирует процесс полной синхронизации приказов для счета.
+        Вызывается из диспетчера при получении триггера.
+        """
+        import database  # Импортируем ваш слой базы данных
+    
+        print(f"[Sync Manager] Старт синхронизации приказов для счета: {account_number}")
+    
+        # 1. По номеру счета находим ID портфеля в вашей базе данных
+        portfolio_id = database.get_portfolio_id_by_account_number(account_number)
+        if not portfolio_id:
+            print(f"[Sync Manager] Критическая ошибка: Портфель для счета {account_number} не найден.")
+            return False
+        
+        # 2. Инициализируем сессию клиента Freedom Broker (Tradernet)
+        # Используем вашу оригинальную функцию создания клиента
+        fb_client = get_fb_client_by_account(account_number) 
+        if not fb_client:
+            print(f"[Sync Manager] Ошибка: Не удалось инициализировать API клиент для {account_number}")
+            return False
+    
+        # 3. Делаем запрос к брокеру за актуальными приказами
+        # (Этот метод мы ранее добавили в класс клиента в tradernet_client.py)
+        api_orders = fb_client.get_active_orders()
+    
+        # 4. Передаем данные в database.py для транзакционного обновления
+       database.sync_portfolio_orders(portfolio_id, account_number, api_orders)
+    
+        print(f"[Sync Manager] Синхронизация приказов для счета {account_number} успешно завершена.")
+        return True

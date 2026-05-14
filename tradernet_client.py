@@ -47,3 +47,42 @@ class TradernetApiClient:
             raise RuntimeError(f"Сбой сети или HTTP при запросе к Freedom Broker: {e}")
         except json.JSONDecodeError:
             raise RuntimeError(f"Сервер вернул некорректный JSON. Ответ сервера: {response.text[:200]}")
+
+    def get_active_orders(self) -> list:
+        """
+        Запрашивает у Freedom Broker актуальные приказы.
+        Мапит цифровые коды брокера в понятный текст.
+        """
+        action_mapping = {1: 'buy', 2: 'sell'}
+        type_mapping = {1: 'limit', 2: 'market', 3: 'stop_loss', 4: 'take_profit', 5: 'stop_limit'}
+
+        params = {
+            "v": 2,
+            "active": 1  # Только живые приказы
+        }
+
+        # Вызываем ваш базовый метод отправки
+        response_data = self.send_request(api_name="getOrders", params=params)
+
+        if not response_data or not isinstance(response_data, list):
+            return []
+
+        processed_orders = []
+        for order in response_data:
+            raw_action = order.get('action')
+            raw_type = order.get('type')
+
+            processed_order = {
+                "broker_order_id": str(order.get('id')),
+                "ticker": order.get('instr'),
+                "action": action_mapping.get(raw_action, f"unknown_{raw_action}"),
+                "order_type": type_mapping.get(raw_type, f"unknown_{raw_type}"),
+                "status": "active",
+                "quantity_ordered": float(order.get('q', 0)),
+                "price_limit": float(order.get('p', 0)),
+                "currency_id": order.get('currency', 'USD').upper()
+            }
+            processed_orders.append(processed_order)
+
+        return processed_orders
+
