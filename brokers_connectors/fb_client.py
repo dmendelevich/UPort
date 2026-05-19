@@ -45,3 +45,68 @@ class FreedomBrokerClient:
             raise RuntimeError(f"Сбой сети API Freedom Broker: {e}")
         except json.JSONDecodeError:
             raise RuntimeError(f"Некорректный JSON от сервера. Ответ: {response.text[:200]}")
+
+    def get_active_orders(self) -> list:
+        """
+        Запрашивает у Freedom Broker актуальные приказы.
+        Глубоко анализирует типы (лимиты, стопы, тейки) и направления (buy/sell).
+        """
+        params = {
+            "active_only": 1  # Только живые активные приказы
+        }
+
+        raw_response = self.execute(command="getNotifyOrderJson", params=params)
+        
+        response_data = []
+        if isinstance(raw_response, dict):
+            result_node = raw_response.get("result", {})
+            orders_node = result_node.get("orders", {}) if isinstance(result_node, dict) else {}
+            if isinstance(orders_node, dict):
+                response_data = orders_node.get("order", [])
+
+        if not response_data or not isinstance(response_data, list):
+            return []
+
+        processed_orders = []
+        for order in response_data:
+            # 1. Точное определение направления операции (oper: 1 - buy, 3 - sell)
+            raw_action = order.get('oper')
+            if raw_action == 1:
+                action_str = 'buy'
+            elif raw_action == 3:
+                action_str = 'sell'
+            else:
+                action_str = 'buy' if raw_action == 2 else 'sell' # Резервный маппинг v1
+                
+            # 2. Глубокий анализ типа ордера (Лимит, Стоп-лосс, Тейк-профит)
+            raw_type = order.get('type')
+            stop_price = float(order.get('stop_init_price', 0))
+            
+            if raw_type == 6:
+                order_type_str = 'take_profit'
+            elif raw_type in (3, 5) or stop_price > 0:
+                # Если тип указывает на стоп или вшита стоп-цена контроля рисков — это стоп-лосс
+                order_type_str = 'stop_loss'
+            elif raw_type == 4:
+                order_type_str = 'stop_limit'
+            elif raw_type == 1:
+                order_type_str = 'market'
+            else:
+                order_type_str = 'limit'
+
+            processed_order = {
+                "broker_order_id": str(order.get('order_id') or order.get('id')),
+                "ticker": order.get('instr'),
+                "action": action_str,
+                "order_type": order_type_str,
+                "status": "active",
+                "oper": int(raw_action) if raw_action is not None else 1, # Чистый код операции (1, 2, 3)
+                "type": int(raw_type) if raw_type is not None else 2,     # Чистый код типа (2 - лимит)
+                "q": float(order.get('q', 0)),
+                "p": float(order.get('p', 0)),
+                "stop_init_price": float(order.get('stop_init_price', 0)),
+                "currency_id": order.get('cur', 'USD').upper()
+            }
+            processed_orders.append(processed_order)
+
+        return processed_orders

@@ -1,34 +1,23 @@
 import os
 import json
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Загружаем переменные из .env
+env_path = Path('/root/UPort/.env')
+load_dotenv(dotenv_path=env_path)
 
 class FreedomBrokerSyncManager:
-    """Менеджер для глубокой синхронизации активов и мультивалютных D-счетов Freedom Broker."""
+    """Менеджер для глубокой синхронизации активов и мультивалютных счетов Freedom Broker."""
 
     def __init__(self, db_instance, fb_client_class):
         self.db = db_instance
         self.fb_client_class = fb_client_class
 
-    def _get_or_create_ticker_id(self, full_ticker: str, currency_id: str) -> int:
-        """Ищет тикер в БД или создает новый."""
-        sql_search = f"SELECT id FROM tickers WHERE full_ticker = '{full_ticker}'"
-        res = self.db.execute_query(sql_search)
-        if res and isinstance(res, list) and len(res) > 0:
-            return int(res[0]['id'])
-
-        symbol, suffix = full_ticker.split(".", 1) if "." in full_ticker else (full_ticker, "US")
-        sql_insert = f"""
-        INSERT INTO tickers (symbol, suffix, full_ticker, currency_id)
-        VALUES ('{symbol}', '{suffix}', '{full_ticker}', '{currency_id}')
-        """
-        self.db.execute_query(sql_insert)
-        
-        res_retry = self.db.execute_query(sql_search)
-        return int(res_retry[0]['id'])
-
     def sync_by_account_number(self, account_number: str) -> dict:
-        """Синхронизирует активы и кэш, динамически выбирая торговые или накопительные ключи."""
+        """Синхронизирует активы, кэш и ордера, динамически создавая структуру в БД при её отсутствии."""
         
-        # 1. Находим параметры счета в таблице accounts
+        # 1. Проверяем наличие счета в таблице accounts
         acc_sql = f"""
             SELECT a.user_id, a.portfolio_id, a.account_type, u.name as owner_name, u.prefix 
             FROM accounts a
@@ -36,37 +25,64 @@ class FreedomBrokerSyncManager:
             WHERE a.account_number = '{account_number}' LIMIT 1
         """
         acc_data = self.db.execute_query(acc_sql)
-        if not acc_data:
-            raise ValueError(f"Счет {account_number} не зарегистрирован в таблице accounts.")
         
+        # АВТОМАТИЧЕСКОЕ СОЗДАНИЕ: Если таблица accounts пуста, генерируем базовую структуру
+        if not acc_data or len(acc_data) == 0:
+            print(f"♻️ [Sync Manager]: Счет {account_number} не найден в accounts. Автоматическое создание...")
+            
+            is_deposit = account_number.startswith("D")
+            look_num = account_number[1:] if is_deposit else account_number
+            account_type = "deposit" if is_deposit else "trade"
+            
+            user_sql = f"SELECT id, name, prefix, id as user_id FROM users WHERE account_number = '{look_num}' LIMIT 1"
+            user_rows = self.db.execute_query(user_sql)
+            
+            if not user_rows or len(user_rows) == 0:
+                raise ValueError(f"Критическая ошибка: Базовый аккаунт {look_num} не привязан ни к одному пользователю.")
+                
+            user_id = user_rows[0]['id']
+            broker_id = 1 # Freedom Broker Казахстан всегда имеет ID = 1
+            
+            portfolio_id = None
+            if account_type == "trade":
+                p_sql = f"SELECT id FROM portfolios WHERE owner_id = {user_id} LIMIT 1"
+                p_rows = self.db.execute_query(p_sql)
+                if p_rows and len(p_rows) > 0:
+                    portfolio_id = p_rows[0]['id']
+                else:
+                    p_insert = f"INSERT INTO portfolios (owner_id, name) VALUES ({user_id}, 'Основной')"
+                    self.db.execute_query(p_insert)
+                    p_rows_retry = self.db.execute_query(p_sql)
+                    portfolio_id = p_rows_retry[0]['id'] if p_rows_retry else None
+
+            # Вызываем "Китов" для создания базовой USD строки кошелька
+            self.db.ensure_currency("USD")
+            self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, "USD")
+            
+            acc_data = self.db.execute_query(acc_sql)
+
         user_id = acc_data[0]['user_id']
         portfolio_id = acc_data[0]['portfolio_id']
         account_type = acc_data[0]['account_type']
         owner_name = acc_data[0]['owner_name']
         prefix = acc_data[0]['prefix']
+        broker_id = 1
 
-        # 2. Выбор правильной пары ключей в зависимости от типа счета (trade или deposit)
         if account_type == "deposit":
-            # Используем новые ключи накопительного D-счета
             api_key = os.getenv(f"FB_{prefix}_D_API_KEY")
             api_secret = os.getenv(f"FB_{prefix}_D_API_SECRET")
             logging_mode = "НАКОПИТЕЛЬНЫЙ (D-ключи)"
         else:
-            # Используем стандартные торговые ключи
             api_key = os.getenv(f"FB_{prefix}_API_KEY")
             api_secret = os.getenv(f"FB_{prefix}_API_SECRET")
             logging_mode = "ТОРГОВЫЙ (Т-ключи)"
 
-        if not api_key or not api_secret:
-            raise ValueError(f"Критическая ошибка: Ключи для режима {logging_mode} не найдены в .env.")
-
-        # Инициализируем транспортный клиент с выбранными ключами
         fb_client = self.fb_client_class(public_key=api_key, private_key=api_secret)
 
-        # 3. Запрашиваем живые данные по API
+        # Запрашиваем живые данные баланса и позиций по API
         raw_res = fb_client.execute("getPositionJson", params={})
         if isinstance(raw_res, dict) and "error" in raw_res:
-            raise RuntimeError(f"Ошибка API Freedom Broker ({logging_mode}): {raw_res['error']}")
+            raise RuntimeError(f"Ошибка API Freedom Broker: {raw_res['error']}")
             
         result_node = raw_res.get("result", {})
         ps_node = result_node.get("ps", {})
@@ -74,33 +90,21 @@ class FreedomBrokerSyncManager:
         positions = ps_node.get("pos", [])
         cash_balances = ps_node.get("acc", [])
 
-        # --- ЭТАП А: ОБНОВЛЕНИЕ МУЛЬТИВАЛЮТНОГО КЭША (Торговый или D-счет) ---
+        # --- ЭТАП А: ОБНОВЛЕНИЕ МУЛЬТИВАЛЮТНОГО КЭША (ЧЕРЕЗ КИТОВ) ---
         for cash in cash_balances:
             currency = cash.get("curr", "USD")
             available = float(cash.get("s", 0))
             reserved = abs(float(cash.get("t2_out", 0))) 
 
-            # Проверяем наличие конкретного кошелька (номер счета + валюта)
-            check_wallet = f"SELECT id FROM accounts WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
-            wallet_res = self.db.execute_query(check_wallet)
+            # Кит №1 и №2: Гарантируем, что валюта и субсчет физически существуют в СУБД
+            self.db.ensure_currency(currency)
+            self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, currency)
 
-            if wallet_res:
-                sql_wallet_update = f"""
-                UPDATE accounts 
-                SET cash_available = {available}, cash_reserved = {reserved}, last_updated = CURRENT_TIMESTAMP
-                WHERE id = {wallet_res[0]['id']}
-                """
-                self.db.execute_query(sql_wallet_update)
-            else:
-                # Если валюта (например, KZT или EUR) пришла впервые — автоматически создаем строку
-                p_id_val = portfolio_id if portfolio_id else "NULL"
-                sql_wallet_insert = f"""
-                INSERT INTO accounts (user_id, portfolio_id, account_number, account_type, currency_id, cash_available, cash_reserved)
-                VALUES ({user_id}, {p_id_val}, '{account_number}', '{account_type}', '{currency}', {available}, {reserved})
-                """
-                self.db.execute_query(sql_wallet_insert)
+            # Теперь спокойно делаем UPDATE балансов
+            sql_wallet_update = f"UPDATE accounts SET cash_available = {available}, cash_reserved = {reserved}, last_updated = CURRENT_TIMESTAMP WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
+            self.db.execute_query(sql_wallet_update)
 
-        # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (Только для торговых счетов) ---
+        # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (ЧЕРЕЗ КИТОВ) ---
         synced_assets_count = 0
         if account_type == "trade" and portfolio_id:
             active_ticker_ids = []
@@ -117,24 +121,24 @@ class FreedomBrokerSyncManager:
                     continue
 
                 total_market_value += market_val
-                ticker_id = self._get_or_create_ticker_id(full_ticker, currency)
+                
+                # Кит №1 и №3: Гарантируем наличие валюты и тикера до начала операций
+                self.db.ensure_currency(currency)
+                self.db.ensure_ticker(full_ticker, currency)
+                
+                # Извлекаем ID тикера (он теперь гарантированно существует)
+                t_res = self.db.execute_query(f"SELECT id FROM tickers WHERE full_ticker = '{full_ticker}'")
+                ticker_id = int(t_res[0]['id'])
                 active_ticker_ids.append(ticker_id)
 
                 asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND ticker_id = {ticker_id}"
                 asset_res = self.db.execute_query(asset_search)
 
-                if asset_res:
-                    sql_asset_update = f"""
-                    UPDATE assets 
-                    SET quantity = {quantity}, avg_price = {avg_price}, currency_id = '{currency}', last_updated = CURRENT_TIMESTAMP
-                    WHERE id = {asset_res[0]['id']}
-                    """
+                if asset_res and len(asset_res) > 0:
+                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, currency_id = '{currency}', last_updated = CURRENT_TIMESTAMP WHERE id = {asset_res[0]['id']}"
                     self.db.execute_query(sql_asset_update)
                 else:
-                    sql_asset_insert = f"""
-                    INSERT INTO assets (portfolio_id, ticker_id, quantity, avg_price, currency_id)
-                    VALUES ({portfolio_id}, {ticker_id}, {quantity}, {avg_price}, '{currency}')
-                    """
+                    sql_asset_insert = f"INSERT INTO assets (portfolio_id, ticker_id, quantity, avg_price, currency_id) VALUES ({portfolio_id}, {ticker_id}, {quantity}, {avg_price}, '{currency}') ON CONFLICT (portfolio_id, ticker_id) DO NOTHING;"
                     self.db.execute_query(sql_asset_insert)
 
             if active_ticker_ids:
@@ -146,6 +150,28 @@ class FreedomBrokerSyncManager:
             self.db.execute_query(f"UPDATE accounts SET assets_value = {total_market_value} WHERE account_number = '{account_number}' AND currency_id = 'USD'")
             synced_assets_count = len(active_ticker_ids)
 
+        # --- ЭТАП В: СИНХРОНИЗАЦИЯ ОРДЕРОВ (ЧЕРЕЗ КИТОВ ПЕРЕД ТРАНЗАКЦИЕЙ) ---
+        try:
+            # Вызываем метод только для торговых счетов (на D-счетах ордеров на акции нет)
+            if portfolio_id and account_type == "trade":
+                active_orders_list = fb_client.get_active_orders()
+                
+                # ЕДИНЫЙ ПРОТОКОЛ: Прогоняем каждый ордер через трех Китов ДО открытия транзакции
+                for order in active_orders_list:
+                    self.db.ensure_currency(order['currency_id'])
+                    self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, order['currency_id'])
+                    self.db.ensure_ticker(order['ticker'], order['currency_id'])
+                
+                # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров
+                from database import Database
+                Database.sync_portfolio_orders(
+                    portfolio_id=portfolio_id, 
+                    account_number=account_number, 
+                    api_orders=active_orders_list
+                )
+        except Exception as o_err:
+            print(f"⚠️ Предупреждение: Не удалось обновить слепок приказов: {o_err}")
+
         return {
             "owner_name": owner_name,
             "account_number": account_number,
@@ -153,35 +179,3 @@ class FreedomBrokerSyncManager:
             "synced_assets": synced_assets_count,
             "mode": logging_mode
         }
-
-    def sync_account_orders_workflow(account_number: str) -> bool:
-        """
-        Координирует процесс полной синхронизации приказов для счета.
-        Вызывается из диспетчера при получении триггера.
-        """
-        import database  # Импортируем ваш слой базы данных
-    
-        print(f"[Sync Manager] Старт синхронизации приказов для счета: {account_number}")
-    
-        # 1. По номеру счета находим ID портфеля в вашей базе данных
-        portfolio_id = database.get_portfolio_id_by_account_number(account_number)
-        if not portfolio_id:
-            print(f"[Sync Manager] Критическая ошибка: Портфель для счета {account_number} не найден.")
-            return False
-        
-        # 2. Инициализируем сессию клиента Freedom Broker (Tradernet)
-        # Используем вашу оригинальную функцию создания клиента
-        fb_client = get_fb_client_by_account(account_number) 
-        if not fb_client:
-            print(f"[Sync Manager] Ошибка: Не удалось инициализировать API клиент для {account_number}")
-            return False
-    
-        # 3. Делаем запрос к брокеру за актуальными приказами
-        # (Этот метод мы ранее добавили в класс клиента в tradernet_client.py)
-        api_orders = fb_client.get_active_orders()
-    
-        # 4. Передаем данные в database.py для транзакционного обновления
-       database.sync_portfolio_orders(portfolio_id, account_number, api_orders)
-    
-        print(f"[Sync Manager] Синхронизация приказов для счета {account_number} успешно завершена.")
-        return True
