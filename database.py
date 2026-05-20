@@ -226,3 +226,136 @@ class Database:
             "user_id": user_id,
             "user_to_usd_rate": user_to_usd_rate
         }
+
+    # === НОВЫЙ УНИВЕРСАЛЬНЫЙ МЕТОД ДЛЯ КАРТОЧКИ АКТИВА (ЭТАП 1) ===
+
+    def get_ticker_context(self, full_ticker: str, telegram_id: int = None) -> dict:
+        """
+        Собирает полный контекст по тикеру (рыночные данные, владение, приказы).
+        Поддерживает персональный вывод для роли 'user' и глобальный для роли 'ai' или при пустом telegram_id.
+        """
+        # 1. Определяем роль и базовую валюту запрашивающего
+        is_global = True
+        base_curr = "USD"
+        
+        if telegram_id:
+            user_sql = f"SELECT id, role, base_currency FROM public.users WHERE telegram_id = {telegram_id};"
+            user_res = self.execute_query(user_sql)
+            if user_res and isinstance(user_res, list):
+                curr_user = user_res[0]
+                base_curr = curr_user['base_currency'] or "USD"
+                # Если роль 'user', то переключаемся в персональный режим. Если 'ai', оставляем глобальный.
+                if curr_user['role'] == 'user':
+                    is_global = False
+
+        # 2. Получаем курс базовой валюты пользователя к транзитному USD
+        rate_user_sql = f"SELECT rate FROM public.currency_rates WHERE from_currency = '{base_curr}' AND to_currency = 'USD';"
+        rate_user_res = self.execute_query(rate_user_sql)
+        user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res and isinstance(rate_user_res, list) else 1.0
+
+        # ЗАПРОС 1: Базовая карточка тикера и его происхождение
+        ticker_sql = f"""
+            SELECT 
+                t.full_ticker, t.company_name, t.last_price, t.currency_id AS ticker_currency,
+                t.last_updated_at, t.tracking_status, u.name AS added_by_user,
+                COALESCE(r.rate, 1.0) as asset_to_usd_rate
+            FROM public.tickers t
+            LEFT JOIN public.users u ON t.created_by_user_id = u.id
+            LEFT JOIN public.currency_rates r ON r.from_currency = t.currency_id AND r.to_currency = 'USD'
+            WHERE t.full_ticker = '{full_ticker}';
+        """
+        ticker_res = self.execute_query(ticker_sql)
+        if not ticker_res or not isinstance(ticker_res, list):
+            return {} # Тикер не найден в системе
+
+        ticker_data = ticker_res[0]
+
+        # Пересчитываем текущую рыночную цену из валюты тикера в валюту запрашивающего пользователя
+        raw_price = float(ticker_data['last_price'] or 0)
+        asset_to_usd = float(ticker_data['asset_to_usd_rate'])
+        price_in_user_currency = (raw_price * asset_to_usd) / user_to_usd_rate
+
+        # ЗАПРОС 2: Контекст владения (Вычисляем срок удержания и суммы)
+        # Если режим персональный — фильтруем строго по telegram_id
+        user_filter_assets = "" if is_global else f"AND u.telegram_id = {telegram_id}"
+        
+        assets_sql = f"""
+            SELECT 
+                p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price, a.currency_id,
+                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at)) AS holding_days,
+                a.position_opened_at::date AS opened_date,
+                COALESCE(r.rate, 1.0) as cash_to_usd_rate
+            FROM public.assets a
+            JOIN public.portfolios p ON a.portfolio_id = p.id
+            JOIN public.users u ON p.owner_id = u.id
+            LEFT JOIN public.currency_rates r ON r.from_currency = a.currency_id AND r.to_currency = 'USD'
+            WHERE a.ticker_id = (SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}')
+              AND a.quantity > 0 {user_filter_assets};
+        """
+        assets_res = self.execute_query(assets_sql)
+        if not isinstance(assets_res, list):
+            assets_res = []
+
+        ownership_list = []
+        for asset in assets_res:
+            # Пересчитываем закупочную цену в валюту пользователя
+            raw_avg = float(asset['avg_price'] or 0)
+            cash_to_usd = float(asset['cash_to_usd_rate'])
+            avg_in_user_currency = (raw_avg * cash_to_usd) / user_to_usd_rate
+
+            ownership_list.append({
+                "portfolio_name": asset['portfolio_name'],
+                "owner_name": asset['owner_name'],
+                "quantity": float(asset['quantity']),
+                "avg_price": avg_in_user_currency,
+                "holding_days": int(asset['holding_days'] or 0),
+                "opened_date": str(asset['opened_date'])
+            })
+
+        # ЗАПРОС 3: Контекст намерений (Активные лимитные приказы)
+        user_filter_orders = "" if is_global else f"AND u.telegram_id = {telegram_id}"
+        
+        orders_sql = f"""
+            SELECT 
+                p.name AS portfolio_name, o.broker_order_id, o.status, o.q AS order_quantity, o.p AS order_price,
+                o.currency_id, o.oper, o.created_at, COALESCE(r.rate, 1.0) as order_to_usd_rate
+            FROM public.orders o
+            JOIN public.portfolios p ON o.portfolio_id = p.id
+            JOIN public.users u ON p.owner_id = u.id
+            LEFT JOIN public.currency_rates r ON r.from_currency = o.currency_id AND r.to_currency = 'USD'
+            WHERE o.ticker_id = (SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}')
+              AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED') {user_filter_orders};
+        """
+        orders_res = self.execute_query(orders_sql)
+        if not isinstance(orders_res, list):
+            orders_res = []
+
+        orders_list = []
+        for ord_row in orders_res:
+            raw_order_p = float(ord_row['order_price'] or 0)
+            ord_to_usd = float(ord_row['order_to_usd_rate'])
+            order_p_in_user_currency = (raw_order_p * ord_to_usd) / user_to_usd_rate
+
+            orders_list.append({
+                "portfolio_name": ord_row['portfolio_name'],
+                "broker_order_id": ord_row['broker_order_id'],
+                "status": ord_row['status'],
+                "quantity": float(ord_row['order_quantity']),
+                "price": order_p_in_user_currency,
+                "operation": "ПОКУПКА" if ord_row['oper'] in (1, 2) else "ПРОДАЖА",
+                "created_at": str(ord_row['created_at']).split('.')[0]
+            })
+
+        # 3. Упаковываем все блоки в единый чистый JSON-контекст
+        return {
+            "is_global_view": is_global,
+            "base_currency": base_curr,
+            "full_ticker": ticker_data['full_ticker'],
+            "company_name": ticker_data['company_name'] or "Неизвестная компания",
+            "last_price": price_in_user_currency,
+            "tracking_status": ticker_data['tracking_status'],
+            "added_by_user": ticker_data['added_by_user'] or "Система",
+            "last_updated_at": str(ticker_data['last_updated_at']).split('.')[0],
+            "ownership": ownership_list,
+            "active_orders": orders_list
+        }

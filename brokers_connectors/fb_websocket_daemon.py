@@ -45,17 +45,23 @@ async def listen_freedom_broker(owner_prefix: str, account_type: str, account_nu
                 portfolio_stream = ws_client.portfolio()
                 orders_stream = ws_client.orders()
 
+                # Инициализируем асинхронный замок для защиты от Race Condition
+                sync_lock = asyncio.Lock()
+
                 async def read_portfolio():
                     async for update in portfolio_stream:
                         print(f"🟢 [WS {owner_prefix} {mode_label}]: Изменение портфеля! Вызов sync_manager...")
-                        # Вызываем ваш оригинальный sync_manager, передавая точный номер счета
-                        await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
+                        # Оборачиваем в замок: следующий поток не зайдет, пока текущий не завершит транзакцию в БД
+                        async with sync_lock:
+                            await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
                         print(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по портфелю.")
 
                 async def read_orders():
                     async for update in orders_stream:
-                        print(f"🔵 [WS {owner_prefix} {mode_label}]: Триггер ордера! Вызов sync_manager...")
-                        await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
+                        print(f"🔵 [WS {owner_prefix} {mode_label}]: ...")
+                        # Используем тот же самый замок для синхронизации ордеров
+                        async with sync_lock:
+                            await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
                         print(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по ордерам.")
 
                 await asyncio.gather(read_portfolio(), read_orders())

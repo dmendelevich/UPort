@@ -101,7 +101,7 @@ class FreedomBrokerSyncManager:
             self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, currency)
 
             # Теперь спокойно делаем UPDATE балансов
-            sql_wallet_update = f"UPDATE accounts SET cash_available = {available}, cash_reserved = {reserved}, last_updated = CURRENT_TIMESTAMP WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
+            sql_wallet_update = f"UPDATE accounts SET cash_available = {available}, cash_reserved = {reserved}, last_updated = transaction_timestamp() WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
             self.db.execute_query(sql_wallet_update)
 
         # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (ЧЕРЕЗ КИТОВ) ---
@@ -109,6 +109,11 @@ class FreedomBrokerSyncManager:
         if account_type == "trade" and portfolio_id:
             active_ticker_ids = []
             total_market_value = 0
+            
+            # ФИКСИРУЕМ ВРЕМЯ СТАРТА СЕССИИ (в формате базы данных)
+            # Запрашиваем текущее время у самой БД в начале этапа
+            time_res = self.db.execute_query("SELECT CURRENT_TIMESTAMP as now")
+            session_start_time = time_res[0]['now']
 
             for pos in positions:
                 full_ticker = pos.get("i")
@@ -122,11 +127,9 @@ class FreedomBrokerSyncManager:
 
                 total_market_value += market_val
                 
-                # Кит №1 и №3: Гарантируем наличие валюты и тикера до начала операций
                 self.db.ensure_currency(currency)
                 self.db.ensure_ticker(full_ticker, currency)
                 
-                # Извлекаем ID тикера (он теперь гарантированно существует)
                 t_res = self.db.execute_query(f"SELECT id FROM tickers WHERE full_ticker = '{full_ticker}'")
                 ticker_id = int(t_res[0]['id'])
                 active_ticker_ids.append(ticker_id)
@@ -135,17 +138,34 @@ class FreedomBrokerSyncManager:
                 asset_res = self.db.execute_query(asset_search)
 
                 if asset_res and len(asset_res) > 0:
-                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, currency_id = '{currency}', last_updated = CURRENT_TIMESTAMP WHERE id = {asset_res[0]['id']}"
+                    # Записываем точное время сессии
+                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, currency_id = '{currency}', last_updated = '{session_start_time}' WHERE id = {asset_res[0]['id']}"
                     self.db.execute_query(sql_asset_update)
                 else:
-                    sql_asset_insert = f"INSERT INTO assets (portfolio_id, ticker_id, quantity, avg_price, currency_id) VALUES ({portfolio_id}, {ticker_id}, {quantity}, {avg_price}, '{currency}') ON CONFLICT (portfolio_id, ticker_id) DO NOTHING;"
+                    # Записываем точное время сессии
+                    sql_asset_insert = f"""
+                        INSERT INTO assets (portfolio_id, ticker_id, quantity, avg_price, currency_id, last_updated) 
+                        VALUES ({portfolio_id}, {ticker_id}, {quantity}, {avg_price}, '{currency}', '{session_start_time}') 
+                        ON CONFLICT (portfolio_id, ticker_id) 
+                        DO UPDATE SET 
+                            quantity = EXCLUDED.quantity, 
+                            avg_price = EXCLUDED.avg_price, 
+                            currency_id = EXCLUDED.currency_id, 
+                            last_updated = '{session_start_time}';
+                    """
                     self.db.execute_query(sql_asset_insert)
 
+            # ЗАЩИТА: Очищаем фантомы ТОЛЬКО если от брокера пришла хотя бы одна живая бумага
             if active_ticker_ids:
-                ids_str = ",".join(map(str, active_ticker_ids))
-                self.db.execute_query(f"DELETE FROM assets WHERE portfolio_id = {portfolio_id} AND ticker_id NOT IN ({ids_str})")
+                sql_cleanup = f"DELETE FROM assets WHERE portfolio_id = {portfolio_id} AND (last_updated < '{session_start_time}' OR last_updated IS NULL)"
+                self.db.execute_query(sql_cleanup)
             else:
-                self.db.execute_query(f"DELETE FROM assets WHERE portfolio_id = {portfolio_id}")
+                # Если позиций от брокера вообще не пришло, мы не удаляем всё слепо, 
+                # а сначала проверяем, пуст ли ответ или это сбой.
+                # Если вы точно знаете, что портфель пуст (продан в ноль), 
+                # можно раскомментировать строку ниже для полной очистки:
+                # self.db.execute_query(f"DELETE FROM assets WHERE portfolio_id = {portfolio_id}")
+                pass
 
             self.db.execute_query(f"UPDATE accounts SET assets_value = {total_market_value} WHERE account_number = '{account_number}' AND currency_id = 'USD'")
             synced_assets_count = len(active_ticker_ids)

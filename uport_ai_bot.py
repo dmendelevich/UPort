@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # Импортируем компоненты инфраструктуры UPort
 from database import Database
 from brokers_connectors.fb_client import FreedomBrokerClient
-from brokers_connectors.fb_sync_manager import FreedomBrokerSyncManager
+from brokers_connectors.sync_account_fb import FreedomBrokerSyncManager
 
 logging.basicConfig(level=logging.INFO)
 
@@ -89,7 +89,7 @@ def get_main_menu_keyboard() -> types.InlineKeyboardMarkup:
         callback_data=MenuAction(action="show_summary").pack())
     )
     builder.row(types.InlineKeyboardButton(
-        text="🔄 Обновить цены на рынке", 
+        text="🔄 Обновить котировки бумаг и курсы валют", 
         callback_data=MenuAction(action="update_prices").pack())
     )
     return builder.as_markup()
@@ -114,7 +114,7 @@ async def cmd_start(message: types.Message):
         reply_markup=get_main_menu_keyboard()
     )
     # Отправляем невидимый триггер удаления старых кнопок
-    await message.answer("🧹 Старый текстовый интерфейс очищен.", reply_markup=ReplyKeyboardRemove())
+    # await message.answer("🧹 Старый текстовый интерфейс очищен.", reply_markup=ReplyKeyboardRemove())
 
 @dp.callback_query(MenuAction.filter(F.action == "main_menu"))
 async def process_back_to_menu(callback: types.CallbackQuery):
