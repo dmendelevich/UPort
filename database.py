@@ -3,6 +3,10 @@ import requests
 import psycopg2
 from dotenv import load_dotenv
 from pathlib import Path
+import asyncio
+# Глобальная потокобезопасная очередь задач для сквозного анализа ETF
+ETF_LOOK_THROUGH_QUEUE = asyncio.Queue()
+
 
 # Загружаем переменные из .env
 env_path = Path('/root/UPort/.env')
@@ -63,14 +67,38 @@ class Database:
         self.execute_query(sql)
 
     def ensure_ticker(self, full_ticker: str, currency_id: str, broker_id: int = 1):
-        """Кит №3: Гарантирует наличие тикера в справочнике tickers с привязкой к брокеру."""
+        """
+        Кит №3: Гарантирует наличие тикера в справочнике tickers.
+        ВЕРСИЯ С ОЧЕРЕДЬЮ: Работает за миллисекунды, бросает тяжелые ETF задачи в фон.
+        """
         symbol, suffix = full_ticker.split(".", 1) if "." in full_ticker else (full_ticker, "US")
+        
+        # 1. Быстрый SQL-ввод инструмента в справочник
         sql = f"""
         INSERT INTO public.tickers (symbol, suffix, full_ticker, currency_id, broker_id)
         VALUES ('{symbol}', '{suffix}', '{full_ticker}', '{currency_id}', {broker_id})
         ON CONFLICT (full_ticker) DO NOTHING;
         """
         self.execute_query(sql)
+
+       # 2. Постановка в очередь на фоновый анализ структуры
+        try:
+            t_info = self.execute_query(f"SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}';")
+            if t_info:
+                # НАДЕЖНОЕ ИЗВЛЕЧЕНИЕ СЛОВАРЯ ИЗ СПИСКА ШЛЮЗА
+                t_row = t_info[0] if isinstance(t_info, list) and len(t_info) > 0 else (t_info if isinstance(t_info, dict) else {})
+                t_id = t_row.get('id')
+                
+                if t_id:
+                    # Проверяем, есть ли уже этот инструмент в таблице связей etf_holdings
+                    check_h = self.execute_query(f"SELECT 1 FROM public.etf_holdings WHERE etf_ticker_id = {t_id} LIMIT 1;")
+                    if not check_h:
+                        from database import ETF_LOOK_THROUGH_QUEUE
+                        task_data = {"id": t_id, "symbol": symbol, "suffix": suffix, "full_ticker": full_ticker, "currency_id": currency_id, "broker_id": broker_id}
+                        # Слепо и мгновенно бросаем задачу в асинхронную очередь
+                        ETF_LOOK_THROUGH_QUEUE.put_nowait(task_data)
+        except Exception as q_err:
+            print(f"⚠️ Предупреждение постановки {full_ticker} в ETF очередь: {q_err}")
 
     # === ОСНОВНОЙ ЭТАП ЗАПИСИ ПРИКАЗОВ ===
 
@@ -85,8 +113,8 @@ class Database:
         
         # Запрос перестроен под чистые, оригинальные колонки из JSON (9 параметров)
         sql_insert_order = """
-        INSERT INTO public.orders (portfolio_id, ticker_id, broker_order_id, status, oper, type, q, p, stop_init_price, currency_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        INSERT INTO public.orders (portfolio_id, ticker_id, broker_order_id, status, oper, type, q, p, stop_init_price, stop_price, currency_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         
         sql_reset_all_reserved = "UPDATE public.accounts SET cash_reserved = 0 WHERE account_number = %s;"
@@ -109,9 +137,18 @@ class Database:
                 for order in api_orders:
                     cur.execute(sql_get_ticker_id, (order['ticker'],))
                     t_row = cur.fetchone()
-                    # Безопасное извлечение ID тикера независимо от типа фабрики курсора
                     ticker_id = t_row['id'] if isinstance(t_row, dict) else t_row[0]
                     
+                    # 2. ИСПРАВЛЕНИЕ: Безопасно вытаскиваем динамический триггер 'stop'
+                    stop_price_val = order.get('stop')                    
+                    # СТРАХОВКА ДЛЯ REST: Если брокер не прислал 'stop', но это стоп-ордер (type=5 или 6)
+                    # мы страхуемся и берём значение из 'stop_init_price', чтобы не записать NULL
+                    if stop_price_val is None and int(order.get('type', 0)) in (3, 4, 5, 6):
+                        stop_price_val = order.get('stop_init_price')
+                    if stop_price_val is not None:
+                        stop_price_val = float(stop_price_val)
+                    
+                    # 3. МОДИФИЦИРОВАНО: передаем stop_price_val строго на свое место в кортеж
                     cur.execute(sql_insert_order, (
                         portfolio_id,
                         ticker_id,
@@ -122,6 +159,7 @@ class Database:
                         order['q'],
                         order['p'],
                         order['stop_init_price'],
+                        stop_price_val,  # Наша новая колонка
                         order['currency_id']
                     ))
                 
@@ -229,36 +267,30 @@ class Database:
 
     # === НОВЫЙ УНИВЕРСАЛЬНЫЙ МЕТОД ДЛЯ КАРТОЧКИ АКТИВА (ЭТАП 1) ===
 
-    def get_ticker_context(self, full_ticker: str, telegram_id: int = None) -> dict:
+    def get_ticker_context(self, full_ticker: str, portfolio_id: int = 0, telegram_id: int = None) -> dict:
         """
-        Собирает полный контекст по тикеру (рыночные данные, владение, приказы).
-        Поддерживает персональный вывод для роли 'user' и глобальный для роли 'ai' или при пустом telegram_id.
+        Собирает контекст по тикеру. Работает строго по portfolio_id.
+        Если portfolio_id == 0 — выдает глобальный семейный срез.
+        telegram_id используется ИСКЛЮЧИТЕЛЬНО для определения предпочитаемой валюты вывода.
         """
-        # 1. Определяем роль и базовую валюту запрашивающего
-        is_global = True
+        # 1. Определяем базовую валюту запрашивающего для кастомизации вывода суммы
         base_curr = "USD"
-        
         if telegram_id:
-            user_sql = f"SELECT id, role, base_currency FROM public.users WHERE telegram_id = {telegram_id};"
+            user_sql = f"SELECT base_currency FROM public.users WHERE telegram_id = {telegram_id};"
             user_res = self.execute_query(user_sql)
             if user_res and isinstance(user_res, list):
-                curr_user = user_res[0]
-                base_curr = curr_user['base_currency'] or "USD"
-                # Если роль 'user', то переключаемся в персональный режим. Если 'ai', оставляем глобальный.
-                if curr_user['role'] == 'user':
-                    is_global = False
+                base_curr = user_res[0]['base_currency'] or "USD"
 
-        # 2. Получаем курс базовой валюты пользователя к транзитному USD
+        # 2. Получаем курс базовой валюты пользователя к транзитному USD (для деления)
         rate_user_sql = f"SELECT rate FROM public.currency_rates WHERE from_currency = '{base_curr}' AND to_currency = 'USD';"
         rate_user_res = self.execute_query(rate_user_sql)
         user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res and isinstance(rate_user_res, list) else 1.0
 
-        # ЗАПРОС 1: Базовая карточка тикера и его происхождение
+        # ЗАПРОС 1: Базовые рыночные параметры тикера
         ticker_sql = f"""
-            SELECT 
-                t.full_ticker, t.company_name, t.last_price, t.currency_id AS ticker_currency,
-                t.last_updated_at, t.tracking_status, u.name AS added_by_user,
-                COALESCE(r.rate, 1.0) as asset_to_usd_rate
+            SELECT t.full_ticker, t.company_name, t.last_price, t.currency_id AS ticker_currency,
+                   t.last_updated_at, t.tracking_status, u.name AS added_by_user,
+                   COALESCE(r.rate, 1.0) as asset_to_usd_rate
             FROM public.tickers t
             LEFT JOIN public.users u ON t.created_by_user_id = u.id
             LEFT JOIN public.currency_rates r ON r.from_currency = t.currency_id AND r.to_currency = 'USD'
@@ -266,31 +298,26 @@ class Database:
         """
         ticker_res = self.execute_query(ticker_sql)
         if not ticker_res or not isinstance(ticker_res, list):
-            return {} # Тикер не найден в системе
+            return {}
 
         ticker_data = ticker_res[0]
-
-        # Пересчитываем текущую рыночную цену из валюты тикера в валюту запрашивающего пользователя
         raw_price = float(ticker_data['last_price'] or 0)
         asset_to_usd = float(ticker_data['asset_to_usd_rate'])
         price_in_user_currency = (raw_price * asset_to_usd) / user_to_usd_rate
 
-        # ЗАПРОС 2: Контекст владения (Вычисляем срок удержания и суммы)
-        # Если режим персональный — фильтруем строго по telegram_id
-        user_filter_assets = "" if is_global else f"AND u.telegram_id = {telegram_id}"
+        # ЗАПРОС 2: Контекст владения (Строго по portfolio_id, если он > 0)
+        portfolio_filter_assets = "" if portfolio_id == 0 else f"AND a.portfolio_id = {portfolio_id}"
         
         assets_sql = f"""
-            SELECT 
-                p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price, a.currency_id,
-                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at)) AS holding_days,
-                a.position_opened_at::date AS opened_date,
-                COALESCE(r.rate, 1.0) as cash_to_usd_rate
+            SELECT p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price, a.currency_id,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at)) AS holding_days,
+                   a.position_opened_at::date AS opened_date, COALESCE(r.rate, 1.0) as cash_to_usd_rate
             FROM public.assets a
             JOIN public.portfolios p ON a.portfolio_id = p.id
             JOIN public.users u ON p.owner_id = u.id
             LEFT JOIN public.currency_rates r ON r.from_currency = a.currency_id AND r.to_currency = 'USD'
             WHERE a.ticker_id = (SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}')
-              AND a.quantity > 0 {user_filter_assets};
+              AND a.quantity > 0 {portfolio_filter_assets};
         """
         assets_res = self.execute_query(assets_sql)
         if not isinstance(assets_res, list):
@@ -298,7 +325,6 @@ class Database:
 
         ownership_list = []
         for asset in assets_res:
-            # Пересчитываем закупочную цену в валюту пользователя
             raw_avg = float(asset['avg_price'] or 0)
             cash_to_usd = float(asset['cash_to_usd_rate'])
             avg_in_user_currency = (raw_avg * cash_to_usd) / user_to_usd_rate
@@ -312,19 +338,17 @@ class Database:
                 "opened_date": str(asset['opened_date'])
             })
 
-        # ЗАПРОС 3: Контекст намерений (Активные лимитные приказы)
-        user_filter_orders = "" if is_global else f"AND u.telegram_id = {telegram_id}"
+        # ЗАПРОС 3: Контекст намерений (Активные ордера строго по portfolio_id, если он > 0)
+        portfolio_filter_orders = "" if portfolio_id == 0 else f"AND o.portfolio_id = {portfolio_id}"
         
         orders_sql = f"""
-            SELECT 
-                p.name AS portfolio_name, o.broker_order_id, o.status, o.q AS order_quantity, o.p AS order_price,
-                o.currency_id, o.oper, o.created_at, COALESCE(r.rate, 1.0) as order_to_usd_rate
+            SELECT p.name AS portfolio_name, o.broker_order_id, o.status, o.q AS order_quantity, o.p AS order_price,
+                   o.currency_id, o.oper, o.created_at, COALESCE(r.rate, 1.0) as order_to_usd_rate
             FROM public.orders o
             JOIN public.portfolios p ON o.portfolio_id = p.id
-            JOIN public.users u ON p.owner_id = u.id
             LEFT JOIN public.currency_rates r ON r.from_currency = o.currency_id AND r.to_currency = 'USD'
             WHERE o.ticker_id = (SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}')
-              AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED') {user_filter_orders};
+              AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED') {portfolio_filter_orders};
         """
         orders_res = self.execute_query(orders_sql)
         if not isinstance(orders_res, list):
@@ -346,9 +370,8 @@ class Database:
                 "created_at": str(ord_row['created_at']).split('.')[0]
             })
 
-        # 3. Упаковываем все блоки в единый чистый JSON-контекст
         return {
-            "is_global_view": is_global,
+            "is_global_view": (portfolio_id == 0),
             "base_currency": base_curr,
             "full_ticker": ticker_data['full_ticker'],
             "company_name": ticker_data['company_name'] or "Неизвестная компания",
@@ -359,3 +382,6 @@ class Database:
             "ownership": ownership_list,
             "active_orders": orders_list
         }
+# Глобальные изолированные инстансы базы данных для всей экосистемы UPort
+db_bot = Database(role="BOT")       
+db_sys = Database(role="SYSTEM")

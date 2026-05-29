@@ -6,19 +6,27 @@ from pathlib import Path
 
 # Импортируем компоненты шлюза СУБД
 from database import Database
+from database import db_sys
 
 # Импортируем асинхронный сокет-демон Freedom Broker и реле времени
 from brokers_connectors.fb_websocket_daemon import listen_freedom_broker
+from brokers_connectors.fb_client import FreedomBrokerClient
+from brokers_connectors.sync_account_fb import FreedomBrokerSyncManager
+
 import cron_scheduler
+
 
 # Загружаем переменные окружения
 env_path = Path('/root/UPort/.env')
 load_dotenv(dotenv_path=env_path)
 
-# Инициализируем системную роль для первоначальной сборки карты пользователей
-db_sys = Database(role="SYSTEM")
+# 🔥 ГЛОБАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ СИНК-МЕНЕДЖЕРА НА СВОЕМ ЗАКОННОМ МЕСТЕ
+sync_manager = FreedomBrokerSyncManager(db_instance=db_sys, fb_client_class=FreedomBrokerClient)
 
 async def start_uport_system():
+    # 🔥 ПОДСКАЗЫВАЕМ PYTHON, ЧТОБЫ ОН БРАЛ МЕНЕДЖЕР ИЗ ГЛОБАЛЬНОГО ПОЛЯ ФАЙЛА
+    global sync_manager
+    
     print("=== 🚀 [UPort Система] Глобальный запуск семейной экосистемы ===")
 
     # 1. Запрашиваем префиксы и базовые номера аккаунтов из таблицы users
@@ -37,7 +45,7 @@ async def start_uport_system():
 
     # Ленивая загрузка компонентов Telegram-бота
     print("🤖 [Оркестратор]: Ленивая загрузка компонентов Telegram-бота...")
-    from uport_ai_bot import bot, dp, sync_manager
+    from uport_ai_bot import bot, dp
 
     async_tasks = []
 

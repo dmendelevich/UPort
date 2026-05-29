@@ -110,3 +110,37 @@ class FreedomBrokerClient:
             processed_orders.append(processed_order)
 
         return processed_orders
+
+    def get_security_info(self, ticker: str) -> dict:
+        """
+        Интерпретатор 'Туда': Запрашивает у брокера спецификацию тикера по СУП.
+        Позволяет узнать default_ticker (международное имя для Yahoo).
+        """
+        params = {
+            "ticker": ticker,
+            "sup": True
+        }
+        raw = self.execute(command="getSecurityInfo", params=params)
+        
+        # Безопасно вытаскиваем тело ответа брокера
+        if isinstance(raw, dict) and "result" in raw:
+            return raw["result"]
+        return raw if isinstance(raw, dict) else {}
+
+    def find_ticker(self, text_phrase: str) -> list:
+        """
+        Интерпретатор 'Обратно': Ищет тикер по базе брокера (tickerFinder).
+        Позволяет узнать nt_ticker (для сокетов), а также type и kind инструмента.
+        """
+        params = {
+            "text": str(text_phrase).lower()
+        }
+        raw = self.execute(command="tickerFinder", params=params)
+        
+        if isinstance(raw, dict) and "result" in raw:
+            res_node = raw["result"]
+            if isinstance(res_node, dict):
+                return res_node.get("found", [])
+        return []
+
+
