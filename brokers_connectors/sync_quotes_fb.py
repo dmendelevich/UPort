@@ -39,12 +39,14 @@ def sync_quotes_fb_branch(tickers_data, db_instance, fb_client_class):
             print("⚠️ [REST FB]: Сервер брокера вернул пустой массив котировок.")
             return
 
-        # Мапим множители и внутренние ID из данных СУБД
+        # Мапим множители и внутренние ID ЛИСТИНГОВ из новых данных СУБД
         multipliers_map = {row['full_ticker']: float(row['multiplier']) for row in tickers_data}
-        id_map = {row['full_ticker']: int(row['id']) for row in tickers_data}
+        
+        # КРИТИЧЕСКИЙ СДВИГ: теперь мапим на listing_id, который прилетит из cron_scheduler!
+        listing_id_map = {row['full_ticker']: int(row['listing_id']) for row in tickers_data}
 
         for quote in result_array:
-            # СТРОГО ПО ТЕСТУ: тикер лежит в ключе 'c', а цена в 'ltp'
+            # Строго по спецификации FB: тикер лежит в ключе 'c', цена в 'ltp'
             ticker = quote.get("c")
             if not ticker or ticker not in multipliers_map:
                 continue
@@ -57,22 +59,33 @@ def sync_quotes_fb_branch(tickers_data, db_instance, fb_client_class):
                 comp_name = comp_name.replace("'", "''")
 
             if raw_price is not None and str(raw_price) != 'nan':
-                # Умножаем на multiplier (напр. 0.01 для пенсов)
+                # Умножаем на multiplier (напр. 0.01 для британских пенсов на будущее)
                 final_price = float(raw_price) * multipliers_map[ticker]
-                t_id = id_map[ticker]
+                l_id = listing_id_map[ticker]
                 
-                # Обновляем last_price, company_name и таймстамп
-                sql_update = f"""
-                    UPDATE public.tickers 
+                # 🔥 АКАДЕМИЧЕСКИЙ UPDATE v3.0: Локальная цена — это свойство листинга, а не акции!
+                # Одновременно обновляем название компании в глобальном tickers по связи
+                sql_update_listing = f"""
+                    UPDATE public.listings 
                     SET last_price = {final_price}, 
-                        company_name = '{comp_name}', 
-                        last_updated_at = '{datetime.now()}' 
-                    WHERE id = {t_id};
+                        last_updated_at = transaction_timestamp() 
+                    WHERE id = {l_id};
                 """
-                db_instance.execute_query(sql_update)
-                print(f"   • {ticker} успешно актуализирован: {final_price:.2f}")
+                db_instance.execute_query(sql_update_listing)
+                
+                # Мягко обогащаем название компании в tickers, если оно там пустое
+                sql_update_company = f"""
+                    UPDATE public.tickers 
+                    SET company_name = '{comp_name}' 
+                    WHERE id = (SELECT ticker_id FROM public.listings WHERE id = {l_id}) 
+                      AND (company_name IS NULL OR company_name = 'Unknown Company' OR company_name = '');
+                """
+                db_instance.execute_query(sql_update_company)
+                
+                print(f"   • {ticker} успешно актуализирован в listings: {final_price:.2f}")
             else:
                 print(f"   • {ticker} ⚠️ В пакете отсутствует значение ltp.")
+
                 
     except Exception as e:
         print(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")

@@ -10,13 +10,16 @@ def sync_fundamentals(db_instance):
     """
     logging.info("📡 [Yahoo Fundamentals]: Выборка отслеживаемых тикеров из базы данных...")
     
-    # Собираем только отслеживаемые тикеры (активные или в списке наблюдения)
+    # 🔥 АКАДЕМИЧЕСКИЙ ЗАПРОС v3.0: Собираем уникальные глобальные тикеры, которые не заархивированы семьей
     sql_tickers = """
-        SELECT id, symbol, full_ticker 
-        FROM public.tickers 
-        WHERE tracking_status IN ('active', 'watchlist');
+        SELECT DISTINCT t.id, t.symbol, l.broker_symbol AS full_ticker
+        FROM public.watchlist w
+        JOIN public.listings l ON w.listing_id = l.id
+        JOIN public.tickers t ON l.ticker_id = t.id
+        WHERE w.status != 'archived'::public.ticker_lifecycle_status;
     """
     tickers_data = db_instance.execute_query(sql_tickers)
+
     
     if not tickers_data or not isinstance(tickers_data, list):
         logging.info("ℹ️ [Yahoo Fundamentals]: Нет тикеров со статусом active или watchlist для обновления.")

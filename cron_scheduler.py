@@ -37,13 +37,26 @@ def run_quotes_update(db_instance):
         b_id = int(broker['id'])
         b_name = broker['name']
         
+        # 🔥 АКАДЕМИЧЕСКИЙ ЗАПРОС v3.0: Собираем листинги на основе живого watchlist портфелей этого брокера
         sql_tickers = f"""
-            SELECT t.id, t.full_ticker, c.multiplier 
-            FROM public.tickers t
-            JOIN public.currencies c ON t.currency_id = c.id
-            WHERE t.broker_id = {b_id} AND t.tracking_status IN ('active', 'watchlist', 'bought', 'ordered', 'considered');
+            SELECT DISTINCT ON (l.broker_symbol) l.id AS listing_id, l.broker_symbol AS full_ticker, c.multiplier 
+            FROM public.watchlist w
+            JOIN public.listings l ON w.listing_id = l.id
+            JOIN public.portfolios p ON w.portfolio_id = p.id
+            JOIN public.currencies c ON l.currency_id = c.id
+            WHERE p.broker_id = {b_id} AND w.status IN ('considered', 'ordered', 'bought', 'sold_out');
         """
         tickers_data = db_instance.execute_query(sql_tickers)
+        if not tickers_data:
+            continue
+            
+        logging.info(f"💼 [Cron]: Обновляю {len(tickers_data)} активных листингов у брокера {b_name} (ID: {b_id})")
+        
+        if b_id == 1:
+            sync_quotes_fb_branch(tickers_data, db_instance, FreedomBrokerClient)
+        elif b_id == 2:
+            sync_quotes_t212_branch(tickers_data, db_instance)
+
         if not tickers_data:
             continue
             
@@ -227,14 +240,15 @@ async def start_clocks(db_instance):
     asyncio.create_task(rates_clock_loop(db_instance))
     asyncio.create_task(fundamentals_clock_loop(db_instance))
     
-# РЕАКТИВНЫЙ КОНВЕЙЕР: Запускаем параллельную фоновую обработку нашей асинхронной очереди
+    # РЕАКТИВНЫЙ КОНВЕЙЕР: Запускаем параллельную фоновую обработку нашей асинхронной очереди
     asyncio.create_task(etf_queue_worker_loop(db_instance))
-# ПРИВАТНЫЕ ДАННЫЕ ПОРТФЕЛЯ: Сюда задачи не добавлять!
-"""
-АРХИТЕКТУРНАЯ ЗАМЕТКА О СИНХРОНИЗАЦИИ ПОРТФЕЛЯ (sync_by_account_number):
-Контур синхронизации личных аккаунтов (кэш, состав портфеля, ордера) НАМЕРЕННОНЕ ВКЛЮЧЕН в этот файл расписания.
-Синхронизация данных пользователя работает по событийно-ориентированной схеме:
-1. В реальном времени — через демона вебсокетов (fb_websocket_daemon.py) при каждом чихе по API.
-2. По запросу — напрямую из Telegram-бота (uport_ai_bot.py) при нажатии кнопки обновления.
-Дублировать эти вызовы по Cron-таймеру здесь не нужно во избежание лишней нагрузки.
-"""
+    
+    # ПРИВАТНЫЕ ДАННЫЕ ПОРТФЕЛЯ: Сюда задачи не добавлять!
+    """
+    АРХИТЕКТУРНАЯ ЗАМЕТКА О СИНХРОНИЗАЦИИ ПОРТФЕЛЯ (sync_by_account_number):
+    Контур синхронизации личных аккаунтов (кэш, состав портфеля, ордера) НАМЕРЕННОНЕ ВКЛЮЧЕН в этот файл расписания.
+    Синхронизация данных пользователя работает по событийно-ориентированной схеме:
+    1. В реальном времени — через демона вебсокетов (fb_websocket_daemon.py) при каждом чихе по API.
+    2. По запросу — напрямую из Telegram-бота (uport_ai_bot.py) при нажатии кнопки обновления.
+    Дублировать эти вызовы по Cron-таймеру здесь не нужно во избежание лишней нагрузки.
+    """

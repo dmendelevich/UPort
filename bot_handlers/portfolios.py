@@ -100,20 +100,28 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     # ЛОГИКА ОТРЕНДЕРИВАНИЯ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "assets":
         report_text += "📦 **Текущий состав ценных бумаг:**"
-        print("🔍 [ПОРТФЕЛЬ]: Извлекаю из СУБД список купленных активов для широких кнопок...")
+        print("🔍 [ПОРТФЕЛЬ]: Извлекаю из СУБД список купленных активов на основе связки с listings...")
         
         if p_id == 0:
+            # Сводный портфель всей семьи
             assets_query = """
-                SELECT t.full_ticker, SUM(a.quantity) as quantity, 
+                SELECT l.broker_symbol AS full_ticker, SUM(a.quantity) as quantity, 
                        EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(MAX(a.position_opened_at), CURRENT_TIMESTAMP)))::int AS holding_days
-                FROM public.assets a JOIN public.tickers t ON a.ticker_id = t.id
-                WHERE a.quantity > 0 GROUP BY t.full_ticker, t.symbol, t.suffix ORDER BY t.symbol ASC, t.suffix ASC;
+                FROM public.assets a 
+                JOIN public.listings l ON a.listing_id = l.id
+                WHERE a.quantity > 0 
+                GROUP BY l.broker_symbol 
+                ORDER BY l.broker_symbol ASC;
             """
         else:
+            # Конкретный личный портфель члена семьи
             assets_query = f"""
-                SELECT t.full_ticker, a.quantity, EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
-                FROM public.assets a JOIN public.tickers t ON a.ticker_id = t.id
-                WHERE a.portfolio_id = {p_id} AND a.quantity > 0 ORDER BY t.symbol ASC, t.suffix ASC;
+                SELECT l.broker_symbol AS full_ticker, a.quantity, 
+                       EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
+                FROM public.assets a 
+                JOIN public.listings l ON a.listing_id = l.id
+                WHERE a.portfolio_id = {p_id} AND a.quantity > 0 
+                ORDER BY l.broker_symbol ASC;
             """
         assets_res_raw = await execute_sql_async(assets_query)
         assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])

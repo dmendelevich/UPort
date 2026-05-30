@@ -104,14 +104,13 @@ class FreedomBrokerSyncManager:
             sql_wallet_update = f"UPDATE accounts SET cash_available = {available}, cash_reserved = {reserved}, last_updated = transaction_timestamp() WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
             self.db.execute_query(sql_wallet_update)
 
-        # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (ЧЕРЕЗ КИТОВ) ---
+        # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (ЧЕРЕЗ КИТОВ v3.0) ---
         synced_assets_count = 0
         if account_type == "trade" and portfolio_id:
-            active_ticker_ids = []
+            active_listing_ids = []
             total_market_value = 0
             
-            # ФИКСИРУЕМ ВРЕМЯ СТАРТА СЕССИИ (в формате базы данных)
-            # Запрашиваем текущее время у самой БД в начале этапа
+            # ФИКСИРУЕМ ВРЕМЯ СТАРТА СЕССИИ СИНКА
             time_res = self.db.execute_query("SELECT CURRENT_TIMESTAMP as now")
             session_start_time = time_res[0]['now']
 
@@ -127,48 +126,72 @@ class FreedomBrokerSyncManager:
 
                 total_market_value += market_val
                 
-                self.db.ensure_currency(currency)
-                self.db.ensure_ticker(full_ticker, currency)
+                # Запускаем Кит v3.0 с СУП-переводчиком имен Freedom Broker
+                ticker_id, listing_id = self.db.ensure_ticker_v2(
+                    broker_id=1, 
+                    broker_symbol=full_ticker, 
+                    fallback_currency=currency,
+                    fb_client=fb_client
+                )
                 
-                t_res = self.db.execute_query(f"SELECT id FROM tickers WHERE full_ticker = '{full_ticker}'")
-                ticker_id = int(t_res[0]['id'])
-                active_ticker_ids.append(ticker_id)
+                # Фиксируем интерес бумаги в watchlist со статусом 'bought'
+                self.db.ensure_watchlist_row(portfolio_id, listing_id, source_type="user")
+                self.db.execute_query(f"UPDATE public.watchlist SET status = 'bought'::public.ticker_lifecycle_status WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id};")
+                
+                active_listing_ids.append(listing_id)
 
-                asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND ticker_id = {ticker_id}"
+                # Проверяем, есть ли уже этот листинг в портфеле assets
+                asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id}"
                 asset_res = self.db.execute_query(asset_search)
 
                 if asset_res and len(asset_res) > 0:
-                    # Записываем точное время сессии
-                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, currency_id = '{currency}', last_updated = '{session_start_time}' WHERE id = {asset_res[0]['id']}"
+                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, last_updated = '{session_start_time}' WHERE id = {asset_res[0]['id']}"
                     self.db.execute_query(sql_asset_update)
                 else:
-                    # Записываем точное время сессии
                     sql_asset_insert = f"""
-                        INSERT INTO assets (portfolio_id, ticker_id, quantity, avg_price, currency_id, last_updated) 
-                        VALUES ({portfolio_id}, {ticker_id}, {quantity}, {avg_price}, '{currency}', '{session_start_time}') 
-                        ON CONFLICT (portfolio_id, ticker_id) 
+                        INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated) 
+                        VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}') 
+                        ON CONFLICT (portfolio_id, listing_id) 
                         DO UPDATE SET 
                             quantity = EXCLUDED.quantity, 
                             avg_price = EXCLUDED.avg_price, 
-                            currency_id = EXCLUDED.currency_id, 
                             last_updated = '{session_start_time}';
                     """
                     self.db.execute_query(sql_asset_insert)
 
-            # ЗАЩИТА: Очищаем фантомы ТОЛЬКО если от брокера пришла хотя бы одна живая бумага
-            if active_ticker_ids:
-                sql_cleanup = f"DELETE FROM assets WHERE portfolio_id = {portfolio_id} AND (last_updated < '{session_start_time}' OR last_updated IS NULL)"
-                self.db.execute_query(sql_cleanup)
-            else:
-                # Если позиций от брокера вообще не пришло, мы не удаляем всё слепо, 
-                # а сначала проверяем, пуст ли ответ или это сбой.
-                # Если вы точно знаете, что портфель пуст (продан в ноль), 
-                # можно раскомментировать строку ниже для полной очистки:
-                # self.db.execute_query(f"DELETE FROM assets WHERE portfolio_id = {portfolio_id}")
-                pass
+                    
+            # ИНТЕЛЛЕКТУАЛЬНАЯ БОРЬБА С ФАНТОМАМИ (КРУГОВОРОТ В WATCHLIST)
+            # Находим листинги, которые пропали из ответа брокера (проданы в ноль)
+            sql_find_phantoms = f"SELECT listing_id FROM assets WHERE portfolio_id = {portfolio_id} AND (last_updated < '{session_start_time}' OR last_updated IS NULL)"
+            phantom_rows = self.db.execute_query(sql_find_phantoms)
+            
+            if phantom_rows and isinstance(phantom_rows, list):
+                for p_row in phantom_rows:
+                    # 🔥 ЗАЩИТА: Пропускаем legacy-строки, у которых еще нет ID листинга
+                    if p_row.get('listing_id') is None:
+                        continue 
+                        
+                    ph_id = int(p_row['listing_id'])
+                    # Переводим бумагу инвестора в статус исторического контекста 'sold_out'
+                    print(f"♻️ [Sync Manager]: Листинг #{ph_id} продан в ноль. Перевожу в статус 'sold_out'...")
+                    self.db.execute_query(f"UPDATE public.watchlist SET status = 'sold_out'::public.ticker_lifecycle_status, updated_at = CURRENT_TIMESTAMP WHERE portfolio_id = {portfolio_id} AND listing_id = {ph_id};")
 
+            # 🔥 ФИКС ФАНТОМОВ v3.3: Исключаем живые, только что обновленные листинги из удаления!
+            if active_listing_ids:
+                # Превращаем список [1, 2, 3] в строку "1,2,3" для SQL-запроса
+                active_ids_str = ",".join(map(str, active_listing_ids))
+                
+                sql_cleanup = f"""
+                    DELETE FROM assets 
+                    WHERE portfolio_id = {portfolio_id} 
+                      AND listing_id NOT IN ({active_ids_str});
+                """
+                self.db.execute_query(sql_cleanup)
+
+
+            # Обновляем агрегированную долларовую стоимость активов счета в accounts
             self.db.execute_query(f"UPDATE accounts SET assets_value = {total_market_value} WHERE account_number = '{account_number}' AND currency_id = 'USD'")
-            synced_assets_count = len(active_ticker_ids)
+            synced_assets_count = len(active_listing_ids)
 
         # --- ЭТАП В: СИНХРОНИЗАЦИЯ ОРДЕРОВ (ЧЕРЕЗ КИТОВ ПЕРЕД ТРАНЗАКЦИЕЙ) ---
         try:
@@ -176,11 +199,22 @@ class FreedomBrokerSyncManager:
             if portfolio_id and account_type == "trade":
                 active_orders_list = fb_client.get_active_orders()
                 
-                # ЕДИНЫЙ ПРОТОКОЛ: Прогоняем каждый ордер через трех Китов ДО открытия транзакции
+                # ЕДИНЫЙ ПРОТОКОЛ: Прогоняем каждый ордер через Китов v3.0 ДО открытия транзакции
                 for order in active_orders_list:
                     self.db.ensure_currency(order['currency_id'])
                     self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, order['currency_id'])
-                    self.db.ensure_ticker(order['ticker'], order['currency_id'])
+                    
+                    # Гарантируем регистрацию листинга ордера через наш СУП-переводчик имен
+                    ord_ticker_id, ord_listing_id = self.db.ensure_ticker_v2(
+                        broker_id=1, 
+                        broker_symbol=order['ticker'], 
+                        fallback_currency=order['currency_id'],
+                        fb_client=fb_client
+                    )
+                    
+                    # Переводим листинг ордера в статус 'ordered', если он до этого просто изучался
+                    self.db.ensure_watchlist_row(portfolio_id, ord_listing_id, source_type="user")
+                    self.db.execute_query(f"UPDATE public.watchlist SET status = 'ordered'::public.ticker_lifecycle_status WHERE portfolio_id = {portfolio_id} AND listing_id = {ord_listing_id} AND status = 'considered'::public.ticker_lifecycle_status;")
                 
                 # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров
                 from database import Database
@@ -189,6 +223,7 @@ class FreedomBrokerSyncManager:
                     account_number=account_number, 
                     api_orders=active_orders_list
                 )
+
         except Exception as o_err:
             print(f"⚠️ Предупреждение: Не удалось обновить слепок приказов: {o_err}")
 

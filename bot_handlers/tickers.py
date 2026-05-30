@@ -97,16 +97,17 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             text += "📊 **Фундаментальные показатели бизнеса:**\n   *Для данного типа актива (ETF/Фонд) экономические мультипликаторы стоимости отсутствуют.*"
     else:
         # Вкладка Владение и Ордера (По умолчанию)
-        print("⏳ [ТИКЕР]: Выгружаю живые биржевые приказы из public.orders...")
+        print("⏳ [ТИКЕР]: Выгружаю живые биржевые приказы из академической public.orders...")
         text += "───────────────────\n⏳ **Живые биржевые приказы (Ордера):**\n"
         
-        # 🔥 ДИНАМИЧЕСКИЙ JOIN ВАЛЮТ: Достаем значки валют приказов напрямую из public.currencies
+        # 🔥 АКАДЕМИЧЕСКИЙ ЗАПРОС v3.0: Извлекаем значки валют приказов напрямую из listings -> currencies
         sql_live_orders = f"""
-            SELECT p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, o.broker_order_id, o.currency_id, cur.sign
+            SELECT p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, o.broker_order_id, cur.sign, l.broker_symbol
             FROM public.orders o
+            JOIN public.listings l ON o.listing_id = l.id
             JOIN public.portfolios p ON o.portfolio_id = p.id
-            JOIN public.currencies cur ON o.currency_id = cur.id
-            WHERE o.ticker_id = (SELECT id FROM public.tickers WHERE full_ticker = '{ticker_name}')
+            JOIN public.currencies cur ON l.currency_id = cur.id
+            WHERE l.broker_symbol = '{ticker_name.strip().upper()}'
               AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
         """
         live_orders_res = await execute_sql_async(sql_live_orders)
@@ -121,8 +122,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 price_p = float(ord_row['p'] or 0)
                 stop_price = float(ord_row['stop_price'] if ord_row['stop_price'] is not None else price_p)
                 
-                # Значок знака валюты ордера динамически прилетел из СУБД!
-                o_sign = ord_row['sign'] or ord_row['currency_id']
+                # Значок валюты ордера динамически прилетает из СУБД на основе листинга!
+                o_sign = ord_row['sign'] or "$"
                 p_name = ord_row['portfolio_name']
                 o_id = ord_row['broker_order_id']
                 
@@ -144,6 +145,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                              f"   👉 ID ордера FB: `{o_id}`\n\n")
         else:
             text += "   *Активных приказов по данной бумаге на бирже нет.*\n"
+
 
     # Нижняя навигация: возвращает на Экран 2 (к составу портфеля) без слёта шторок!
     builder.row(types.InlineKeyboardButton(text="🔙 К списку активов", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()))
