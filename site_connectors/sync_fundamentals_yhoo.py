@@ -65,6 +65,10 @@ def sync_fundamentals(db_instance):
             price_to_book = get_sql_val('priceToBook')
             ev_to_ebitda = get_sql_val('enterpriseToEbitda')
 
+            # 🔥 ДОКАЧКА ТЕКСТОВОГО ПАСПОРТА КОМПАНИИ
+            sector_val = info.get('sector', 'Unknown Sector').replace("'", "''")
+            industry_val = info.get('industry', 'Unknown Industry').replace("'", "''")
+
             debt_to_equity = get_sql_val('debtToEquity')
             current_ratio = get_sql_val('currentRatio')
             quick_ratio = get_sql_val('quickRatio')
@@ -81,6 +85,32 @@ def sync_fundamentals(db_instance):
             target_mean_price = get_sql_val('targetMeanPrice')
             recommendation_mean = get_sql_val('recommendationMean')
 
+            # 🔥 ДОКАЧКА НОВЫХ ПАРАМЕТРОВ v3.8 (ПО ВАШЕМУ СТАНДАРТУ get_sql_val)
+            # 1. Числовые темпы роста — пропускаем через вашу микро-функцию
+            # Числовые темпы роста — пропускаем через вашу микро-функцию
+            revenue_growth_sql = get_sql_val('revenueGrowth')
+            earnings_growth_sql = get_sql_val('earningsGrowth')
+
+            # Математический каскад со строковым форматированием для пробития ограничений БД
+            val_exp = get_sql_val('expenseRatio')
+            if val_exp != "NULL":
+                expense_ratio_sql = str(float(val_exp))
+            else:
+                val_net_exp = get_sql_val('netExpenseRatio')
+                if val_net_exp != "NULL":
+                    expense_ratio_sql = str(float(val_net_exp) / 100)
+                else:
+                    expense_ratio_sql = "NULL"
+                                
+            # 2. Текстовое описание бизнеса — забираем безопасно как строку
+            # Экранируем одинарные кавычки ("'" на "''"), чтобы SQL-запрос не падал
+            raw_summary = info.get('longBusinessSummary')
+            if raw_summary is not None:
+                summary_val = str(raw_summary).strip().replace("'", "''")
+            else:
+                summary_val = "No summary available"
+
+
             # Формируем точечный UPDATE-запрос для карточки тикера
             sql_update = f"""
                 UPDATE public.tickers 
@@ -92,9 +122,16 @@ def sync_fundamentals(db_instance):
                     return_on_equity = {return_on_equity}, return_on_assets = {return_on_assets},
                     dividend_yield = {dividend_yield}, payout_ratio = {payout_ratio}, free_cash_flow = {free_cash_flow},
                     target_mean_price = {target_mean_price}, recommendation_mean = {recommendation_mean},
+                    sector = '{sector_val}', industry = '{industry_val}',
+                    long_business_summary = '{summary_val}',
+                    revenue_growth = {revenue_growth_sql},
+                    earnings_growth = {earnings_growth_sql},
+                    expense_ratio = {expense_ratio_sql},
                     last_updated_at = CURRENT_TIMESTAMP
                 WHERE id = {t_id};
             """
+
+
             db_instance.execute_query(sql_update)
             
         except Exception as e:

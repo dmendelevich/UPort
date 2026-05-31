@@ -185,30 +185,35 @@ async def etf_queue_worker_loop(db_instance):
                         if not comp_sym or weight == 0:
                             continue
                             
-                        comp_sym = str(comp_sym).strip().upper()
-                        comp_full_ticker = f"{comp_sym}.{suffix}"
+                        # 🔥 ВОРКЕР ETF v3.7: Компонент от Yahoo изначально глобален (напр. ANTO.L)
+                        # Передаем его в ядро как есть, без принудительной склейки суффикса .US
+                        comp_global_symbol = str(comp_sym).strip().upper()
                         
-                        # Рекурсивно создаем тикер в базе
-                        await asyncio.to_thread(db_instance.ensure_ticker, comp_full_ticker, currency_id, broker_id)
+                        # 🔥 КИТ v3.7: Рекурсивно создаем стерильный тикер в базе и получаем IDs.
+                        # Так как fb_client в планировщике недоступен, передаем None — 
+                        # если компонента нет в базе, он создастся по дефолту с чистым символом (ANTO.L)
+                        comp_id, comp_listing_id = await asyncio.to_thread(
+                            db_instance.ensure_ticker_v2,
+                            broker_id=broker_id,
+                            broker_symbol=comp_global_symbol,
+                            fallback_currency=currency_id,
+                            fb_client=None
+                        )
                         
-                        if comp_name != "Unknown":
-                            clean_comp_name = comp_name.replace("'", "")
-                            await asyncio.to_thread(db_instance.execute_query, f"UPDATE public.tickers SET company_name = '{clean_comp_name}' WHERE full_ticker = '{comp_full_ticker}' AND (company_name IS NULL OR company_name = '');")
-                        
-                        comp_info = await asyncio.to_thread(db_instance.execute_query, f"SELECT id FROM public.tickers WHERE full_ticker = '{comp_full_ticker}';")
-                        
-                        # 🔥 ИСПРАВЛЕНО: Извлекаем первый элемент списка СРАЗУ, если шлюз вернул list
-                        if isinstance(comp_info, list) and len(comp_info) > 0:
-                            comp_row = comp_info[0] # Берем первый словарь из списка!
-                        elif isinstance(comp_info, dict):
-                            comp_row = comp_info
-                        else:
-                            comp_row = {}
-
-                        comp_id = comp_row.get('id')
                         if not comp_id:
                             continue
+                        
+                        # Мягко обогащаем название компании в tickers строго по числовому ID
+                        if comp_name != "Unknown":
+                            clean_comp_name = comp_name.replace("'", "")
+                            sql_update_name = f"""
+                                UPDATE public.tickers 
+                                SET company_name = '{clean_comp_name}' 
+                                WHERE id = {comp_id} AND (company_name IS NULL OR company_name = '' OR company_name = 'Unknown Company');
+                            """
+                            await asyncio.to_thread(db_instance.execute_query, sql_update_name)
 
+                        # Записываем связь в etf_holdings по чистым глобальным ID
                         sql_insert_link = f"""
                             INSERT INTO public.etf_holdings (etf_ticker_id, component_ticker_id, weight_percentage)
                             VALUES ({t_id}, {comp_id}, {weight})
@@ -216,6 +221,7 @@ async def etf_queue_worker_loop(db_instance):
                             DO UPDATE SET weight_percentage = EXCLUDED.weight_percentage, last_updated_at = CURRENT_TIMESTAMP;
                         """
                         await asyncio.to_thread(db_instance.execute_query, sql_insert_link)
+
                         
                     logging.info(f"✅ [Очередь ETF Успех]: Структура фонда {full_ticker} успешно разобрана конвейером.")
                 else:

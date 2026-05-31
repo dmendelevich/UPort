@@ -20,13 +20,17 @@ async def execute_sql_async(sql_query: str) -> list:
     return await asyncio.to_thread(db_bot.execute_query, sql_query)
 
 
-def get_main_menu_keyboard() -> types.InlineKeyboardMarkup:
-    """Генерирует пульт Главного меню."""
+def get_main_menu_keyboard(is_admin: bool = False) -> types.InlineKeyboardMarkup:
+    """Генерирует пульт Главного меню на основе флага из памяти FSM."""
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены на рынке", callback_data=MenuAction(action="update_prices").pack()))
-    # 🛠️ Наша админ-разминка: Кнопка бэклога, упакованная по единому стандарту фабрики
     builder.row(types.InlineKeyboardButton(text="🛠️ Бэклог разработки", callback_data=MenuAction(action="backlog_main").pack()))
+    
+    # ⚙️ Проверяем гибкий флаг админа. Кнопка доступна вам (и сыну в будущем)
+    if is_admin:
+        builder.row(types.InlineKeyboardButton(text="⚙️ Настройки системы", callback_data=MenuAction(action="settings_main").pack()))
+        
     return builder.as_markup()
 
 
@@ -41,24 +45,46 @@ def get_back_to_menu_keyboard() -> types.InlineKeyboardMarkup:
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    """Ловит команду /start, сносит зависшие FSM и генерирует Главное меню."""
+    """Ловит команду /start, один раз проверяет админ-права в БД и сохраняет в FSM."""
     await state.clear()
+    
+    is_admin = False
+    try:
+        # Ищем флаг is_admin напрямую по Telegram ID
+        user_check = db_bot.execute_query(f"SELECT is_admin FROM public.users WHERE telegram_id = {message.from_user.id} LIMIT 1;")
+        if user_check and isinstance(user_check, list) and len(user_check) > 0:
+            user_row = user_check[0] if isinstance(user_check, list) else user_check
+            # Поддерживаем разные типы ответов шлюза (bool или строку)
+            is_admin = str(user_row.get('is_admin')).lower() in ('true', '1', 't')
+    except Exception as e:
+        print(f"⚠️ Ошибка определения админ-прав при старте: {e}")
+
+    # Запираем флаг в память текущей сессии
+    await state.update_data(is_admin=is_admin)
+
     await message.answer(
         f"Привет, {message.from_user.full_name}! Система UPort готова к работе.\n"
         f"Управляйте семейным капиталом через интерактивный пульт:",
-        reply_markup=get_main_menu_keyboard()
+        reply_markup=get_main_menu_keyboard(is_admin=is_admin)
     )
 
 
 @router.callback_query(MenuAction.filter(F.action == "main_menu"))
 async def process_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
-    """Возврат из любой шторки обратно в Главное меню."""
+    """Возврат из любой шторки обратно в Главное меню (без повторных запросов к БД)."""
     await callback.answer()
+    
+    # Извлекаем сохраненную роль из памяти сессии
+    user_data = await state.get_data()
+    is_admin = user_data.get("is_admin", False)
+    
     await state.clear()
+    await state.update_data(is_admin=is_admin)
+    
     try:
         await callback.message.edit_text(
             "📱 Главное меню системы UPort. Выберите действие:", 
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(is_admin=is_admin)
         )
     except TelegramBadRequest:
         pass
@@ -69,7 +95,6 @@ async def process_summary_callback(callback: types.CallbackQuery):
     """Экран Уровня 1: Выводит агрегированную сводку акций и мультивалютного кэша семьи."""
     await callback.answer("Запрашиваю сводку...")
 
-    # Вызываем тяжелую функцию расчета семейной сводки из ядра базы
     summary = await asyncio.to_thread(db_bot.get_family_summary, callback.from_user.id)
     if not summary:
         await callback.message.edit_text(
@@ -78,7 +103,6 @@ async def process_summary_callback(callback: types.CallbackQuery):
         )
         return
 
-    # 🔥 ДИНАМИЧЕСКИЙ ЗНАЧОК: Берётся прямо из СУБД (из таблицы public.currencies, где мы исправили рубль!)
     sign = summary.get("currency_sign", "$")
     
     text = (
@@ -93,7 +117,6 @@ async def process_summary_callback(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     
-    # Динамически выстраиваем кнопки для личных портфелей членов семьи
     for p in summary["portfolios"]:
         icon = "👤" if p["is_owner"] else "💼"
         builder.row(types.InlineKeyboardButton(
@@ -101,7 +124,6 @@ async def process_summary_callback(callback: types.CallbackQuery):
             callback_data=MenuAction(action="view_portfolio", portfolio_id=p['id'], sub_view="").pack()
         ))
     
-    # Кнопка Сводного портфеля всей семьи (portfolio_id = 0)
     builder.row(types.InlineKeyboardButton(text="📦 Сводный портфель семьи", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="").pack()))
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
     

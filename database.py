@@ -99,34 +99,33 @@ class Database:
 
     def ensure_ticker_v2(self, broker_id: int, broker_symbol: str, fallback_currency: str = "USD", fb_client = None) -> tuple:
         """
-        Кит №3 (Академический v3.0): Гарантирует наличие эмитента в tickers и листинга в listings.
-        Использует СУП-переводчик имен для Freedom Broker и кэширование СУБД.
-        Возвращает кортеж: (ticker_id, listing_id)
+        Кит №3 (Академический v3.7): Универсальный поисковик тикеров без обрезки точек.
+        Записывает в tickers.symbol строго чистую мировую истину без суффиксов брокера.
         """
         broker_symbol_clean = broker_symbol.strip().upper()
         
-        # 1. СНАЙПЕРСКАЯ ПРОВЕРКА КЭША СУБД (Работает за микросекунды)
+        # 1. СНАЙПЕРСКАЯ ПРОВЕРКА КЭША СУБД (0 запросов в сеть)
         sql_check = f"SELECT id, ticker_id FROM public.listings WHERE broker_id = {broker_id} AND broker_symbol = '{broker_symbol_clean}';"
-        # 🔥 ФИКС КЭША v3.1: Извлекаем первый словарь из списка ответов шлюза
         cache_res = self.execute_query(sql_check)
         if cache_res and isinstance(cache_res, list) and len(cache_res) > 0:
-            row = cache_res[0]  # Берем первый словарь из массива!
+            row = cache_res[0]
             if isinstance(row, dict) and row.get('id') and row.get('ticker_id'):
                 return int(row['ticker_id']), int(row['id'])
 
-        # 2. ИНИЦИАЛИЗАЦИЯ ДЕФОЛТНЫХ ЗНАЧЕНИЙ НА СЛУЧАЙ СБОЯ API БРОКЕРА
-        symbol = broker_symbol_clean.split(".", 1)[0] if "." in broker_symbol_clean else broker_symbol_clean
+        # 2. ИНИЦИАЛИЗАЦИЯ ДЕФОЛТОВ НА СЛУЧАЙ СБОЯ СЕТИ БРОКЕРА
+        symbol = broker_symbol_clean
         isin = "UNKNOWN"
         comp_name = "Unknown Company"
         currency_id = fallback_currency.upper()
 
-        # 3. СУП-ПЕРЕВОДЧИК ИМЕН ДЛЯ FREEDOM BROKER (ID = 1)
+        # 3. СУП-ПЕРЕВОДЧИК ИМЕН (1 контролируемый запрос в сеть)
         if broker_id == 1 and fb_client is not None:
             try:
                 print(f"📡 [Ядро СУП]: Новый инструмент! Запрашиваю спецификацию Freedom Broker для '{broker_symbol_clean}'...")
                 sec_info = fb_client.get_security_info(broker_symbol_clean)
-                
-                if sec_info and isinstance(sec_info, dict):
+                if sec_info and isinstance(sec_info, dict) and "error" not in sec_info:
+                    # 🔥 ИЗВЛЕКАЕМ МИРОВУЮ ИСТИНУ: забираем готовый глобальный тикер (напр. 'ANTO.L')
+                    # Больше никакой Python-обрезки по первой точке!
                     fetched_symbol = sec_info.get('default_ticker') or sec_info.get('ticker') or sec_info.get('char_code')
                     if fetched_symbol:
                         symbol = str(fetched_symbol).strip().upper()
@@ -137,35 +136,29 @@ class Database:
                     if sec_info.get('currency'):
                         currency_id = str(sec_info['currency']).strip().upper()
             except Exception as sup_err:
-                print(f"⚠️ [Ядро СУП WARNING]: Не удалось получить данные из СУП FB: {sup_err}")
+                print(f"⚠️ [Ядро СУП WARNING]: Ошибка СУП FB: {sup_err}")
 
-        # 4. СИНХРОНИЗАЦИЯ ГЛОБАЛЬНОГО СПРАВОЧНИКА (public.tickers)
+        # 4. СИНХРОНИЗАЦИЯ СТЕРИЛЬНОГО СПРАВОЧНИКА TICKERS (3NF)
         self.ensure_currency(currency_id)
         
-        # Переносим брокерский full_ticker для legacy-поддержки старых кусков системы
-        suffix = broker_symbol_clean.split(".", 1)[1] if "." in broker_symbol_clean else "US"
+        # Убраны legacy-колонки full_ticker, suffix, broker_id. Пишем только мировой symbol!
         sql_insert_ticker = f"""
-            INSERT INTO public.tickers (symbol, suffix, full_ticker, currency_id, broker_id, isin, company_name)
-            VALUES ('{symbol}', '{suffix}', '{broker_symbol_clean}', '{currency_id}', {broker_id}, '{isin}', '{comp_name}')
-            ON CONFLICT (full_ticker) 
-            DO UPDATE SET isin = CASE WHEN public.tickers.isin = 'UNKNOWN' THEN EXCLUDED.isin ELSE public.tickers.isin END,
-                          company_name = CASE WHEN public.tickers.company_name IS NULL OR public.tickers.company_name = 'Unknown Company' OR public.tickers.company_name = '' THEN EXCLUDED.company_name ELSE public.tickers.company_name END
-            RETURNING id;
+            INSERT INTO public.tickers (symbol, company_name, isin)
+            VALUES ('{symbol}', '{comp_name}', '{isin}')
+            ON CONFLICT (symbol) 
+            DO UPDATE SET isin = CASE WHEN public.tickers.isin = 'UNKNOWN' THEN EXCLUDED.isin ELSE public.tickers.isin END;
         """
-        t_res = self.execute_query(sql_insert_ticker)
-        t_row = t_res[0] if t_res and isinstance(t_res, list) and len(t_res) > 0 else (t_res if isinstance(t_res, dict) else {})
-        ticker_id = t_row.get('id')
+        self.execute_query(sql_insert_ticker)
         
-        if not ticker_id:
-            # Резервный SELECT на случай race condition с безопасным извлечением [0]
-            t_get = self.execute_query(f"SELECT id FROM public.tickers WHERE full_ticker = '{broker_symbol_clean}';")
-            t_get_row = t_get[0] if t_get and isinstance(t_get, list) and len(t_get) > 0 else (t_get if isinstance(t_get, dict) else {})
-            ticker_id = t_get_row.get('id')
+        # Надежно забираем сгенерированный ID
+        t_get = self.execute_query(f"SELECT id FROM public.tickers WHERE symbol = '{symbol}';")
+        t_row = t_get[0] if t_get and isinstance(t_get, list) and len(t_get) > 0 else {}
+        ticker_id = t_row.get('id')
 
         if not ticker_id:
-            raise RuntimeError(f"Критическая ошибка ядра: Не удалось сгенерировать ticker_id для {broker_symbol_clean}")
+            raise RuntimeError(f"Критическая ошибка ядра: Не удалось сгенерировать ticker_id для {symbol}")
 
-        # 5. СИНХРОНИЗАЦИЯ ТАБЛИЦЫ-ПЕРЕСЕЧЕНИЯ (public.listings)
+        # 5. СИНХРОНИЗАЦИЯ ТАБЛИЦЫ-ПЕРЕСЕЧЕНИЯ (listings)
         sql_insert_listing = f"""
             INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id)
             VALUES ({ticker_id}, {broker_id}, '{broker_symbol_clean}', '{currency_id}')
@@ -173,33 +166,24 @@ class Database:
         """
         self.execute_query(sql_insert_listing)
         
-        # Безопасный забор сгенерированного listing_id с извлечением [0]
         l_res = self.execute_query(f"SELECT id FROM public.listings WHERE broker_id = {broker_id} AND broker_symbol = '{broker_symbol_clean}';")
-        l_row = l_res[0] if l_res and isinstance(l_res, list) and len(l_res) > 0 else (l_res if isinstance(l_res, dict) else {})
+        l_row = l_res[0] if l_res and isinstance(l_res, list) and len(l_res) > 0 else {}
         listing_id = l_row.get('id')
 
         if not listing_id:
             raise RuntimeError(f"Критическая ошибка ядра: Не удалось сгенерировать listing_id для {broker_symbol_clean}")
 
-        # 6. ПОСТАНОВКА В ФОНОВУЮ ОЧЕРЕДЬ ETF LOOK-THROUGH
+        # 6. ПОСТАНОВКА В ОЧЕРЕДЬ ETF LOOK-THROUGH
         try:
             check_h = self.execute_query(f"SELECT 1 FROM public.etf_holdings WHERE etf_ticker_id = {ticker_id} LIMIT 1;")
             if not check_h:
-                task_data = {"id": ticker_id, "symbol": symbol, "suffix": suffix, "full_ticker": broker_symbol_clean, "currency_id": currency_id, "broker_id": broker_id}
+                # Передаем чистый мировой символ компонента в очередь
+                task_data = {"id": int(ticker_id), "symbol": symbol, "suffix": "US", "full_ticker": broker_symbol_clean, "currency_id": currency_id, "broker_id": broker_id}
                 ETF_LOOK_THROUGH_QUEUE.put_nowait(task_data)
         except Exception as q_err:
             print(f"⚠️ Предупреждение постановки {symbol} в ETF очередь: {q_err}")
 
-        # 🔍 ТЩАТЕЛЬНАЯ ДИАГНОСТИКА ЯДРА ПЕРЕД ВОЗВРАТОМ
-        print(f"🧪 [ДЕБАГ ЯДРА]: Текстовый символ: '{broker_symbol_clean}' | ID Тикера (тип {type(ticker_id)}): {ticker_id} | ID Листинга (тип {type(listing_id)}): {listing_id}")
-        
-        try:
-            return int(ticker_id), int(listing_id)
-        except Exception as int_err:
-            print(f"🚨 [КРИТ ВСПЫШКА В ЯДРЕ]: Ошибка приведения к int! ticker_id={ticker_id}, listing_id={listing_id}. Ошибка: {int_err}")
-            raise int_err
-
-
+        return int(ticker_id), int(listing_id)
 
     def ensure_watchlist_row(self, portfolio_id: int, listing_id: int, source_type: str = "user"):
         """Гарантирует, что бумага присутствует в списке наблюдения со статусом considered."""
