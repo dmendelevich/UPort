@@ -148,17 +148,17 @@ class FreedomBrokerSyncManager:
                     sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, last_updated = '{session_start_time}' WHERE id = {asset_res[0]['id']}"
                     self.db.execute_query(sql_asset_update)
                 else:
+                    # 🔥 ЗАПИРАЕМ ХОЛДИНГ-ДНИ: При первой записи жестко фиксируем position_opened_at
                     sql_asset_insert = f"""
-                        INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated) 
-                        VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}') 
+                        INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at) 
+                        VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}', '{session_start_time}') 
                         ON CONFLICT (portfolio_id, listing_id) 
                         DO UPDATE SET 
                             quantity = EXCLUDED.quantity, 
                             avg_price = EXCLUDED.avg_price, 
-                            last_updated = '{session_start_time}';
+                            last_updated = '{session_start_time}'; 
                     """
                     self.db.execute_query(sql_asset_insert)
-
                     
             # ИНТЕЛЛЕКТУАЛЬНАЯ БОРЬБА С ФАНТОМАМИ (КРУГОВОРОТ В WATCHLIST)
             # Находим листинги, которые пропали из ответа брокера (проданы в ноль)

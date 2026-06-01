@@ -33,19 +33,33 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
 
     meta = passport["meta"]
     
-    # Формируем базовую текстовую шапку экрана портфеля
+    # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (ДЛЯ КРАСИВОЙ ШАПКИ)
     if p_id == 0:
-        report_text = f"📦 **{meta['name']} (Без перегородок)**\n"
-        # 🔥 ДИНАМИЧЕСКИЙ JOIN ВАЛЮТ: Вытаскиваем значки знаков валют (sign) прямо из public.currencies!
+        assets_query = """
+            SELECT l.broker_symbol AS full_ticker, SUM(a.quantity) as quantity,
+                   MIN(a.listing_id) as listing_id,
+                   AVG(a.avg_price) as avg_price, AVG(l.last_price) as last_price,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(MAX(a.position_opened_at), CURRENT_TIMESTAMP)))::int AS holding_days
+            FROM public.assets a 
+            JOIN public.listings l ON a.listing_id = l.id
+            WHERE a.quantity > 0 
+            GROUP BY l.broker_symbol 
+            ORDER BY l.broker_symbol ASC;
+        """
         cash_query = """
             SELECT a.account_number, a.account_type, a.currency_id, a.cash_available, a.cash_reserved, cur.sign
             FROM public.accounts a
             JOIN public.currencies cur ON a.currency_id = cur.id;
         """
     else:
-        report_text = f"📋 **Детали портфеля: {meta['name']}**\n"
-        report_text += f"👤 Владелец: {meta['name']} | 🎯 Стратегия: `{meta['strategy']}`\n"
-        # 🔥 ДИНАМИЧЕСКИЙ JOIN ВАЛЮТ: Вытаскиваем значки знаков валют (sign) прямо из public.currencies!
+        assets_query = f"""
+            SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
+            FROM public.assets a 
+            JOIN public.listings l ON a.listing_id = l.id
+            WHERE a.portfolio_id = {p_id} AND a.quantity > 0 
+            ORDER BY l.broker_symbol ASC;
+        """
         cash_query = f"""
             SELECT a.account_number, a.account_type, a.currency_id, a.cash_available, a.cash_reserved, cur.sign
             FROM public.accounts a
@@ -53,7 +67,43 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             WHERE a.portfolio_id = {p_id};
         """
 
-    print("🗄️ [ПОРТФЕЛЬ]: Запрашиваю мультивалютный кэш с динамическими значками из СУБД...")
+    assets_res_raw = await execute_sql_async(assets_query)
+    assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])
+
+    # Считаем совокупные финансовые показатели акций
+    total_assets_cost_usd = 0.0
+    total_assets_profit_usd = 0.0
+    
+    for asset in assets_res:
+        qty = float(asset['quantity'] or 0)
+        avg_p = float(asset['avg_price'] or 0)
+        last_p = float(asset['last_price'] or 0)
+        
+        cost_basis = qty * avg_p
+        market_val = qty * last_p
+        profit = market_val - cost_basis
+        
+        total_assets_cost_usd += market_val
+        total_assets_profit_usd += profit
+
+    total_profit_pct = (total_assets_profit_usd / (total_assets_cost_usd - total_assets_profit_usd) * 100) if (total_assets_cost_usd - total_assets_profit_usd) > 0 else 0.0
+    profit_sign = "+" if total_assets_profit_usd >= 0 else ""
+
+    # 3. ФОРМИРОВАНИЕ СТЕРИЛЬНОЙ И ДОРОГОЙ ШАПКИ (БЕЗ ДАМПА И ЛИШНИХ СЛОВ)
+    if p_id == 0:
+        report_text = f"📦 **{meta.get('name', 'Сводный')} (Без перегородок)**\n"
+    else:
+        # Теперь u.name ("ЕАМ") и p.name ("П136") стоят на своих местах без лишних знаков ":"
+        report_text = f"📦 **ПОРТФЕЛЬ {meta.get('name', '')}**\n"
+        report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
+        report_text += f"💼 `{meta.get('strategy', 'Not Set')}`\n"
+
+    report_text += f"───────\n"
+    report_text += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
+    report_text += f"• Общая стоимость: **${total_assets_cost_usd:,.2f}**\n"
+    report_text += f"• Чистая прибыль: **{profit_sign}${total_assets_profit_usd:,.2f} ({profit_sign}{total_profit_pct:.1f}%)**\n\n"
+
+    # Сборка мультивалютного кэша
     cash_res = await execute_sql_async(cash_query)
     if not isinstance(cash_res, list):
         cash_res = [cash_res] if cash_res else []
@@ -65,29 +115,33 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         available = float(c['cash_available'])
         reserved = float(c['cash_reserved'])
         free = available - reserved
-        # Знак валюты (sign) теперь честно и динамически прилетел из базы данных!
         o_sign = c['sign'] or c['currency_id']
         
         if c['account_type'] == 'trade' and (available != 0 or reserved != 0):
-            trade_cash_lines.append(f"   • {c['currency_id']}: {o_sign}{available:,.2f} (🔓 {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
+            # Внедрен голубь свободы 🕊️ вместо открытого замка
+            trade_cash_lines.append(f"• {c['currency_id']}: {o_sign}{available:,.2f} (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
         elif c['account_type'] == 'deposit' and available != 0:
-            deposit_cash_lines.append(f"   • {c['currency_id']}: {o_sign}{available:,.2f}")
+            # Убран лишний отступ
+            deposit_cash_lines.append(f"• {c['currency_id']}: {o_sign}{available:,.2f}")
 
-    report_text += f"───────────────────\n"
-    if trade_cash_lines:
-        report_text += "💵 **Кэш на торговых счетах:**\n" + "\n".join(trade_cash_lines) + "\n"
-    if deposit_cash_lines:
-        report_text += "💰 **Накопительные D-счета:**\n" + "\n".join(deposit_cash_lines) + "\n"
+    if trade_cash_lines or deposit_cash_lines:
+        report_text += "💵 **КЭШ НА СЧЕТАХ:**\n"
+        if trade_cash_lines:
+            report_text += "\n".join(trade_cash_lines) + "\n"
+        if deposit_cash_lines:
+            report_text += "💰 **Накопительные D-счета:**\n" + "\n".join(deposit_cash_lines) + "\n"
 
-    # Выводим блок Бронебойного Соответствия Инвестиционной Декларации (IPS)
-    report_text += f"───────────────────\n"
-    report_text += f"🛡️ **Соответствие стратегии {meta['name']}:**\n"
-    if passport["violations"]:
-        for v in passport["violations"]:
-            report_text += f" {v}\n"
-    else:
-        report_text += " ✅ Все лимиты и налоговые риски портфеля соответствуют стратегии.\n"
-    report_text += f"───────────────────\n"
+    # Нарушения лимитов IPS отображаются ТОЛЬКО на вкладке паспорта
+    if view == "passport":
+        report_text += f"───────\n"
+        report_text += f"🛡️ **Соответствие стратегии {meta['name']}:**\n"
+        if passport["violations"]:
+            for v in passport["violations"]:
+                report_text += f" {v}\n"
+        else:
+            report_text += " ✅ Все лимиты и налоговые риски портфеля соответствуют стратегии.\n"
+
+    report_text += f"───────\n"
 
     builder = InlineKeyboardBuilder()
 
@@ -97,46 +151,59 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         types.InlineKeyboardButton(text="📊 Паспорт качества", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport").pack())
     )
 
-    # ЛОГИКА ОТРЕНДЕРИВАНИЯ ВНУТРЕННОСТЕЙ ШТОРОК
+    # 4. ЛОГИКА ОТРЕНДЕРИВАНИЯ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "assets":
         report_text += "📦 **Текущий состав ценных бумаг:**"
-        print("🔍 [ПОРТФЕЛЬ]: Извлекаю из СУБД список купленных активов на основе связки с listings...")
         
-        if p_id == 0:
-            # Сводный портфель всей семьи
-            assets_query = """
-                SELECT l.broker_symbol AS full_ticker, SUM(a.quantity) as quantity, 
-                       EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(MAX(a.position_opened_at), CURRENT_TIMESTAMP)))::int AS holding_days
-                FROM public.assets a 
-                JOIN public.listings l ON a.listing_id = l.id
-                WHERE a.quantity > 0 
-                GROUP BY l.broker_symbol 
-                ORDER BY l.broker_symbol ASC;
-            """
-        else:
-            # Конкретный личный портфель члена семьи
-            assets_query = f"""
-                SELECT l.broker_symbol AS full_ticker, a.quantity, 
-                       EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
-                FROM public.assets a 
-                JOIN public.listings l ON a.listing_id = l.id
-                WHERE a.portfolio_id = {p_id} AND a.quantity > 0 
-                ORDER BY l.broker_symbol ASC;
-            """
-        assets_res_raw = await execute_sql_async(assets_query)
-        assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])
-
         if assets_res:
             for asset in assets_res:
-                ticker = asset['full_ticker']
-                qty = float(asset['quantity'])
+                broker_ticker = asset['full_ticker']
+                qty = float(asset['quantity'] or 0)
+                avg_p = float(asset['avg_price'] or 0)
+                last_p = float(asset['last_price'] or 0)
                 days = int(asset['holding_days'] or 0)
                 
-                # Добавляем широкую интерактивную кнопку-строку во весь ряд
+                # Очищаем тикер от суффикса брокера для кнопки (AAPL.US -> AAPL)
+                clean_ticker = broker_ticker[:-3] if broker_ticker.endswith(".US") else broker_ticker
+                
+                # Математика прибыли конкретной позиции
+                position_cost = qty * avg_p
+                position_market = qty * last_p
+                position_profit = position_market - position_cost
+                position_profit_pct = (position_profit / position_cost * 100) if position_cost > 0 else 0.0
+                
+                # Логика цветных кристаллов статуса и знаков
+                if position_profit > 0.01:
+                    crystal = "🟢"
+                    p_sign = "+"
+                elif position_profit < -0.01:
+                    crystal = "🔴"
+                    p_sign = ""  # Минус у float проставится автоматически
+                else:
+                    crystal = "🔹"
+                    p_sign = "+"
+
+                # Превращаем количество в целое число, если нет дробной части
+                clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
+                
+                # Строим аккуратный, сгруппированный текст кнопки с ровными отступами •
+                button_text = f"{crystal} {clean_ticker} • {clean_qty}шт • {p_sign}${position_profit:,.2f} ({p_sign}{position_profit_pct:.1f}%) • {days}д"
+                
+                # 🔥 РЕЛЯЦИОННЫЙ ШАГ v3.8: Находим в asset реальный id листинга из БД
+                l_id = int(asset.get('listing_id') or 0) if 'listing_id' in asset else 0
+                
+                # Теперь кнопка несет в себе жесткий числовой ID листинга! Текстовые угадайки стерты.
+                # Теперь кнопка несет и жесткий числовой ID листинга, и имя для страховки Aiogram!
                 builder.row(types.InlineKeyboardButton(
-                    text=f"🔹 {ticker} | {qty:,.2f} шт. | {days}д.",
-                    callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, ticker_name=ticker, sub_view="owner").pack()
-                ))
+                    text=button_text,
+                    callback_data=MenuAction(
+                        action="view_ticker", 
+                        portfolio_id=p_id, 
+                        listing_id=l_id, 
+                        ticker_name=broker_ticker,
+                        sub_view="owner"
+                    ).pack()
+                ))        
         else:
             report_text += "\n   *Ценные бумаги в данном портфеле отсутствуют.*"
 
@@ -158,8 +225,6 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             f" • Совокупные дивиденды: **{avg['dividend_yield']:.2f}%**\n"
             f" • Общий свободный кэш компаний: **${avg['free_cash_flow_m']:,.1f}M**\n"
         )
-    else:
-        report_text += "👉 *Нажмите кнопку «Состав портфеля» для списка бумаг или «Паспорт качества» для анализа финансовых мультипликаторов Yahoo.*"
 
     # Нижний сервисный блок навигации
     builder.row(types.InlineKeyboardButton(text="🔙 К общей сводке", callback_data=MenuAction(action="show_summary").pack()))

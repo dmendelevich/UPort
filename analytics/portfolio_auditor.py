@@ -19,10 +19,13 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
         }
     else:
         p_sql = f"""
-            SELECT name, strategy_type, risk_profile, min_cash_reserve_pct, 
-                   max_ticker_weight_pct, max_portfolio_div_yield_pct, target_return_pct
-            FROM public.portfolios WHERE id = {portfolio_id};
+            SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type, p.risk_profile, 
+                   p.min_cash_reserve_pct, p.max_ticker_weight_pct, p.max_portfolio_div_yield_pct, p.target_return_pct
+            FROM public.portfolios p
+            JOIN public.users u ON p.owner_id = u.id
+            WHERE p.id = {portfolio_id};
         """
+
         p_res = db_instance.execute_query(p_sql)
         if not p_res:
             logging.error(f"❌ Портфель с ID {portfolio_id} не найден при аудите.")
@@ -180,10 +183,14 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     return {
         "portfolio_id": portfolio_id,
         "meta": {
-            "name": limits.get("name", f"Портфель #{portfolio_id}"), 
+            "name": limits.get("portfolio_name", f"Портфель #{portfolio_id}"), 
+            "owner": limits.get("owner_name", "Unknown"),
             "strategy": limits.get("strategy_type", "Not Set"), 
             "risk": limits.get("risk_profile", "Moderate"),
-            "total_value_usd": total_portfolio_value_usd, "cash_usd": total_cash_usd, "cash_pct": fact_cash_pct, "assets_usd": total_assets_usd
+            "total_value_usd": total_portfolio_value_usd, 
+            "cash_usd": total_cash_usd, 
+            "cash_pct": fact_cash_pct, 
+            "assets_usd": total_assets_usd
         },
         "averages": {
             "pe_trailing": final_pe_trailing, "pe_forward": final_pe_forward, "peg_ratio": final_peg,

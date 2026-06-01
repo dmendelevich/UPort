@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
@@ -8,7 +9,7 @@ from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
-# Импортируем наш аналитический модуль аудита тикеров
+# Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
 from analytics.portfolio_auditor import audit_ticker_for_portfolio
 
 # Инициализируем локальный роутер для модуля карточек акций
@@ -17,142 +18,347 @@ router = Router()
 
 @router.callback_query(MenuAction.filter(F.action == "view_ticker"))
 async def process_view_ticker(callback: types.CallbackQuery, callback_data: MenuAction):
-    """Экран Уровня 3: Детализация конкретной бумаги (Шторки Владение / Метрики Yahoo)."""
-    ticker_name = callback_data.ticker_name
-    p_id = callback_data.portfolio_id
-    view = callback_data.sub_view # 'owner' или 'yahoo'
+    """Экран Уровня 3: Детализация конкретной бумаги с глубоким дебагом."""
     
-    print(f"\n📈 [ТИКЕР ТРИГГЕР]: Запрос карточки актива `{ticker_name}` для portfolio_id = {p_id}, шторка = '{view}'")
-    await callback.answer(f"Анализ {ticker_name}...")
+    # 🧪 КРИТИЧЕСКИЙ ДЕБАГ №1: Смотрим, что физически прилетело из кнопки Telegram
+    print(f"\n📥 [ДЕБАГ КЛИКА ТИКЕРА]: Сработал хэндлер!")
+    print(f"   • callback_data: {callback_data}")
+    print(f"   • Считанный portfolio_id: {callback_data.portfolio_id}")
+    print(f"   • Считанный sub_view: {callback_data.sub_view}")
+    
+    # Безопасно проверяем наличие полей в объекте фабрики
+    l_id = 0
+    if hasattr(callback_data, 'listing_id'):
+        l_id = callback_data.listing_id or 0
+    elif 'listing_id' in callback_data.__dict__:
+        l_id = callback_data.__dict__['listing_id'] or 0
 
-    # 1. Загружаем базовый контекст рынка, владения и ордеров из ядра базы
-    context = await asyncio.to_thread(db_bot.get_ticker_context, ticker_name, p_id, callback.from_user.id)
-    if not context:
-        print(f"❌ [ТИКЕР ОШИБКА]: Тикер `{ticker_name}` не найден в контексте пользователя.")
-        await callback.message.edit_text(f"❌ Ошибка: тикер `{ticker_name}` не найден.", reply_markup=get_back_to_menu_keyboard())
-        return
+    p_id = callback_data.portfolio_id
+        
+    t_name = getattr(callback_data, 'ticker_name', '') or ''
+    view = callback_data.sub_view or "owner"
+    
+    print(f"   • Итоговые переменные после парсинга: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
 
-    # 🔥 ДИНАМИЧЕСКИЙ МАКРОЗНАЧОК: Берём базовый графический знак валюты первичного листинга тикера прямо из базы
-    sql_base_cur = f"SELECT sign FROM public.currencies WHERE id = '{context['base_currency']}';"
-    cur_res = await execute_sql_async(sql_base_cur)
-    sign = cur_res[0]['sign'] if cur_res and len(cur_res) > 0 else "$"
+    # 1. РЕЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ТИКЕРА И ПЛОЩАДКИ БРОКЕРА
+    if l_id > 0:
+        # Сценарий А: Вход из инлайн-кнопок портфеля по числовому ID листинга
+        listing_sql = f"""
+            SELECT l.broker_symbol, l.ticker_id, t.symbol, t.company_name, l.currency_id, l.last_price
+            FROM public.listings l
+            JOIN public.tickers t ON l.ticker_id = t.id
+            WHERE l.id = {l_id};
+        """
+        print(f"   • 📡 [ДЕБАГ SQL]: Отправляю запрос по листингу {l_id}...")
+        l_res = db_bot.execute_query(listing_sql)
+        print(f"   • [ДЕБАГ СУБД ОТВЕТ]: {l_res}")
+        
+        if not l_res:
+            print("   • ❌ СУБД вернула пустоту для этого l_id!")
+            await callback.answer("❌ Листинг актива не найден в СУБД.", show_alert=True)
+            return
+            
+        if isinstance(l_res, list) and len(l_res) > 0:
+            l_row = l_res[0]
+        elif isinstance(l_res, dict):
+            l_row = l_res
+        else:
+            await callback.answer("❌ Ошибка формата данных листинга.", show_alert=True)
+            return
 
-    # Сборка базовой шапки карточки тикера
-    text = (
-        f"📈 **Аналитическая карточка актива:** `{context['full_ticker']}`\n"
-        f"🏢 Компания: **{context['company_name']}**\n"
-        f"📡 Системный статус: `{context['tracking_status']}` | Добавил: *{context['added_by_user']}*\n"
-        f"───────────────────\n"
-        f"💵 Текущая цена рынка: **{sign}{context['last_price']:,.2f}**\n"
-    )
+        t_id = int(l_row['ticker_id'])
+        pure_symbol = l_row['symbol']
+        broker_symbol = l_row['broker_symbol']
+        last_price = float(l_row['last_price'] or 0)
+        currency_id = l_row['currency_id']
+        print(f"   • ✅ УСПЕШНО РАСПАРСЕНО: {pure_symbol} (ID: {t_id})")
+    else:
+        # Сценарий Б: Вход по текстовому поиску чистого глобального тикера из Телеграм
+        t_name = callback_data.ticker_name.strip().upper()
+        
+        # 🔥 КАСКАДНЫЙ ИНТЕЛЛЕКТ v3.9: Прогоняем через Кит-метод ядра с проверкой кэша СУБД и СУП брокера!
+        try:
+            # Если тикер новый, ensure_ticker_v2 сам создаст tickers и listings без дублирования запросов
+            t_id, l_id = db_bot.ensure_ticker_v2(broker_id=1, broker_symbol=t_name, fb_client=None)
+            
+            # Извлекаем созданные/найденные параметры
+            listing_sql = f"""
+                SELECT l.broker_symbol, t.symbol, t.company_name, l.currency_id, l.last_price
+                FROM public.listings l
+                JOIN public.tickers t ON l.ticker_id = t.id
+                WHERE l.id = {l_id};
+            """
+            l_res = db_bot.execute_query(listing_sql)
+            l_row = l_res
+            pure_symbol = l_row['symbol']
+            broker_symbol = l_row['broker_symbol']
+            last_price = float(l_row['last_price'] or 0)
+            currency_id = l_row['currency_id']
+        except Exception as err:
+            print(f"❌ [КАСКАДНЫЙ ПОИСК ОШИБКА]: Инструмент {t_name} не найден на мировых биржах: {err}")
+            await callback.answer(f"❌ Ошибка: тикер '{t_name}' не найден в СУБД и СУП брокера.", show_alert=True)
+            return
 
-    # 2. Вызываем кросс-аудит лимитов конкретного счета под инвестиционную стратегию (IPS)
-    if p_id > 0:
-        print(f"🛡️ [ТИКЕР]: Запускаю аудит соответствия лимитам стратегии портфеля #{p_id}...")
-        ticker_warnings = await asyncio.to_thread(audit_ticker_for_portfolio, ticker_name, p_id, db_bot)
-        text += f"───────────────────\n🛡️ **Соответствие стратегии {context['portfolio_name'] if 'portfolio_name' in context else f'Портфеля #{p_id}'}:**\n"
-        if ticker_warnings:
-            for w in ticker_warnings:
+    print(f"\n📈 [ТИКЕР ТРИГГЕР]: Рендеринг карточки `{pure_symbol}` (ID: {t_id}) | Портфель: {p_id} | Вкладка: {view}")
+    await callback.answer(f"Анализ {pure_symbol}...")
+
+    # Вытаскиваем знак валюты листинга
+    sql_base_cur = f"SELECT sign FROM public.currencies WHERE id = '{currency_id}';"
+    cur_res = db_bot.execute_query(sql_base_cur)
+    # Проверяем структуру ответа шлюза до самого последнего ключа
+    if cur_res and isinstance(cur_res, list) and len(cur_res) > 0:
+        first_row = cur_res[0]
+        # Если внутри списка лежит словарь, берем из него ключ, иначе берем сам элемент как знак
+        sign = first_row.get('sign', '$') if isinstance(first_row, dict) else str(first_row)
+    elif isinstance(cur_res, dict):
+        sign = cur_res.get('sign', '$')
+    else:
+        sign = "$"
+
+    # Динамически вычисляем типы отображения (Владение, Общий капитал, Исследование)
+    is_owner_view = (p_id > 0 and p_id != 9999)
+    is_family_view = (p_id == 0)
+    is_research_portfolio = (p_id == 9999 and getattr(callback_data, 'listing_id', 0) is not None and int(getattr(callback_data, 'listing_id', 0)) > 0)
+
+    # 2. СБОР СТРАТЕГИЧЕСКИХ ДАННЫХ И ХОЛДИНГ-ПЕРИОДОВ
+    assets_info_sql = f"""
+        SELECT a.portfolio_id, p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price,
+               EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
+        FROM public.assets a
+        JOIN public.portfolios p ON a.portfolio_id = p.id
+        JOIN public.users u ON p.owner_id = u.id
+        WHERE a.listing_id = {l_id if l_id > 0 else -1} AND a.quantity > 0;
+    """
+    all_holders = db_bot.execute_query(assets_info_sql)
+    if not isinstance(all_holders, list):
+        all_holders = [all_holders] if all_holders else []
+
+    # 3. ФОРМИРОВАНИЕ УЛЬТИМАТИВНЫХ ШАПОК СТУДИИ ДИЗАЙНА UPORT
+    if is_owner_view:
+        # Вариант 1: В портфеле конкретного счета
+        owner_row = next((h for h in all_holders if h['portfolio_id'] == p_id), None)
+        p_name = owner_row['portfolio_name'] if owner_row else f"П{p_id}"
+        u_name = owner_row['owner_name'] if owner_row else "User"
+        
+        text = f"🌟 ***  {pure_symbol}  ***\n"
+        text += f"{l_row['company_name']}\n"
+        text += f"В ПОРТФЕЛЕ {p_name} ({u_name})\n"
+        text += f"───────\n"
+        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
+        
+        if owner_row:
+            qty = float(owner_row['quantity'])
+            avg_price = float(owner_row['avg_price'] or 0)
+            cost_basis = qty * avg_price
+            market_val = qty * last_price
+            profit = market_val - cost_basis
+            profit_pct = (profit / cost_basis * 100) if cost_basis > 0 else 0.0
+            p_sign = "+" if profit >= 0 else ""
+            clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
+            
+            text += f"📊 Позиция: **{clean_qty} шт.** • Средняя: **{sign}{avg_price:,.2f}**\n"
+            text += f"📈 Результат: **{p_sign}{sign}{profit:,.2f} ({p_sign}{profit_pct:.1f}%)**\n"
+            text += f"⏱️ Владение: **{owner_row['holding_days']} дней**\n"
+
+    elif is_family_view:
+        # Вариант 2: В Сводном семейном капитале
+        text = f"🌟 ***  {pure_symbol}  ***\n"
+        text += f"{l_row['company_name']}\n"
+        text += f"В ОБЩЕМ КАПИТАЛЕ СЕМЬИ\n"
+        text += f"───────\n"
+        text += f"💵 Текущая цена рынка: **{sign}{last_price:,.2f}**\n\n"
+        text += f"👥 **Распределение по счетам семьи:**\n"
+        
+        total_family_qty = 0.0
+        total_family_cost = 0.0
+        total_family_market = 0.0
+        
+        if all_holders:
+            for h in all_holders:
+                h_qty = float(h['quantity'])
+                h_avg = float(h['avg_price'] or 0)
+                h_basis = h_qty * h_avg
+                h_market = h_qty * last_price
+                h_profit = h_market - h_basis
+                h_profit_pct = (h_profit / h_basis * 100) if h_basis > 0 else 0.0
+                h_sign = "+" if h_profit >= 0 else ""
+                h_clean_qty = int(h_qty) if h_qty.is_integer() else f"{h_qty:.2f}"
+                
+                text += f" • {h['owner_name']} ({h['portfolio_name']}) — **{h_clean_qty} шт.** • Результат: {h_sign}{sign}{h_profit:,.2f} ({h_sign}{h_profit_pct:.1f}%)\n"
+                
+                total_family_qty += h_qty
+                total_family_cost += h_basis
+                total_family_market += h_market
+            
+            tf_profit = total_family_market - total_family_cost
+            tf_profit_pct = (tf_profit / total_family_cost * 100) if total_family_cost > 0 else 0.0
+            tf_sign = "+" if tf_profit >= 0 else ""
+            tf_clean_qty = int(total_family_qty) if total_family_qty.is_integer() else f"{total_family_qty:.2f}"
+            
+            text += f"───────\n"
+            text += f"📊 **СОВОКУПНЫЙ КАПИТАЛ КЛАНА:**\n"
+            text += f"• Всего в удержании: **{tf_clean_qty} шт.**\n"
+            text += f"• Общая оценка: **{sign}{total_family_market:,.2f}**\n"
+            text += f"• Чистая прибыль клана: **{tf_sign}{sign}{tf_profit:,.2f} ({tf_sign}{tf_profit_pct:.1f}%)**\n"
+        else:
+            text += "   *Ни один член семьи пока не владеет данным активом.*\n"
+
+    elif is_research_portfolio:
+        # Вариант 4: Исследование В ПОРТФЕЛЕ (Фокус конкретной стратегии)
+        text = f"🌟 ***  {pure_symbol}  ***\n"
+        text += f"{l_row['company_name']}\n"
+        text += f"ИССЛЕДОВАНИЕ ПО СТРАТЕГИИ\n"
+        text += f"───────\n"
+        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
+        text += f"🎯 Статус: Наблюдение по декларации счета\n"
+    else:
+        # Вариант 3: Исследование ВООБЩЕ (Глобальная песочница 9999)
+        text = f"🌟 ***  {pure_symbol}  ***\n"
+        text += f"{l_row['company_name'] if 'company_name' in l_row else 'Unknown'}\n"
+        text += f"ГЛОБАЛЬНОЕ ИССЛЕДОВАНИЕ СИСТЕМЫ\n"
+        text += f"───────\n"
+        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
+        text += f"🎯 Статус: В списке глобального наблюдения (Watchlist)\n\n"
+        
+        if all_holders:
+            text += f"👥 **Семейный кросс-радар:**\n"
+            for h in all_holders:
+                h_clean_qty = int(h['quantity']) if float(h['quantity']).is_integer() else f"{h['quantity']:.2f}"
+                text += f" • Актив куплен у: **{h['owner_name']}** ({h_clean_qty} шт. в портфеле {h['portfolio_name']})\n"
+
+    # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
+    if is_owner_view or is_research_portfolio:
+        audit_id = p_id if is_owner_view else 1
+        p_info_res = db_bot.execute_query(f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
+        
+        # 🔥 ФИКС РАСПАКОВКИ СПИСКА: Достаем словарь из списка ответов СУБД
+        if p_info_res and isinstance(p_info_res, list) and len(p_info_res) > 0:
+            p_row = p_info_res[0]
+            p_title = p_row.get('name', f"Счет #{audit_id}")
+        elif isinstance(p_info_res, dict):
+            p_title = p_info_res.get('name', f"Счет #{audit_id}")
+        else:
+            p_title = f"Счет #{audit_id}"
+        
+        warnings_list = audit_ticker_for_portfolio(broker_symbol if l_id > 0 else pure_symbol, audit_id, db_bot)
+        text += f"───────\n🛡️ **Риск-аудит IPS {p_title}:**\n"
+        if warnings_list:
+            for w in warnings_list:
                 text += f" {w}\n"
         else:
-            text += " ✅ Актив идеально соответствует лимитам и налоговой модели этого счета.\n"
+            text += " ✅ Риск-декларация: лимиты веса и налоговой нагрузки соблюдены.\n"
 
-    text += f"───────────────────\n"
+    text += f"───────\n"
 
     builder = InlineKeyboardBuilder()
-    
-    # Сетка переключателей режимов карточки акции (Владение идет первым!)
     builder.row(
-        types.InlineKeyboardButton(text="💼 Владение и Ордера", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, ticker_name=ticker_name, sub_view="owner").pack()),
-        types.InlineKeyboardButton(text="📊 Метрики Yahoo", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, ticker_name=ticker_name, sub_view="yahoo").pack())
+        types.InlineKeyboardButton(text="💼 Владение и Ордера", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner").pack()),
+        types.InlineKeyboardButton(text="📊 Метрики Yahoo", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo").pack())
     )
 
-    # ЛОГИКА РАЗВОДКИ ШТОРОК ТТИКЕРА
+    # 5. ЛОГИКА РАЗВОДКИ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "yahoo":
         print("📊 [ТИКЕР]: Выгружаю фундаментальные коэффициенты из public.tickers...")
-        t_raw = await execute_sql_async(f"SELECT * FROM public.tickers WHERE full_ticker = '{ticker_name}';")
-        t = t_raw[0] if isinstance(t_raw, list) and len(t_raw) > 0 else (t_raw if isinstance(t_raw, dict) else {})
+        t_raw = db_bot.execute_query(f"SELECT * FROM public.tickers WHERE id = {t_id};")
+        t = t_raw if isinstance(t_raw, list) and len(t_raw) > 0 else (t_raw if isinstance(t_raw, dict) else {})
         
         if t and (t.get('pe_trailing') is not None or t.get('debt_to_equity') is not None):
             fcf_val = float(t['free_cash_flow'] or 0) / 1_000_000
             text += (
-                f"📊 **Фундаментальные показатели бизнеса:**\n"
+                f"📊 **Аналитические мультипликаторы бизнеса:**\n"
                 f" • Окупаемость P/E: **{float(t.get('pe_trailing') or 0):.1f}** | Прогноз P/E: **{float(t.get('pe_forward') or 0):.1f}**\n"
                 f" • Коэффициент PEG: **{float(t.get('peg_ratio') or 0):.2f}**\n"
                 f" • Цена к выручке P/S: **{float(t.get('price_to_sales') or 0):.1f}** | К балансу P/B: **{float(t.get('price_to_book') or 0):.1f}**\n"
                 f" • Стоимость бизнеса EV/EBITDA: **{float(t.get('ev_to_ebitda') or 0):.1f}**\n"
-                f" ───────────────────\n"
+                f" ───────\n"
                 f" • Долг к капиталу D/E: **{float(t.get('debt_to_equity') or 0):.1f}%**\n"
                 f" • Ликвидность (Current Ratio): **{float(t.get('current_ratio') or 0):.2f}**\n"
                 f" • Чистая маржинальность: **{float(t.get('profit_margin') or 0):.1f}%**\n"
                 f" • Рентабельность ROE: **{float(t.get('return_on_equity') or 0):.1f}%**\n"
-                f" ───────────────────\n"
+                f" ───────\n"
                 f" • Див. доходность: **{float(t.get('dividend_yield') or 0):.2f}%** | Выплаты (Payout): **{float(t.get('payout_ratio') or 0):.1f}%**\n"
                 f" • Свободный кэш (FCF): **${fcf_val:,.1f}M**\n"
-                f" ───────────────────\n"
-                f" • Прогноз аналитиков (Target): **{sign}{float(t.get('target_mean_price') or 0):,.2f}**\n"
-                f" • Рекомендация рынка (1-5): **{float(t.get('recommendation_mean') or 0):.1f}**\n"
+                f" ───────\n"
+                f" • Комиссия ETF (Expense Ratio): **{float(t.get('expense_ratio') or 0)*100:.2f}%**\n"
+                f" • Сектор: **{t.get('sector', 'N/A')}** | Индустрия: **{t.get('industry', 'N/A')}**\n"
             )
         else:
-            text += "📊 **Фундаментальные показатели бизнеса:**\n   *Для данного типа актива (ETF/Фонд) экономические мультипликаторы стоимости отсутствуют.*"
+            text += "📊 **Фундаментальные показатели бизнеса:**\n   *Для данного типа актива экономические мультипликаторы стоимости отсутствуют.*"
     else:
         # Вкладка Владение и Ордера (По умолчанию)
-        print("⏳ [ТИКЕР]: Выгружаю живые биржевые приказы из академической public.orders...")
-        text += "───────────────────\n⏳ **Живые биржевые приказы (Ордера):**\n"
+        print("⏳ [ТИКЕР]: Выгружаю активные биржевые приказы из академической public.orders...")
         
-        # 🔥 АКАДЕМИЧЕСКИЙ ЗАПРОС v3.0: Извлекаем значки валют приказов напрямую из listings -> currencies
+        # Человеческий джойн пользователей СУБД и расчет возраста ордеров в днях
         sql_live_orders = f"""
-            SELECT p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, o.broker_order_id, cur.sign, l.broker_symbol
+            SELECT u.name as owner_name, p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, cur.sign,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - o.created_at))::int AS order_age_days
             FROM public.orders o
             JOIN public.listings l ON o.listing_id = l.id
             JOIN public.portfolios p ON o.portfolio_id = p.id
+            JOIN public.users u ON p.owner_id = u.id
             JOIN public.currencies cur ON l.currency_id = cur.id
-            WHERE l.broker_symbol = '{ticker_name.strip().upper()}'
+            WHERE l.ticker_id = {t_id}
               AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
         """
-        live_orders_res = await execute_sql_async(sql_live_orders)
+        live_orders_res = db_bot.execute_query(sql_live_orders)
         if not isinstance(live_orders_res, list):
             live_orders_res = [live_orders_res] if live_orders_res else []
 
-        if live_orders_res:
-            for ord_row in live_orders_res:
-                o_type = int(ord_row['type'] or 2)
-                oper = int(ord_row['oper'] or 3)
-                qty = float(ord_row['q'])
-                price_p = float(ord_row['p'] or 0)
-                stop_price = float(ord_row['stop_price'] if ord_row['stop_price'] is not None else price_p)
+        if is_owner_view:
+            text += "⏳ **Активные приказы этого портфеля:**\n"
+            current_orders = [o for o in live_orders_res if o['portfolio_name'] == p_name]
+            if current_orders:
+                # Наше ТЗ: разделяем открытые заявки на изменение позы и защитные стоп-механизмы
+                market_orders = [o for o in current_orders if int(o['type']) not in (5, 6)]
+                trigger_orders = [o for o in current_orders if int(o['type']) in (5, 6)]
                 
-                # Значок валюты ордера динамически прилетает из СУБД на основе листинга!
-                o_sign = ord_row['sign'] or "$"
-                p_name = ord_row['portfolio_name']
-                o_id = ord_row['broker_order_id']
+                if market_orders:
+                    text += " 🛒 **ОТКРЫТЫЕ ЗАЯВКИ (Лимитные/Рыночные):**\n"
+                    for o in market_orders:
+                        op_label = "ПОКУПКА" if int(o['oper']) in (1, 2) else "ПРОДАЖА"
+                        text += f"  • 🔹 ЛИМИТНАЯ {op_label} ➡️ {float(o['q']):.0f} шт. по цене {o['sign']}{float(o['p'] or 0):,.2f} ({o['order_age_days']} дн. назад)\n"
                 
-                # Интеллектуальный маппинг типов ордеров на основе спецификации API Tradernet SDK
-                if o_type == 5:
-                    text += (f" • [{p_name}] 🛑 **СТОП-ЛОСС (По рынку)**:\n"
-                             f"   👉 Количество: **{qty:.0f} шт.**\n"
-                             f"   👉 Активация при цене: **{o_sign}{stop_price:,.2f}**\n"
-                             f"   👉 ID ордера FB: `{o_id}`\n\n")
-                elif o_type == 6:
-                    text += (f" • [{p_name}] 📈 **ТЕМК-ПРОФИТ (По рынку)**:\n"
-                             f"   👉 Количество: **{qty:.0f} шт.**\n"
-                             f"   👉 Активация при цене: **{o_sign}{stop_price:,.2f}**\n"
-                             f"   👉 ID ордера FB: `{o_id}`\n\n")
-                else:
-                    op_label = "ПОКУПКА" if oper in (1, 2) else "ПРОДАЖА"
-                    text += (f" • [{p_name}] 🔹 **ЛИМИТНАЯ {op_label}**:\n"
-                             f"   👉 {qty:.0f} шт. по цене **{o_sign}{price_p:,.2f}**\n"
-                             f"   👉 ID ордера FB: `{o_id}`\n\n")
+                if trigger_orders:
+                    text += " 🛡️ **ЗАЩИТА И ЦЕЛИ (Стоп-ордера):**\n"
+                    for o in trigger_orders:
+                        label = "СТОП-ЛОСС" if int(o['type']) == 5 else "ТЕЙК-ПРОФИТ"
+                        emoji = "🛑" if int(o['type']) == 5 else "🎯"
+                        text += f"  • {emoji} {label} (По рынку) ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
+            else:
+                text += "   *Активных приказов по данной бумаге на бирже нет.*\n"
         else:
-            text += "   *Активных приказов по данной бумаге на бирже нет.*\n"
+            # Для Интегральной или Исследовательской карточки группируем СТРОГО по портфелям владельцев
+            text += "⏳ **Совокупные активные приказы семьи:**\n"
+            if live_orders_res:
+                distinct_owners = sorted(list(set(o['owner_name'] for o in live_orders_res)))
+                for owner in distinct_owners:
+                    owner_orders = [o for o in live_orders_res if o['owner_name'] == owner]
+                    p_title_str = owner_orders[0]['portfolio_name'] if owner_orders else ""
+                    text += f" 👤 **{owner} ({p_title_str}):**\n"
+                    for o in owner_orders:
+                        if int(o['type']) == 5:
+                            text += f"  • 🛑 СТОП-ЛОСС ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
+                        elif int(o['type']) == 6:
+                            text += f"  • 🎯 ТЕЙК-ПРОФИТ ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
+                        else:
+                            op_lbl = "ПОКУПКА" if int(o['oper']) in (1, 2) else "ПРОДАЖА"
+                            text += f"  • 🔹 ЛИМИТНАЯ {op_lbl} ➡️ {float(o['q']):.0f} шт. по цене {o['sign']}{float(o['p'] or 0):,.2f} ({o['order_age_days']} дн. назад)\n"
+            else:
+                text += "   *Активных приказов у членов семьи на бирже нет.*\n"
 
-
-    # Нижняя навигация: возвращает на Экран 2 (к составу портфеля) без слёта шторок!
-    builder.row(types.InlineKeyboardButton(text="🔙 К списку активов", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()))
+    # Смарт-навигация назад в зависимости от точки входа инвестора
+    if is_owner_view:
+        builder.row(types.InlineKeyboardButton(text="🔙 К списку активов", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()))
+    elif is_family_view:
+        builder.row(types.InlineKeyboardButton(text="🔙 К сводке капитала", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="assets").pack()))
+    else:
+        builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
 
     print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
-    except TelegramBadRequest:
+    except TelegramBadRequest as e:
+        print(f"⚠️ Ошибка редактирования шторки тикера: {e}")
         pass
