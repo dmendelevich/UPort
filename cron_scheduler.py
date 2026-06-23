@@ -1,3 +1,24 @@
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# ⏰ РАСПИСАНИЕ НОЧНЫХ КОНТУРОВ ФОНОВОЙ АВТОМАНИЗАЦИИ И СИНХРОНИЗАЦИИ ЭКОСИСТЕМЫ UPort
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# Время  | Задача конвейера                 | Исполнитель (Модуль ядра системы)
+# ───────┼──────────────────────────────────┼───────────────────────────────────────────────
+# 01:00  | Ступень 1: Пылесос и Инжектор    | site_connectors/tv_market_injector.py
+#        | (Сбор Strong Buy и Падших Ангел) | 
+# ───────┼──────────────────────────────────┼───────────────────────────────────────────────
+# 03:00  | Ступень 2: Догрузка Уолл-стрит   | site_connectors/sync_fundamentals_yhoo.py
+#        | (CAGR, RSI, Target Prices Yahoo) |
+# ───────┼──────────────────────────────────┼───────────────────────────────────────────────
+# 04:00  | Альфа-Сито: Математический отсев | analytics/portfolio_auditor.py (Новый воркер)
+#        | (Сортировка 9999 в вотчлисты П10)|
+# ───────┼──────────────────────────────────┼───────────────────────────────────────────────
+# 05:00  | Ступень 3: Суточный Дворник СУБД | cron_scheduler.py ➡️ run_database_janitor
+#        | (Очистка логов и старого мусора) |
+# ───────┼──────────────────────────────────┼───────────────────────────────────────────────
+# 05:05  | Ступень 3: Боевой ИИ-Управляющий | analytics/ai_strategist.py
+#        | (Аудит кошельков, алерты VseGPT) |
+# ──────────────────────────────────────────────────────────────────────────────────────────
+
 import asyncio
 import logging
 from datetime import datetime
@@ -8,6 +29,9 @@ from site_connectors.sync_fundamentals_yhoo import sync_fundamentals
 from brokers_connectors.sync_quotes_fb import sync_quotes_fb_branch
 from brokers_connectors.sync_quotes_t212 import sync_quotes_t212_branch
 from brokers_connectors.fb_client import FreedomBrokerClient
+
+# 🔥 ИМПОРТИРУЕМ НАШ НОВЫЙ БОЕВОЙ ВОРКЕР СИНХРОНИЗАЦИИ АЛЕРТОВ ФБ
+from brokers_connectors.sync_alerts_fb import sync_all_broker_alerts
 
 # Импортируем нашу глобальную асинхронную очередь задач из ядра
 from database import ETF_LOOK_THROUGH_QUEUE
@@ -21,8 +45,13 @@ FUNDAMENTALS_CHECK_INTERVAL = 3600  # 1 час для проверки ночн�
 FUNDAMENTALS_TARGET_HOUR = 3        # Целевой час запуска ночного анализа (03:00 ночи)
 ETF_WORKER_PAUSE = 5                # Дыхательная пауза воркера между разбором фондов (секунд)
 
+# 🔥 НОВЫЕ БОЕВЫЕ ПАРАМЕТРЫ КОНТУРА АЛЕРТОВ И ДВОРНИКА СУБД v1.0
+ALERTS_SYNC_INTERVAL = 300          # 5 минут для планового сбора алертов Freedom Broker
+JANITOR_CHECK_INTERVAL = 3600       # 1 час для проверки будильника дворника СУБД
+JANITOR_TARGET_HOUR = 5             # Целевой час запуска дворника очистки (05:00 утра)
 
-# === НАПРЯМЫЕ ФУНКЦИИ ОБНОВЛЕНИЯ ===
+
+# === НАПРЯМЫЕ ФУНКЦИИ ОБНОВЛЕНИЯ И ОЧИСТКИ ===
 
 def run_quotes_update(db_instance):
     """Сбор тикеров из базы и точечный вызов REST-коннекторов брокеров с фильтром tracking_status."""
@@ -37,14 +66,13 @@ def run_quotes_update(db_instance):
         b_id = int(broker['id'])
         b_name = broker['name']
         
-        # 🔥 АКАДЕМИЧЕСКИЙ ЗАПРОС v3.0: Собираем листинги на основе живого watchlist портфелей этого брокера
         sql_tickers = f"""
             SELECT DISTINCT ON (l.broker_symbol) l.id AS listing_id, l.broker_symbol AS full_ticker, c.multiplier 
             FROM public.watchlist w
             JOIN public.listings l ON w.listing_id = l.id
             JOIN public.portfolios p ON w.portfolio_id = p.id
             JOIN public.currencies c ON l.currency_id = c.id
-            WHERE p.broker_id = {b_id} AND w.status IN ('considered', 'ordered', 'bought', 'sold_out');
+            WHERE p.broker_id = {b_id} AND (w.considered_at IS NOT NULL OR w.watched_at IS NOT NULL OR w.ordered_at IS NOT NULL OR w.bought_at IS NOT NULL);
         """
         tickers_data = db_instance.execute_query(sql_tickers)
         if not tickers_data:
@@ -57,23 +85,62 @@ def run_quotes_update(db_instance):
         elif b_id == 2:
             sync_quotes_t212_branch(tickers_data, db_instance)
 
-        if not tickers_data:
-            continue
-            
-        logging.info(f"💼 [Cron]: Обновляю {len(tickers_data)} бумаг у брокера {b_name} (ID: {b_id})")
-        
-        if b_id == 1:
-            sync_quotes_fb_branch(tickers_data, db_instance, FreedomBrokerClient)
-        elif b_id == 2:
-            sync_quotes_t212_branch(tickers_data, db_instance)
-
 def run_rates_update(db_instance):
     """Прямой вызов сбора Форекс-курсов через Yahoo Finance."""
     logging.info("⚡ Прямой запуск обновления курсов валют...")
     sync_rates(db_instance)
 
+def run_database_janitor(db_instance):
+    """🔥 ДВОРНИК СУБД: Выполняет плановое удаление протухшего мусора из таблиц по ТЗ."""
+    logging.info("🧹 [ДВОРНИК]: Старт суточной очистки и стерилизации базы данных UPort...")
+    
+    # Правило 2: Очистка сработавших/неактивных алертов, лежащих без дела более 7 дней
+    sql_clean_alerts = """
+        DELETE FROM public.alerts 
+        WHERE is_active = false 
+          AND triggered_at < CURRENT_TIMESTAMP - INTERVAL '7 days';
+    """
+    # Правило 1: Полное удаление распроданных позиций из watchlist по истечении 30 дней
+    sql_clean_watchlist = """
+        DELETE FROM public.watchlist 
+        WHERE sold_out_at IS NOT NULL 
+          AND sold_out_at < CURRENT_TIMESTAMP - INTERVAL '30 days';
+    """
+    
+    try:
+        db_instance.execute_query(sql_clean_alerts)
+        db_instance.execute_query(sql_clean_watchlist)
+        logging.info("🧹 [ДВОРНИК УСПЕХ]: Стерилизация завершена. Протухшие алерты (>7д) и закрытые вотчлисты (>30д) стёрты.")
+    except Exception as janitor_err:
+        logging.error(f"❌ [ДВОРНИК КРИТИЧЕСКИЙ СБОЙ]: Ошибка очистки СУБД: {janitor_err}")
 
-# === ПЕТЛИ ВРЕМЕНИ (РЕЛЕ) ===
+
+# === ПЕТЛИ ВРЕМЕНИ (РЕЛЕ БОЕВЫХ ЦИКЛОВ) ===
+
+async def alerts_clock_loop(db_instance):
+    """🔥 РЕЛЕ АЛЕРТОВ ФБ: Непрерывный опрос брокера раз в 5 минут."""
+    logging.info(f"⏱️ [Реле Времени]: Контур планового сбора алертов Freedom Broker взведен (Раз в {ALERTS_SYNC_INTERVAL}с).")
+    while True:
+        try:
+            # Вызываем наш боевой синхронизатор в изолированном асинхронном потоке thread
+            await asyncio.to_thread(sync_all_broker_alerts)
+        except Exception as e:
+            logging.error(f"❌ [Cron Алертов Error]: {e}")
+        await asyncio.sleep(ALERTS_SYNC_INTERVAL)
+
+async def janitor_clock_loop(db_instance):
+    """🔥 УМНЫЙ СУТОЧНЫЙ БУДИЛЬНИК ДВОРНИКА: Просыпается раз в час и ждет 5:00 утра."""
+    logging.info(f"⏱️ [Реле Времени]: Контур суточного Дворника СУБД взведен на дежурство (Цель: {JANITOR_TARGET_HOUR:02d}:00 утра).")
+    while True:
+        try:
+            current_hour = datetime.now().hour
+            if current_hour == JANITOR_TARGET_HOUR:
+                logging.info(f"🧹 [Cron]: На часах {JANITOR_TARGET_HOUR:02d}:00 утра. Запуск планового Дворника...")
+                await asyncio.to_thread(run_database_janitor, db_instance)
+        except Exception as e:
+            logging.error(f"❌ [Janitor Clock Error]: {e}")
+            
+        await asyncio.sleep(JANITOR_CHECK_INTERVAL)
 
 async def quotes_clock_loop(db_instance):
     """Реле времени цен акций (раз в 15 минут)"""
@@ -96,68 +163,78 @@ async def rates_clock_loop(db_instance):
         await asyncio.sleep(RATES_SYNC_INTERVAL)
 
 async def fundamentals_clock_loop(db_instance):
-    """УМНОЕ НОЧНОЕ РЕЛЕ ВРЕМЕНИ: Просыпается раз в час."""
+    """УМНОЕ НОЧНОЕ РЕЛЕ ВРЕМЕНИ: Просыпается раз в час и ждет 3:00 ночи."""
     logging.info("⏱️ [Реле Времени]: Контур фундаментального анализа акций УОЛЛ-СТРИТ взведен.")
-    is_first_start = False
-    
     while True:
         try:
             current_hour = datetime.now().hour
-            if current_hour == FUNDAMENTALS_TARGET_HOUR or is_first_start:
+            if current_hour == FUNDAMENTALS_TARGET_HOUR:
                 logging.info(f"🌙 [Cron]: На часах {FUNDAMENTALS_TARGET_HOUR:02d}:00 ночи. Запуск планового анализа...")
                 await asyncio.to_thread(sync_fundamentals, db_instance)
-                is_first_start = False
         except Exception as e:
             logging.error(f"❌ [Cron Фундаментал Error]: {e}")
             
         await asyncio.sleep(FUNDAMENTALS_CHECK_INTERVAL)
 
 
-# ─────────────────────────────────────────────────────────
-# === НОВАЯ ПЕТЛЯ: ОДНОПОТОЧНЫЙ ВОРКЕР ОЧЕРЕДИ ETF ===
-# ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────────────
+# === ОБНОВЛЕННЫЙ ОДНОПОТОЧНЫЙ ВОРКЕР ОЧЕРЕДИ ETF LOOK-THROUGH (UPort Look-Through v4.0) ===
+# ─────────────────────────────────────────────────────────────────────────────────────
 async def etf_queue_worker_loop(db_instance):
     """
-    Интеллектуальный линейный конвейер UPort:
-    Поочередно достает любые задачи из очереди, проверяет тип актива через Yahoo.
-    Если это обычная акция — проскакивает разбор и засыпает на 1 секунду.
-    Если это фонд (ETF) — делает полную Look-Through декомпозицию структуры.
+    Линейный реактивный конвейер UPort: Look-Through декомпозиция структуры фондов (ETF).
+    ИСПРАВЛЕНО: Интегрирован защитный фильтр карантина ватчлиста и автоматическое 
+    каноническое вживление живого ID родительского фонда в jsonb-карту provenance!
     """
     logging.info("⏱️ [Реле Времени]: Однопоточный воркер очереди ETF Look-Through взведен на дежурство.")
     import yfinance as yf
     import pandas as pd
+    import json
     
     while True:
         task = await ETF_LOOK_THROUGH_QUEUE.get()
-        t_id = task["id"]
-        symbol = task["symbol"]
-        suffix = task["suffix"]
+        t_id = task["id"]             # Уникальный числовой ID родительского фонда в public.tickers
+        symbol = task["symbol"]       # Тикер фонда (например, COPX)
         full_ticker = task["full_ticker"]
         currency_id = task["currency_id"]
         broker_id = task["broker_id"]
         
-        # Динамическая пауза: по умолчанию 1 секунда для обычных акций, чтобы беречь API
         current_worker_pause = 1.0
+        timestamp_str = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
         
         try:
+            # ─── ШАГ 1: ЗАЩИТНЫЙ ФИЛЬТР КАРАНТИНА (СНАЙПЕРСКИЙ РЕНТГЕН ВОРКЕРА) ───
+            # Проверяем, одобрен ли данный фонд Боссом или Папой в реальном семейном watchlist
+            sql_check_wl = f"SELECT provenance FROM public.tickers WHERE id = {t_id};"
+            db_res = await asyncio.to_thread(db_instance.execute_query, sql_check_wl)
+            
+            # Извлекаем словарь provenance из полученной строки СУБД
+            provenance_map = {}
+            if db_res and isinstance(db_res, list) and len(db_res) > 0:
+                provenance_map = db_res[0].get("provenance", {}) if "provenance" in db_res[0] else {}
+                
+            # Ищем, горит ли в бортовом журнале фонда маркер реального ватчлиста WL_ID=...
+            has_wl_marker = any(str(k).startswith("WL_ID=") for k in provenance_map.keys())
+            
+            if not has_wl_marker:
+                # 🛡️ ФОНД НА КАРАНТИНЕ: Лениво сбрасываем задачу без единого паразитного клика в сеть!
+                ETF_LOOK_THROUGH_QUEUE.task_done()
+                await asyncio.sleep(0.05)
+                continue
+                
+            # ─── ШАГ 2: СБОР СОСТАВА ИЗ YAHOO FINANCE ДЛЯ ОДОБРЕННОГО ФОНДА ───
             yf_symbol = symbol.replace('.', '-') if symbol else symbol
             ticker_obj = yf.Ticker(yf_symbol)
-            
-            # Запрашиваем профиль info в асинхронном потоке
             info = await asyncio.to_thread(lambda: ticker_obj.info)
             
             q_type = info.get('quoteType', 'Unknown') if info else 'Unknown'
             is_etf = (q_type == 'ETF' or (info and info.get('expenseRatio') is not None))
             
             if not is_etf:
-                # Это обычная акция (AAPL, AMD и т.д.)
-                # Проскакиваем сложные вопросы, фиксируем микро-паузу в 1 сек и идем дальше
-                logging.info(f"🍃 [Очередь]: Инструмент {full_ticker} является акцией ({q_type}). Проскакиваю Look-Through анализ.")
                 current_worker_pause = 1.0
             else:
-                # Это реальный фонд (ETF)! Включаем полную мощность декомпозиции
-                logging.info(f"🧱 [Очередь ETF]: Обнаружен фонд {full_ticker}. Начинаю сквозной разбор структуры...")
-                current_worker_pause = float(ETF_WORKER_PAUSE) # Переключаемся на стандартные 5 секунд для фондов
+                logging.info(f"🧱 [Очередь ETF]: Фонд {full_ticker} (ID={t_id}) прошел карантин! Начинаю сквозной разбор...")
+                current_worker_pause = float(ETF_WORKER_PAUSE)
                 
                 holdings_df = None
                 if hasattr(ticker_obj, 'funds_data') and ticker_obj.funds_data and hasattr(ticker_obj.funds_data, 'top_holdings'):
@@ -173,25 +250,21 @@ async def etf_queue_worker_loop(db_instance):
 
                 if holdings_data:
                     for comp in holdings_data:
-                        # Используем точные ключи, которые подтвердил наш дебаг-принт!
                         comp_sym = comp.get('Symbol') or comp.get('symbol') or comp.get('index') or comp.get('Ticker')
-                        comp_name = comp.get('Name') or comp.get('name') or "Unknown"
-                        
+                        if not comp_sym:
+                            continue
+                            
                         raw_weight = comp.get('Holding Percent') or comp.get('holdingPercent') or comp.get('weight') or comp.get('Value') or 0
                         weight = float(raw_weight)
                         if 0 < weight < 1.0: 
                             weight = weight * 100
                         
-                        if not comp_sym or weight == 0:
+                        if weight == 0:
                             continue
                             
-                        # 🔥 ВОРКЕР ETF v3.7: Компонент от Yahoo изначально глобален (напр. ANTO.L)
-                        # Передаем его в ядро как есть, без принудительной склейки суффикса .US
                         comp_global_symbol = str(comp_sym).strip().upper()
                         
-                        # 🔥 КИТ v3.7: Рекурсивно создаем стерильный тикер в базе и получаем IDs.
-                        # Так как fb_client в планировщике недоступен, передаем None — 
-                        # если компонента нет в базе, он создастся по дефолту с чистым символом (ANTO.L)
+                        # Легализуем акцию-компонент через ядро UPort
                         comp_id, comp_listing_id = await asyncio.to_thread(
                             db_instance.ensure_ticker_v2,
                             broker_id=broker_id,
@@ -202,59 +275,64 @@ async def etf_queue_worker_loop(db_instance):
                         
                         if not comp_id:
                             continue
-                        
-                        # Мягко обогащаем название компании в tickers строго по числовому ID
-                        if comp_name != "Unknown":
-                            clean_comp_name = comp_name.replace("'", "")
-                            sql_update_name = f"""
-                                UPDATE public.tickers 
-                                SET company_name = '{clean_comp_name}' 
-                                WHERE id = {comp_id} AND (company_name IS NULL OR company_name = '' OR company_name = 'Unknown Company');
-                            """
-                            await asyncio.to_thread(db_instance.execute_query, sql_update_name)
 
-                        # Записываем связь в etf_holdings по чистым глобальным ID
-                        sql_insert_link = f"""
-                            INSERT INTO public.etf_holdings (etf_ticker_id, component_ticker_id, weight_percentage)
-                            VALUES ({t_id}, {comp_id}, {weight})
+                        # ─── ШАГ 3: ЮВЕЛИРНОЕ ДЕЛЬТА-ВЖИВЛЕНИЕ ЖИВОГО ID РОДИТЕЛЬСКОГО ФОНДА ───
+                        # Функция jsonb_set(..., false) гарантирует сохранение даты первичного залета бумаги!
+                        sql_update_provenance = f"""
+                            UPDATE public.tickers
+                            SET provenance = jsonb_set(
+                                provenance, 
+                                '{{ETF_LT_ID={t_id}}}', 
+                                '"{timestamp_str}"'::jsonb, 
+                                false
+                            )
+                            WHERE id = {comp_id};
+                        """
+                        await asyncio.to_thread(db_instance.execute_query, sql_update_provenance)
+
+                        # Сохраняем вес компонента в таблицу декомпозиции весов
+                        sql_save_component = f"""
+                            INSERT INTO public.etf_holdings (etf_ticker_id, component_ticker_id, weight_percentage, last_updated_at)
+                            VALUES ({t_id}, {comp_id}, {weight:.2f}, CURRENT_TIMESTAMP)
                             ON CONFLICT (etf_ticker_id, component_ticker_id) 
                             DO UPDATE SET weight_percentage = EXCLUDED.weight_percentage, last_updated_at = CURRENT_TIMESTAMP;
                         """
-                        await asyncio.to_thread(db_instance.execute_query, sql_insert_link)
-
+                        await asyncio.to_thread(db_instance.execute_query, sql_save_component)
                         
-                    logging.info(f"✅ [Очередь ETF Успех]: Структура фонда {full_ticker} успешно разобрана конвейером.")
+                    logging.info(f"🧱 [Очередь ETF]: Сквозной разбор фонда {full_ticker} успешно завершен. Сохранено {len(holdings_data)} компонентов.")
                 else:
-                    logging.warning(f"⚠️ [Очередь ETF]: Yahoo не вернул внутренние холдинги для фонда {full_ticker}.")
-            
-        except Exception as e:
-            logging.error(f"❌ [Очередь ETF Сбой] Ошибка обработки {full_ticker} воркером: {e}")
-            
-        # Освобождаем задачу в asyncio.Queue
-        ETF_LOOK_THROUGH_QUEUE.task_done()
-        # Динамический сон: 1 секунда для акций или 5 секунд для фондов
-        await asyncio.sleep(current_worker_pause)
+                    logging.warning(f"🧱 [Очередь ETF]: Не удалось извлечь внутренности для {full_ticker}.")
+
+        except Exception as err:
+            logging.error(f"❌ [Очередь ETF CRITICAL ERROR]: Ошибка воркера на тикере {full_ticker}: {err}")
+            current_worker_pause = 2.0
+        finally:
+            ETF_LOOK_THROUGH_QUEUE.task_done()
+            await asyncio.sleep(current_worker_pause)
 
 
 
+# ─────────────────────────────────────────────────────────
+# === ГЛАВНАЯ ТОЧКА СБОРКИ ВСЕХ ПЕТЕЛЬ ВРЕМЕНИ CRON ===
+# ─────────────────────────────────────────────────────────
 async def start_clocks(db_instance):
-    """Точка старта реле времени фоновых задач проекта UPort"""
-    logging.info("🧠 [Реле Времени]: Запуск генератора импульсов периодических задач...")
+    """Оркестратор планировщика UPort: собирает все циклы в единую асинхронную группу."""
+    logging.info("🚀 [Планировщик UPort]: Запуск всех контуров реле времени фоновых задач...")
     
-    # ПУБЛИЧНЫЕ РЫНОЧНЫЕ ДАННЫЕ (Обновляются по расписанию):
-    asyncio.create_task(quotes_clock_loop(db_instance))
-    asyncio.create_task(rates_clock_loop(db_instance))
-    asyncio.create_task(fundamentals_clock_loop(db_instance))
-    
-    # РЕАКТИВНЫЙ КОНВЕЙЕР: Запускаем параллельную фоновую обработку нашей асинхронной очереди
-    asyncio.create_task(etf_queue_worker_loop(db_instance))
-    
-    # ПРИВАТНЫЕ ДАННЫЕ ПОРТФЕЛЯ: Сюда задачи не добавлять!
-    """
-    АРХИТЕКТУРНАЯ ЗАМЕТКА О СИНХРОНИЗАЦИИ ПОРТФЕЛЯ (sync_by_account_number):
-    Контур синхронизации личных аккаунтов (кэш, состав портфеля, ордера) НАМЕРЕННОНЕ ВКЛЮЧЕН в этот файл расписания.
-    Синхронизация данных пользователя работает по событийно-ориентированной схеме:
-    1. В реальном времени — через демона вебсокетов (fb_websocket_daemon.py) при каждом чихе по API.
-    2. По запросу — напрямую из Telegram-бота (uport_ai_bot.py) при нажатии кнопки обновления.
-    Дублировать эти вызовы по Cron-таймеру здесь не нужно во избежание лишней нагрузки.
-    """
+    # Первичный принудительный синхрон котировок, курсов и алертов при старте ОС сервера
+    try:
+        await asyncio.to_thread(run_quotes_update, db_instance)
+        await asyncio.to_thread(run_rates_update, db_instance)
+        await asyncio.to_thread(sync_all_broker_alerts)  # Первичный сбор алертов при старте системы
+    except Exception as boot_err:
+        logging.error(f"⚠️ Ошибка первичной инициализации данных при загрузке Cron: {boot_err}")
+
+    # Запускаем бесконечные асинхронные петли в Event Loop
+    await asyncio.gather(
+        quotes_clock_loop(db_instance),
+        rates_clock_loop(db_instance),
+        fundamentals_clock_loop(db_instance),
+        alerts_clock_loop(db_instance),    # 5-минутный контур алертов Freedom Broker
+        janitor_clock_loop(db_instance),   # Суточный контур Дворника СУБД на 5:00 утра
+        etf_queue_worker_loop(db_instance) # Конвейер Look-Through разбора фондов
+    )

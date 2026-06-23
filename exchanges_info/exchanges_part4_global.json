@@ -1,0 +1,501 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-06-13",
+  "exchanges": [
+    {
+      "mic": "XTSE",
+      "code": "TSX",
+      "yahoo_code": "TOR",
+      "name": "Toronto Stock Exchange",
+      "country": "Canada",
+      "iso_country": "CA",
+      "city": "Toronto",
+      "timezone": "America/Toronto",
+      "utc_offset": "-05:00",
+      "currency": "CAD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".TO",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XTSX",
+      "code": "TSXV",
+      "yahoo_code": "VAN",
+      "name": "TSX Venture Exchange",
+      "country": "Canada",
+      "iso_country": "CA",
+      "city": "Calgary",
+      "timezone": "America/Edmonton",
+      "utc_offset": "-07:00",
+      "currency": "CAD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".V",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XMEX",
+      "code": "BMV",
+      "yahoo_code": "MEX",
+      "name": "Bolsa Mexicana de Valores",
+      "country": "Mexico",
+      "iso_country": "MX",
+      "city": "Mexico City",
+      "timezone": "America/Mexico_City",
+      "utc_offset": "-06:00",
+      "currency": "MXN",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".MX",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "08:30",
+          "close": "15:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "BVMF",
+      "code": "B3",
+      "yahoo_code": "SAO",
+      "name": "B3 Brasil Bolsa Balcão",
+      "country": "Brazil",
+      "iso_country": "BR",
+      "city": "São Paulo",
+      "timezone": "America/Sao_Paulo",
+      "utc_offset": "-03:00",
+      "currency": "BRL",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SA",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "17:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBUE",
+      "code": "BYMA",
+      "yahoo_code": "BUE",
+      "name": "Buenos Aires Stock Exchange",
+      "country": "Argentina",
+      "iso_country": "AR",
+      "city": "Buenos Aires",
+      "timezone": "America/Argentina/Buenos_Aires",
+      "utc_offset": "-03:00",
+      "currency": "ARS",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".BA",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "11:00",
+          "close": "17:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSGO",
+      "code": "BCS",
+      "yahoo_code": "SGO",
+      "name": "Santiago Stock Exchange",
+      "country": "Chile",
+      "iso_country": "CL",
+      "city": "Santiago",
+      "timezone": "America/Santiago",
+      "utc_offset": "-04:00",
+      "currency": "CLP",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SN",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XLIM",
+      "code": "BVL",
+      "yahoo_code": "LIM",
+      "name": "Lima Stock Exchange",
+      "country": "Peru",
+      "iso_country": "PE",
+      "city": "Lima",
+      "timezone": "America/Lima",
+      "utc_offset": "-05:00",
+      "currency": "PEN",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".LM",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBOG",
+      "code": "BVC",
+      "yahoo_code": "COL",
+      "name": "Colombia Stock Exchange",
+      "country": "Colombia",
+      "iso_country": "CO",
+      "city": "Bogotá",
+      "timezone": "America/Bogota",
+      "utc_offset": "-05:00",
+      "currency": "COP",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".CN",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCAR",
+      "code": "BVCC",
+      "yahoo_code": "CAR",
+      "name": "Caracas Stock Exchange",
+      "country": "Venezuela",
+      "iso_country": "VE",
+      "city": "Caracas",
+      "timezone": "America/Caracas",
+      "utc_offset": "-04:00",
+      "currency": "VES",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".CR",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "13:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XJSE",
+      "code": "JSE",
+      "yahoo_code": "JNB",
+      "name": "Johannesburg Stock Exchange",
+      "country": "South Africa",
+      "iso_country": "ZA",
+      "city": "Johannesburg",
+      "timezone": "Africa/Johannesburg",
+      "utc_offset": "+02:00",
+      "currency": "ZAR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".JO",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XTAE",
+      "code": "TASE",
+      "yahoo_code": "TLV",
+      "name": "Tel Aviv Stock Exchange",
+      "country": "Israel",
+      "iso_country": "IL",
+      "city": "Tel Aviv",
+      "timezone": "Asia/Jerusalem",
+      "utc_offset": "+02:00",
+      "currency": "ILS",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".TA",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:45",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSAU",
+      "code": "TADAWUL",
+      "yahoo_code": "SAU",
+      "name": "Saudi Exchange",
+      "country": "Saudi Arabia",
+      "iso_country": "SA",
+      "city": "Riyadh",
+      "timezone": "Asia/Riyadh",
+      "utc_offset": "+03:00",
+      "currency": "SAR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SR",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "15:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XDUBAI",
+      "code": "DFM",
+      "yahoo_code": "DFM",
+      "name": "Dubai Financial Market",
+      "country": "UAE",
+      "iso_country": "AE",
+      "city": "Dubai",
+      "timezone": "Asia/Dubai",
+      "utc_offset": "+04:00",
+      "currency": "AED",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".DU",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "14:45"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XADS",
+      "code": "ADX",
+      "yahoo_code": "ADX",
+      "name": "Abu Dhabi Securities Exchange",
+      "country": "UAE",
+      "iso_country": "AE",
+      "city": "Abu Dhabi",
+      "timezone": "Asia/Dubai",
+      "utc_offset": "+04:00",
+      "currency": "AED",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".AD",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "14:45"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XIST",
+      "code": "BIST",
+      "yahoo_code": "IST",
+      "name": "Borsa Istanbul",
+      "country": "Türkiye",
+      "iso_country": "TR",
+      "city": "Istanbul",
+      "timezone": "Europe/Istanbul",
+      "utc_offset": "+03:00",
+      "currency": "TRY",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".IS",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "18:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    }
+  ]
+}

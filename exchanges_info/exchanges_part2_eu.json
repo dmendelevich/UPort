@@ -1,0 +1,699 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-06-13",
+  "exchanges": [
+    {
+      "mic": "XLON",
+      "code": "LSE",
+      "yahoo_code": "LSE",
+      "name": "London Stock Exchange",
+      "country": "UK",
+      "iso_country": "GB",
+      "city": "London",
+      "timezone": "Europe/London",
+      "utc_offset": "+00:00",
+      "currency": "GBP",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".L",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "08:00",
+          "close": "16:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "AQXE",
+      "code": "AQSE",
+      "yahoo_code": "LSE",
+      "name": "Aquis Exchange",
+      "country": "UK",
+      "iso_country": "GB",
+      "city": "London",
+      "timezone": "Europe/London",
+      "utc_offset": "+00:00",
+      "currency": "GBP",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".L",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "08:00",
+          "close": "16:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XETR",
+      "code": "XETRA",
+      "yahoo_code": "GER",
+      "name": "Deutsche Börse Xetra",
+      "country": "Germany",
+      "iso_country": "DE",
+      "city": "Frankfurt",
+      "timezone": "Europe/Berlin",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".DE",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XFRA",
+      "code": "FSE",
+      "yahoo_code": "GER",
+      "name": "Frankfurt Stock Exchange",
+      "country": "Germany",
+      "iso_country": "DE",
+      "city": "Frankfurt",
+      "timezone": "Europe/Berlin",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".F",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XPAR",
+      "code": "EPA",
+      "yahoo_code": "PAR",
+      "name": "Euronext Paris",
+      "country": "France",
+      "iso_country": "FR",
+      "city": "Paris",
+      "timezone": "Europe/Paris",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".PA",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XAMS",
+      "code": "AMS",
+      "yahoo_code": "AMS",
+      "name": "Euronext Amsterdam",
+      "country": "Netherlands",
+      "iso_country": "NL",
+      "city": "Amsterdam",
+      "timezone": "Europe/Amsterdam",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".AS",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBRU",
+      "code": "BRU",
+      "yahoo_code": "BRU",
+      "name": "Euronext Brussels",
+      "country": "Belgium",
+      "iso_country": "BE",
+      "city": "Brussels",
+      "timezone": "Europe/Brussels",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".BR",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XLIS",
+      "code": "LIS",
+      "yahoo_code": "LIS",
+      "name": "Euronext Lisbon",
+      "country": "Portugal",
+      "iso_country": "PT",
+      "city": "Lisbon",
+      "timezone": "Europe/Lisbon",
+      "utc_offset": "+00:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".LS",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XMIL",
+      "code": "MIL",
+      "yahoo_code": "MIL",
+      "name": "Borsa Italiana",
+      "country": "Italy",
+      "iso_country": "IT",
+      "city": "Milan",
+      "timezone": "Europe/Rome",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".MI",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XMAD",
+      "code": "MAD",
+      "yahoo_code": "MCE",
+      "name": "Bolsa de Madrid",
+      "country": "Spain",
+      "iso_country": "ES",
+      "city": "Madrid",
+      "timezone": "Europe/Madrid",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".MC",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSWX",
+      "code": "SIX",
+      "yahoo_code": "EBS",
+      "name": "SIX Swiss Exchange",
+      "country": "Switzerland",
+      "iso_country": "CH",
+      "city": "Zurich",
+      "timezone": "Europe/Zurich",
+      "utc_offset": "+01:00",
+      "currency": "CHF",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SW",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XWBO",
+      "code": "VSE",
+      "yahoo_code": "VIE",
+      "name": "Vienna Stock Exchange",
+      "country": "Austria",
+      "iso_country": "AT",
+      "city": "Vienna",
+      "timezone": "Europe/Vienna",
+      "utc_offset": "+01:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".VI",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XDUB",
+      "code": "DUB",
+      "yahoo_code": "ISE",
+      "name": "Euronext Dublin",
+      "country": "Ireland",
+      "iso_country": "IE",
+      "city": "Dublin",
+      "timezone": "Europe/Dublin",
+      "utc_offset": "+00:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".IR",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XWAR",
+      "code": "WSE",
+      "yahoo_code": "WAR",
+      "name": "Warsaw Stock Exchange",
+      "country": "Poland",
+      "iso_country": "PL",
+      "city": "Warsaw",
+      "timezone": "Europe/Warsaw",
+      "utc_offset": "+01:00",
+      "currency": "PLN",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".WA",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XPRA",
+      "code": "PSE",
+      "yahoo_code": "PRA",
+      "name": "Prague Stock Exchange",
+      "country": "Czech Republic",
+      "iso_country": "CZ",
+      "city": "Prague",
+      "timezone": "Europe/Prague",
+      "utc_offset": "+01:00",
+      "currency": "CZK",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".PR",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBUD",
+      "code": "BSE",
+      "yahoo_code": "BUD",
+      "name": "Budapest Stock Exchange",
+      "country": "Hungary",
+      "iso_country": "HU",
+      "city": "Budapest",
+      "timezone": "Europe/Budapest",
+      "utc_offset": "+01:00",
+      "currency": "HUF",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".BD",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBSE",
+      "code": "BVB",
+      "yahoo_code": "BSE",
+      "name": "Bucharest Stock Exchange",
+      "country": "Romania",
+      "iso_country": "RO",
+      "city": "Bucharest",
+      "timezone": "Europe/Bucharest",
+      "utc_offset": "+02:00",
+      "currency": "RON",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".RO",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XHEL",
+      "code": "HEL",
+      "yahoo_code": "HEL",
+      "name": "Nasdaq Helsinki",
+      "country": "Finland",
+      "iso_country": "FI",
+      "city": "Helsinki",
+      "timezone": "Europe/Helsinki",
+      "utc_offset": "+02:00",
+      "currency": "EUR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".HE",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSTO",
+      "code": "STO",
+      "yahoo_code": "STO",
+      "name": "Nasdaq Stockholm",
+      "country": "Sweden",
+      "iso_country": "SE",
+      "city": "Stockholm",
+      "timezone": "Europe/Stockholm",
+      "utc_offset": "+01:00",
+      "currency": "SEK",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".ST",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCSE",
+      "code": "CPH",
+      "yahoo_code": "CPH",
+      "name": "Nasdaq Copenhagen",
+      "country": "Denmark",
+      "iso_country": "DK",
+      "city": "Copenhagen",
+      "timezone": "Europe/Copenhagen",
+      "utc_offset": "+01:00",
+      "currency": "DKK",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".CO",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XOSL",
+      "code": "OSL",
+      "yahoo_code": "OSL",
+      "name": "Oslo Børs",
+      "country": "Norway",
+      "iso_country": "NO",
+      "city": "Oslo",
+      "timezone": "Europe/Oslo",
+      "utc_offset": "+01:00",
+      "currency": "NOK",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".OL",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    }
+  ]
+}

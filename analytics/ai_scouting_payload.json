@@ -1,0 +1,289 @@
+{
+  "____SYSTEM_PROMPT_INFO____": "Вы — Главный ИИ-Управляющий и Алгоритмический Стратег семейной инвестиционной экосистемы UPort.\nВаша цель — жесткое управление капиталом на основе Инвестиционной декларации владельца конкретного счета, максимизация эффективности, контроль таймингов и минимизация рисков.\n\nЖЕСТКОЕ СИСТЕМНОЕ ОГРАНИЧЕНИЕ (ПРАВИЛО КРОСС-ДИВЕРСИФИКАЦИИ СЕМЬИ):\nВам категорически запрещено дублировать активы между портфелями семьи. При сканировании рынка и поиске новых кандидатов на покупку из MARKET_INTELLIGENCE, вы ОБЯЗАНЫ полностью игнорировать и отсекать любые тикеры, которые уже присутствуют в блоке 'FAMILY_HOLDINGS_SNAPSHOT'. Каждый портфель должен вести охоту на уникальных эмитентов, не пересекаясь с другими счетами.\n\nФОРМАТ ВЫХОДНЫХ ДАННЫХ (ОБЯЗАТЕЛЬНЫЙ СТРОГИЙ JSON):\nВы должны вернуть исключительно чистый JSON-объект, без какого-либо сопроводительного текста, здорований или markdown-разметки (никаких ```json).\nСтруктура ответа должна строго соответствовать следующему шаблону response_format из СУБД:\n{\"structure\": {\"engine_type\": \"string (swing_trading)\", \"portfolio_id\": \"integer\", \"recommended_actions\": [{\"note\": \"string (Четкий текст примечания ИИ на русском языке для вывода инвестору в Телеграм с указанием причины и логики IPS)\", \"ticker\": \"string (например, PG.US)\", \"action_type\": \"string (create_alert | modify_alert | delete_alert | sell_market)\", \"trigger_pct\": \"float_or_null\", \"trigger_type\": \"string (crossing_up | crossing_down | trailing_stop | calendar_deadline)\", \"trigger_price\": \"float_or_null\", \"condition_type\": \"string (> | < | max-)\"}], \"ai_analysis_rationale\": \"string (Краткое аналитическое обоснование ИИ на русском языке, почему приняты данные решения на основе RSI_14 и цен Yahoo Finance)\"}, \"expected_type\": \"json_object\"}\n",
+  "____USER_CONTEXT_DATA____": {
+    "portfolio_id": 1,
+    "engine_type": "swing_trading",
+    "strategy_name": "П10 Свинг",
+    "STRATEGY_CONFIG": {
+      "engine_type": "swing_trading",
+      "entry_rules": {
+        "trigger_type": "ma_cross_or_support_bounce",
+        "max_spread_pct": 0.2,
+        "confirmation_required": true
+      },
+      "exit_triggers": {
+        "time_stop": {
+          "base_limit_days": 90,
+          "overtime_conditions": {
+            "allowed": true,
+            "required_trend_line": "above_ema_50",
+            "overtime_duration_days": 30,
+            "required_fundamental_growth_cagr_pct": 15.0
+          }
+        },
+        "take_profit": {
+          "base_target_pct": 15.0,
+          "conditional_trailing": {
+            "enabled": true,
+            "trailing_stop_pct": 3.0,
+            "activation_rsi_max": 80
+          }
+        },
+        "risk_management": {
+          "emergency_stop_loss_pct": 10.0,
+          "trailing_stop_on_breakeven_after_pct": 7.0
+        }
+      },
+      "sector_limits": {
+        "forbidden_sectors": [
+          "Utilities",
+          "Real Estate"
+        ],
+        "max_parallel_slots_per_sector": 3
+      },
+      "capital_limits": {
+        "max_parallel_slots": 10,
+        "max_position_value_usd": 1000.0,
+        "total_allocated_capital_usd": 10000.0
+      },
+      "position_sizing": {
+        "allocation_type": "fixed_value",
+        "overflow_policy": "round_down",
+        "allow_fractional_shares": true
+      },
+      "screener_filters": {
+        "momentum_indicators": {
+          "rsi_daily_range": {
+            "max": 70,
+            "min": 40
+          }
+        },
+        "min_beta_coefficient": 1.2,
+        "min_average_daily_volume_usd": 5000000
+      },
+      "performance_targets": {
+        "target_annual_return_pct": 30.0,
+        "expected_cycles_per_slot_year": 3
+      },
+      "market_regime_filters": {
+        "vix_fear_index_max": 25.0,
+        "required_index_trend": "above_ma_200",
+        "global_market_trend_index": "SPY"
+      }
+    },
+    "HUMAN_MANIFEST": "АКТИВНАЯ КРАТКОСРОЧНАЯ СТРАТЕГИЯ СВИНГ-ТРЕЙДИНГА П10.\n- Размер ячейки: Фиксированный, максимум $1000 на одну бумагу. Лимит — 10 параллельных слотов.\n- Базовый Take Profit: +15% от цены покупки. При быстром тренде и RSI < 80 — активировать скользящий стоп (Trailing Stop) -3%.\n- Базовый Time Stop: 90 дней (3 месяца). Если цель не достигнута: в безубытке — закрыть по рынку; в просадке до -10% при сильном CAGR выручки (>15%) — дать овертайм 30 дней и поставить защитный стоп-лосс за поддержку; при падающем тренде ниже EMA_50 — немедленная фиксация убытка по рынку.",
+    "PORTFOLIO_FACTS": {
+      "assets": [
+        {
+          "broker_symbol": "GLDM.US",
+          "quantity": 22.0,
+          "avg_price": 94.0,
+          "last_price": 84.43,
+          "holding_days": 9
+        },
+        {
+          "broker_symbol": "PG.US",
+          "quantity": 2.0,
+          "avg_price": 156.0,
+          "last_price": 148.32,
+          "holding_days": 9
+        },
+        {
+          "broker_symbol": "UBER.US",
+          "quantity": 13.0,
+          "avg_price": 76.0,
+          "last_price": 70.35,
+          "holding_days": 9
+        }
+      ],
+      "cash_balances": [
+        {
+          "currency_id": "RUR",
+          "cash_available": 0.0,
+          "cash_reserved": 0.0
+        },
+        {
+          "currency_id": "USD",
+          "cash_available": 13.95,
+          "cash_reserved": 0.0
+        }
+      ],
+      "audit_timestamp": "2026-06-09 18:23:21"
+    },
+    "FAMILY_HOLDINGS_SNAPSHOT": [
+      "CEG.US",
+      "MELI.US",
+      "COPX.US",
+      "AMZN.US",
+      "CCJ.US",
+      "WEAT.US",
+      "GLDM.US",
+      "META.US",
+      "MSFT.US",
+      "BA.US",
+      "VRTX.US"
+    ],
+    "MARKET_INTELLIGENCE": [
+      {
+        "symbol": "ASML",
+        "broker_symbol": "ASML.US",
+        "last_price": 1749.73,
+        "company_name": "ASML Holding NV ADR",
+        "sector": "Technology",
+        "industry": "Semiconductor Equipment & Materials",
+        "pe_trailing": 58.8308,
+        "pe_forward": 36.6165,
+        "peg_ratio": 2.42,
+        "price_to_sales": 20.0076,
+        "profit_margin": 0.2971,
+        "dividend_yield": 0.5,
+        "free_cash_flow": 8243274752.0,
+        "rsi_14": 48.98,
+        "revenue_cagr_3y": 15.55,
+        "target_low_price": 895.2095,
+        "target_mean_price": 1701.7168,
+        "target_high_price": 2260.914
+      },
+      {
+        "symbol": "CIFR",
+        "broker_symbol": "CIFR.US",
+        "last_price": 22.88,
+        "company_name": "Cipher Mining Inc",
+        "sector": "Technology",
+        "industry": "Information Technology Services",
+        "pe_trailing": null,
+        "pe_forward": 36.2537,
+        "peg_ratio": null,
+        "price_to_sales": 47.3537,
+        "profit_margin": 0.0,
+        "dividend_yield": null,
+        "free_cash_flow": -2948059648.0,
+        "rsi_14": 53.91,
+        "revenue_cagr_3y": 319.34,
+        "target_low_price": 23.0,
+        "target_mean_price": 32.0,
+        "target_high_price": 69.0
+      },
+      {
+        "symbol": "GLDM",
+        "broker_symbol": "GLDM.US",
+        "last_price": 84.43,
+        "company_name": "SPDR Gold MiniShares",
+        "sector": "Unknown Sector",
+        "industry": "Unknown Industry",
+        "pe_trailing": null,
+        "pe_forward": null,
+        "peg_ratio": null,
+        "price_to_sales": null,
+        "profit_margin": null,
+        "dividend_yield": 0.0,
+        "free_cash_flow": null,
+        "rsi_14": 23.96,
+        "revenue_cagr_3y": null,
+        "target_low_price": null,
+        "target_mean_price": null,
+        "target_high_price": null
+      },
+      {
+        "symbol": "NOW",
+        "broker_symbol": "NOW.US",
+        "last_price": 106.63,
+        "company_name": "ServiceNow",
+        "sector": "Technology",
+        "industry": "Software - Application",
+        "pe_trailing": 67.9702,
+        "pe_forward": 22.7167,
+        "peg_ratio": 1.09,
+        "price_to_sales": 8.4359,
+        "profit_margin": 0.1259,
+        "dividend_yield": null,
+        "free_cash_flow": 5108125184.0,
+        "rsi_14": 49.99,
+        "revenue_cagr_3y": 22.38,
+        "target_low_price": 85.0,
+        "target_mean_price": 141.863,
+        "target_high_price": 236.0
+      },
+      {
+        "symbol": "PG",
+        "broker_symbol": "PG.US",
+        "last_price": 148.32,
+        "company_name": "Procter & Gamble",
+        "sector": "Consumer Defensive",
+        "industry": "Household & Personal Products",
+        "pe_trailing": 21.2445,
+        "pe_forward": 20.4774,
+        "peg_ratio": 4.11,
+        "price_to_sales": 3.8963,
+        "profit_margin": 0.1916,
+        "dividend_yield": 2.94,
+        "free_cash_flow": 12733750272.0,
+        "rsi_14": 59.24,
+        "revenue_cagr_3y": 1.67,
+        "target_low_price": 145.0,
+        "target_mean_price": 163.7727,
+        "target_high_price": 186.0
+      },
+      {
+        "symbol": "SOFI",
+        "broker_symbol": "SOFI.US",
+        "last_price": 16.34,
+        "company_name": "SoFi Technologies Inc",
+        "sector": "Financial Services",
+        "industry": "Credit Services",
+        "pe_trailing": 36.6667,
+        "pe_forward": 21.1473,
+        "peg_ratio": 1.0,
+        "price_to_sales": 5.4153,
+        "profit_margin": 0.1476,
+        "dividend_yield": null,
+        "free_cash_flow": null,
+        "rsi_14": 41.82,
+        "revenue_cagr_3y": 31.93,
+        "target_low_price": 12.0,
+        "target_mean_price": 21.0,
+        "target_high_price": 31.0
+      },
+      {
+        "symbol": "TSM",
+        "broker_symbol": "TSM.US",
+        "last_price": 422.35,
+        "company_name": "Taiwan Semiconductor",
+        "sector": "Technology",
+        "industry": "Semiconductors",
+        "pe_trailing": 36.6352,
+        "pe_forward": 21.8548,
+        "peg_ratio": 1.29,
+        "price_to_sales": 0.5394,
+        "profit_margin": 0.4651,
+        "dividend_yield": 0.89,
+        "free_cash_flow": 719158444032.0,
+        "rsi_14": 44.86,
+        "revenue_cagr_3y": 18.94,
+        "target_low_price": 354.0,
+        "target_mean_price": 467.8403,
+        "target_high_price": 600.0
+      },
+      {
+        "symbol": "UBER",
+        "broker_symbol": "UBER.US",
+        "last_price": 70.35,
+        "company_name": "Uber Technologies",
+        "sector": "Technology",
+        "industry": "Software - Application",
+        "pe_trailing": 17.3846,
+        "pe_forward": 16.031,
+        "peg_ratio": 5.74,
+        "price_to_sales": 2.6564,
+        "profit_margin": 0.1591,
+        "dividend_yield": null,
+        "free_cash_flow": 6536625152.0,
+        "rsi_14": 38.6,
+        "revenue_cagr_3y": 17.73,
+        "target_low_price": 70.0,
+        "target_mean_price": 104.4312,
+        "target_high_price": 150.0
+      }
+    ]
+  }
+}

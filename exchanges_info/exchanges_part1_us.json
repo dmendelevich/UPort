@@ -1,0 +1,1104 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-06-12",
+  "exchanges": [
+    {
+      "mic": "XNAS",
+      "code": "NASDAQ",
+      "name": "NASDAQ Stock Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNYS",
+      "code": "NYSE",
+      "name": "New York Stock Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "ARCX",
+      "code": "NYSEARCA",
+      "name": "NYSE Arca",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XASE",
+      "code": "NYSEAMERICAN",
+      "name": "NYSE American",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "BATS",
+      "code": "BZX",
+      "name": "Cboe BZX Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "EDGX",
+      "code": "EDGX",
+      "name": "Cboe EDGX Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "EDGA",
+      "code": "EDGA",
+      "name": "Cboe EDGA Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "BYX",
+      "code": "BYX",
+      "name": "Cboe BYX Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "IEXG",
+      "code": "IEX",
+      "name": "Investors Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "MEMX",
+      "code": "MEMX",
+      "name": "MEMX",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Jersey City",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "LTSE",
+      "code": "LTSE",
+      "name": "Long-Term Stock Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "San Francisco",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XPHL",
+      "code": "PHLX",
+      "name": "NASDAQ PHLX",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Philadelphia",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBXO",
+      "code": "BX",
+      "name": "NASDAQ BX",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Boston",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XISX",
+      "code": "ISE",
+      "name": "NASDAQ ISE",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "GMNI",
+      "code": "GEMX",
+      "name": "NASDAQ GEMX",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "MRXE",
+      "code": "MRX",
+      "name": "NASDAQ MRX",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "EMLD",
+      "code": "BXOPT",
+      "name": "NASDAQ BX Options",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Boston",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "options",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCBO",
+      "code": "CBOE",
+      "name": "Cboe Options Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "options",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCBF",
+      "code": "CFE",
+      "name": "Cboe Futures Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "futures",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCME",
+      "code": "CME",
+      "name": "Chicago Mercantile Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "futures",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "00:00",
+          "close": "23:59"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCBT",
+      "code": "CBOT",
+      "name": "Chicago Board of Trade",
+      "country": "US",
+      "iso_country": "US",
+      "city": "Chicago",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "futures",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "00:00",
+          "close": "23:59"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNYM",
+      "code": "NYMEX",
+      "name": "New York Mercantile Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "futures",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "00:00",
+          "close": "23:59"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XCEC",
+      "code": "COMEX",
+      "name": "Commodity Exchange",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "futures",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "00:00",
+          "close": "23:59"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "FINN",
+      "code": "FINRA",
+      "name": "FINRA ADF",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "OTCM",
+      "code": "OTC",
+      "name": "OTC Markets",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "OTCQ",
+      "code": "OTCQX",
+      "name": "OTCQX Best Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "OTCB",
+      "code": "OTCQB",
+      "name": "OTCQB Venture Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "PINX",
+      "code": "PINK",
+      "name": "Pink Open Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNCM",
+      "code": "NASDAQCM",
+      "name": "NASDAQ Capital Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNMS",
+      "code": "NASDAQGM",
+      "name": "NASDAQ Global Market",
+      "country": "US",
+      "iso_country": "US",
+      "city": "New York",
+      "timezone": "America/New_York",
+      "utc_offset": "-05:00",
+      "currency": "USD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": "",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": {
+          "open": "04:00",
+          "close": "09:30"
+        },
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": {
+          "open": "16:00",
+          "close": "20:00"
+        }
+      },
+      "enabled": true
+    }
+  ]
+}

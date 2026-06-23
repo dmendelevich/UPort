@@ -1,0 +1,2574 @@
+{
+    "schema_version": "1.0",
+    "universe_name": "UPort ETF Universe",
+    "created": "2026-06-10",
+    "asset_count": 133,
+    "assets": [
+      {
+        "ticker": "SPY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "VOO",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "IVV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "QQQ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "VTI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "DIA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "IWM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "MDY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "IJH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "IJR",
+        "name": "",
+        "asset_type": "etf",
+        "category": "broad_market",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 10,
+        "benchmark": "SPY",
+        "tags": [
+          "broad_market"
+        ]
+      },
+      {
+        "ticker": "XLB",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLC",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLF",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLK",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLP",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLRE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLU",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "XLY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "sectors",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 9,
+        "benchmark": "SPY",
+        "tags": [
+          "sectors"
+        ]
+      },
+      {
+        "ticker": "SMH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "SOXX",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "IGV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "VGT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "FTEC",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "CLOU",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "SKYY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "CIBR",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "BUG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "HACK",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "BOTZ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "ARTY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "ARKK",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "ARKQ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "ARKW",
+        "name": "",
+        "asset_type": "etf",
+        "category": "technology",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "QQQ",
+        "tags": [
+          "technology"
+        ]
+      },
+      {
+        "ticker": "IBB",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "XBI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "VHT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "IHI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "IHE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "PBE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "PJP",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "FHLC",
+        "name": "",
+        "asset_type": "etf",
+        "category": "healthcare",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "healthcare"
+        ]
+      },
+      {
+        "ticker": "XOP",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "OIH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "URA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "URNM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "COPX",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "COPJ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "LIT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "REMX",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "GLD",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "GLDM",
+        "name": "SPDR Gold MiniShares Trust",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "WEAT",
+        "name": "Teucrium Wheat Fund",
+        "asset_type": "etf",
+        "category": "agriculture",
+        "subcategory": "grains",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "agriculture",
+          "commodities"
+        ]
+      },
+      {
+        "ticker": "IAU",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "SLV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "DBA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "DBB",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "DBC",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "USO",
+        "name": "",
+        "asset_type": "etf",
+        "category": "energy_commodities",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "energy_commodities"
+        ]
+      },
+      {
+        "ticker": "KBE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "financials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "financials"
+        ]
+      },
+      {
+        "ticker": "KRE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "financials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "financials"
+        ]
+      },
+      {
+        "ticker": "IAI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "financials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "financials"
+        ]
+      },
+      {
+        "ticker": "VFH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "financials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "financials"
+        ]
+      },
+      {
+        "ticker": "IYG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "financials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 8,
+        "benchmark": "SPY",
+        "tags": [
+          "financials"
+        ]
+      },
+      {
+        "ticker": "XRT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "consumer",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "consumer"
+        ]
+      },
+      {
+        "ticker": "IBUY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "consumer",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "consumer"
+        ]
+      },
+      {
+        "ticker": "PEJ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "consumer",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "consumer"
+        ]
+      },
+      {
+        "ticker": "AWAY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "consumer",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "consumer"
+        ]
+      },
+      {
+        "ticker": "VCR",
+        "name": "",
+        "asset_type": "etf",
+        "category": "consumer",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "consumer"
+        ]
+      },
+      {
+        "ticker": "PAVE",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "IFRA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "AIRR",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "XTN",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "IYT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "VIS",
+        "name": "",
+        "asset_type": "etf",
+        "category": "industrials",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "industrials"
+        ]
+      },
+      {
+        "ticker": "ICLN",
+        "name": "",
+        "asset_type": "etf",
+        "category": "clean_energy",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "clean_energy"
+        ]
+      },
+      {
+        "ticker": "TAN",
+        "name": "",
+        "asset_type": "etf",
+        "category": "clean_energy",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "clean_energy"
+        ]
+      },
+      {
+        "ticker": "FAN",
+        "name": "",
+        "asset_type": "etf",
+        "category": "clean_energy",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "clean_energy"
+        ]
+      },
+      {
+        "ticker": "QCLN",
+        "name": "",
+        "asset_type": "etf",
+        "category": "clean_energy",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "clean_energy"
+        ]
+      },
+      {
+        "ticker": "PBW",
+        "name": "",
+        "asset_type": "etf",
+        "category": "clean_energy",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "clean_energy"
+        ]
+      },
+      {
+        "ticker": "VNQ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "real_estate",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "real_estate"
+        ]
+      },
+      {
+        "ticker": "SCHH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "real_estate",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "real_estate"
+        ]
+      },
+      {
+        "ticker": "IYR",
+        "name": "",
+        "asset_type": "etf",
+        "category": "real_estate",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "real_estate"
+        ]
+      },
+      {
+        "ticker": "REM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "real_estate",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "real_estate"
+        ]
+      },
+      {
+        "ticker": "REET",
+        "name": "",
+        "asset_type": "etf",
+        "category": "real_estate",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "real_estate"
+        ]
+      },
+      {
+        "ticker": "TLT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "IEF",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "SHY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "VGIT",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "VGSH",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "AGG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "BND",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "LQD",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "HYG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "JNK",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "TIP",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "MUB",
+        "name": "",
+        "asset_type": "etf",
+        "category": "fixed_income",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "fixed_income"
+        ]
+      },
+      {
+        "ticker": "EFA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "VEA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "IEFA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWJ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWU",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWQ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWL",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWP",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "ENZL",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EWA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "international_developed",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "international_developed"
+        ]
+      },
+      {
+        "ticker": "EEM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "VWO",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "IEMG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "FXI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "MCHI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "KWEB",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "EWZ",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "INDA",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "EPI",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "EIDO",
+        "name": "",
+        "asset_type": "etf",
+        "category": "emerging_markets",
+        "subcategory": "",
+        "country": "US",
+        "region": "Global",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "emerging_markets"
+        ]
+      },
+      {
+        "ticker": "SCHD",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "VIG",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "DGRO",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "HDV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "VYM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "SPYD",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "NOBL",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "RDIV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "dividend_value",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 7,
+        "benchmark": "SPY",
+        "tags": [
+          "dividend_value"
+        ]
+      },
+      {
+        "ticker": "VIXY",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      },
+      {
+        "ticker": "VIXM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      },
+      {
+        "ticker": "SPLV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      },
+      {
+        "ticker": "USMV",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      },
+      {
+        "ticker": "QUAL",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      },
+      {
+        "ticker": "MTUM",
+        "name": "",
+        "asset_type": "etf",
+        "category": "low_volatility",
+        "subcategory": "",
+        "country": "US",
+        "region": "North America",
+        "exchange": "",
+        "currency": "USD",
+        "leveraged": false,
+        "inverse": false,
+        "enabled": true,
+        "priority": 6,
+        "benchmark": "SPY",
+        "tags": [
+          "low_volatility"
+        ]
+      }
+    ]
+  }

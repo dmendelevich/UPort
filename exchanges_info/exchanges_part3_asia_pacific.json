@@ -1,0 +1,501 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-06-13",
+  "exchanges": [
+    {
+      "mic": "XTKS",
+      "code": "TSE",
+      "yahoo_code": "JPX",
+      "name": "Tokyo Stock Exchange",
+      "country": "Japan",
+      "iso_country": "JP",
+      "city": "Tokyo",
+      "timezone": "Asia/Tokyo",
+      "utc_offset": "+09:00",
+      "currency": "JPY",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".T",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XHKG",
+      "code": "HKEX",
+      "yahoo_code": "HKG",
+      "name": "Hong Kong Stock Exchange",
+      "country": "Hong Kong",
+      "iso_country": "HK",
+      "city": "Hong Kong",
+      "timezone": "Asia/Hong_Kong",
+      "utc_offset": "+08:00",
+      "currency": "HKD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".HK",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSHG",
+      "code": "SSE",
+      "yahoo_code": "SHH",
+      "name": "Shanghai Stock Exchange",
+      "country": "China",
+      "iso_country": "CN",
+      "city": "Shanghai",
+      "timezone": "Asia/Shanghai",
+      "utc_offset": "+08:00",
+      "currency": "CNY",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SS",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "15:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSHE",
+      "code": "SZSE",
+      "yahoo_code": "SHZ",
+      "name": "Shenzhen Stock Exchange",
+      "country": "China",
+      "iso_country": "CN",
+      "city": "Shenzhen",
+      "timezone": "Asia/Shanghai",
+      "utc_offset": "+08:00",
+      "currency": "CNY",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SZ",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "15:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XTAI",
+      "code": "TWSE",
+      "yahoo_code": "TAI",
+      "name": "Taiwan Stock Exchange",
+      "country": "Taiwan",
+      "iso_country": "TW",
+      "city": "Taipei",
+      "timezone": "Asia/Taipei",
+      "utc_offset": "+08:00",
+      "currency": "TWD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".TW",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "13:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XKRX",
+      "code": "KRX",
+      "yahoo_code": "KOE",
+      "name": "Korea Exchange",
+      "country": "South Korea",
+      "iso_country": "KR",
+      "city": "Seoul",
+      "timezone": "Asia/Seoul",
+      "utc_offset": "+09:00",
+      "currency": "KRW",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".KS",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XSES",
+      "code": "SGX",
+      "yahoo_code": "SES",
+      "name": "Singapore Exchange",
+      "country": "Singapore",
+      "iso_country": "SG",
+      "city": "Singapore",
+      "timezone": "Asia/Singapore",
+      "utc_offset": "+08:00",
+      "currency": "SGD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".SI",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBOM",
+      "code": "BSE",
+      "yahoo_code": "BOM",
+      "name": "Bombay Stock Exchange",
+      "country": "India",
+      "iso_country": "IN",
+      "city": "Mumbai",
+      "timezone": "Asia/Kolkata",
+      "utc_offset": "+05:30",
+      "currency": "INR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".BO",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:15",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNSE",
+      "code": "NSE",
+      "yahoo_code": "NSI",
+      "name": "National Stock Exchange of India",
+      "country": "India",
+      "iso_country": "IN",
+      "city": "Mumbai",
+      "timezone": "Asia/Kolkata",
+      "utc_offset": "+05:30",
+      "currency": "INR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".NS",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:15",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XASX",
+      "code": "ASX",
+      "yahoo_code": "ASX",
+      "name": "Australian Securities Exchange",
+      "country": "Australia",
+      "iso_country": "AU",
+      "city": "Sydney",
+      "timezone": "Australia/Sydney",
+      "utc_offset": "+10:00",
+      "currency": "AUD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".AX",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XNZE",
+      "code": "NZX",
+      "yahoo_code": "NZE",
+      "name": "New Zealand Exchange",
+      "country": "New Zealand",
+      "iso_country": "NZ",
+      "city": "Wellington",
+      "timezone": "Pacific/Auckland",
+      "utc_offset": "+12:00",
+      "currency": "NZD",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".NZ",
+      "is_24h": false,
+      "dst": true,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "16:45"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XKLS",
+      "code": "BURSA",
+      "yahoo_code": "KLS",
+      "name": "Bursa Malaysia",
+      "country": "Malaysia",
+      "iso_country": "MY",
+      "city": "Kuala Lumpur",
+      "timezone": "Asia/Kuala_Lumpur",
+      "utc_offset": "+08:00",
+      "currency": "MYR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".KL",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "17:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XIDX",
+      "code": "IDX",
+      "yahoo_code": "JKT",
+      "name": "Indonesia Stock Exchange",
+      "country": "Indonesia",
+      "iso_country": "ID",
+      "city": "Jakarta",
+      "timezone": "Asia/Jakarta",
+      "utc_offset": "+07:00",
+      "currency": "IDR",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".JK",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:00",
+          "close": "16:00"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XPHS",
+      "code": "PSE",
+      "yahoo_code": "PHS",
+      "name": "Philippine Stock Exchange",
+      "country": "Philippines",
+      "iso_country": "PH",
+      "city": "Manila",
+      "timezone": "Asia/Manila",
+      "utc_offset": "+08:00",
+      "currency": "PHP",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".PS",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "09:30",
+          "close": "15:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    },
+    {
+      "mic": "XBKK",
+      "code": "SET",
+      "yahoo_code": "SET",
+      "name": "Stock Exchange of Thailand",
+      "country": "Thailand",
+      "iso_country": "TH",
+      "city": "Bangkok",
+      "timezone": "Asia/Bangkok",
+      "utc_offset": "+07:00",
+      "currency": "THB",
+      "market_type": "stock",
+      "default_data_provider": "yahoo",
+      "default_data_suffix": ".BK",
+      "is_24h": false,
+      "dst": false,
+      "weekmask": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri"
+      ],
+      "sessions": {
+        "premarket": null,
+        "regular": {
+          "open": "10:00",
+          "close": "16:30"
+        },
+        "afterhours": null
+      },
+      "enabled": true
+    }
+  ]
+}

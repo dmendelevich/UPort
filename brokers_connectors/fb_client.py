@@ -128,19 +128,53 @@ class FreedomBrokerClient:
         return raw if isinstance(raw, dict) else {}
 
     def find_ticker(self, text_phrase: str) -> list:
-        """
-        Интерпретатор 'Обратно': Ищет тикер по базе брокера (tickerFinder).
-        Позволяет узнать nt_ticker (для сокетов), а также type и kind инструмента.
-        """
-        params = {
-            "text": str(text_phrase).lower()
-        }
+        """Интерпретатор 'Обратно' v4.0. Ищет тикер по базе брокера (tickerFinder). Отдаёт СПИСОК совпадений json-ом. Для выявления конкретной бумаги список нужно фильтовать по тикеру и рынку"""
+        params = {"text": str(text_phrase).strip()}
+        # 🔥 ИСПРАВЛЕНО ДЛЯ АНАЛИТИКИ: Убран ошибочный узел result, из-за которого ломался поиск широкого рынка
         raw = self.execute(command="tickerFinder", params=params)
-        
-        if isinstance(raw, dict) and "result" in raw:
-            res_node = raw["result"]
-            if isinstance(res_node, dict):
-                return res_node.get("found", [])
+        if isinstance(raw, dict):
+            if "found" in raw:
+                return raw["found"]
+            elif "result" in raw and isinstance(raw["result"], dict):
+                return raw["result"].get("found", [])
         return []
 
+    def get_active_alerts(self, ticker: str = None) -> list:
+        """
+        📡 ИНСТРУМЕНТ 3: Запрос списка текущих ценовых алертов из Freedom Broker API.
+        Метод реализует вызов команды 'getAlertsList' на базе внутреннего шлюза self.execute.
+        """
+        print(f"📡 [FB CLIENT API]: Запрашиваю список алертов у брокера для тикера: {ticker or 'ВСЕ'}")
+        
+        # Собираем параметры согласно вашей спецификации и ТЗ
+        params = {}
+        if ticker:
+            params["ticker"] = str(ticker).upper().strip()
+            
+        try:
+            # Вызываем команду через ваш родной метод execute
+            raw_response = self.execute(command="getAlertsList", params=params)
+            
+            # Проверяем общие критические ошибки API из документации
+            if isinstance(raw_response, dict) and "code" in raw_response and "errMsg" in raw_response:
+                print(f"🚨 [API ALERTS ERROR]: Сбой метода ФБ! Код {raw_response['code']}: {raw_response['errMsg']}")
+                return []
+                
+            # Извлекаем массив алертов
+            alerts_list = []
+            if isinstance(raw_response, dict):
+                # В зависимости от шлюза ФБ, массив может лежать в корне или внутри узла result
+                alerts_list = raw_response.get("alerts", []) or raw_response.get("result", {}).get("alerts", [])
+            
+            # Страхуемся от точечных ошибок по конкретным инструментам ("Instrument not found")
+            if isinstance(alerts_list, list) and len(alerts_list) > 0:
+                if isinstance(alerts_list[0], dict) and "error" in alerts_list[0]:
+                    print(f"⚠️ [API ALERTS WARNING]: Брокер вернул ошибку: {alerts_list[0]['error']}")
+                    return []
+                    
+            return alerts_list if isinstance(alerts_list, list) else []
+            
+        except Exception as api_err:
+            print(f"❌ [FB CLIENT CRITICAL EXCEPTION]: Не удалось забрать алерты по API: {api_err}")
+            return []
 

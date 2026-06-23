@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+import os
+import sys
+import time
+import json
+import logging
+from pathlib import Path
+from dotenv import load_dotenv
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+# Подгружаем системные пути ядра UPort, чтобы скрипт видел соседние модули базы и утилит
+sys.path.append(str(Path(__file__).parent.parent.resolve()))
+from database import db_sys
+import utils
+import config
+
+# Настраиваем логирование для контроля пакетного прогресса в реальном времени
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def sync_global_yahoo_signals(single_symbol=None):
+    print("\n" + "="*120)
+    print("🌅 [UPort GLOBAL YAHOO CONVEYER v1.0]: Глобальный пакетный экспресс-скоринг (100% Yahoo Finance)...")
+    print("="*120)
+
+    # 🔥 ШАГ 1: КЭШИРОВАНИЕ КУРСОВ ВАЛЮТ ДЛЯ ПЕРЕСЧЕТА ОБОР ТОВ В USD
+    logging.info("💸 Загружаю актуальные курсы валют из public.currency_rates для пересчета оборотов в USD...")
+    sql_rates = "SELECT from_currency, rate FROM public.currency_rates WHERE to_currency = 'USD';"
+    db_rates = db_sys.execute_query(sql_rates)
+    rates_cache = {str(r["from_currency"]).upper().strip(): float(r["rate"]) for r in db_rates if r.get("rate")} if db_rates else {}
+    rates_cache["USD"] = 1.0  # Базовый доллар всегда равен единице
+
+    # 🔥 ШАГ 2: SQL-ЗАПРОС НА ВЕСЬ UNIVERSE ТИКЕРОВ (С ПОДДЕРЖКОЙ ТОЧЕЧНОЙ ОТЛАДКИ)
+    if single_symbol:
+        logging.info(f"🎯 [РЕЖИМ ОТЛАДКИ]: Сбор котировок изолирован строго под символ: {single_symbol}")
+        sql_get_universe = f"SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers WHERE symbol = '{str(single_symbol).strip().upper()}';"
+    else:
+        logging.info("📡 Запрашиваю полный Universe тикеров (S&P 500, S&P 400, FTSE 100) из СУБД...")
+        # Выбираем только те боевые строки, которые прошли нашу генеральную чистку и имеют паспорт паспортистки
+        sql_get_universe = """
+            SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers 
+            WHERE provenance::text LIKE '%"MS_%' 
+               OR provenance::text LIKE '%WL_ID=%' 
+               OR provenance::text LIKE '%USER_ID=%';
+        """
+    
+    active_rows = db_sys.execute_query(sql_get_universe)
+    if not active_rows:
+        logging.warning("⚠️ Инструментов для обработки в Universe СУБД не обнаружено.")
+        return
+
+    total_tickers = len(active_rows)
+    logging.info(f"📊 В обойму глобального конвейера зашло: {total_tickers} акций. Запуск пакетных эшелонов...")
+    total_updated = 0
+
+    with utils.timer("Глобальный технический скоринг Yahoo UPort"):
+        # Нарезаем 940 акций на эшелоны по 50 штук с помощью вашего родного Chunker
+        for echelon_idx, db_batch in utils.create_echelons(active_rows, chunk_size=config.CHUNK_SIZE_SIGNALS):
+
+            logging.info(f"\n===== 📦 ОБРАБОТКА ЭШЕЛОНА {echelon_idx} (Пачка: {len(db_batch)} акций) =====")
+            
+            # 🤝 СУПЕРЧАНК ДЛЯ YAHOO: Собираем список yahoo_symbol для пакетного запроса
+            yahoo_symbols_list = []
+            db_map = {}  # Карта для сопоставления ответов Yahoo с ID нашей базы данных
+            
+            for row in db_batch:
+                y_sym = row.get("yahoo_symbol") or row["symbol"]
+                yahoo_symbols_list.append(y_sym)
+                db_map[y_sym] = row
+
+            yahoo_batch_string = " ".join(yahoo_symbols_list)
+            
+            try:
+                logging.info(f"   🌐 [YAHOO SUPERCHUNK]: Скачиваю годовую историю (1y) сразу для {len(db_batch)} бумаг...")
+                # Скачиваем годовую историю одним сетевым прыжком для всей пачки
+                batch_data = yf.Tickers(yahoo_batch_string).history(period="1y")
+                logging.info("   ✅ Пачка исторических данных успешно загружена в память.")
+            except Exception as batch_err:
+                logging.error(f"   🚨 Ошибка пакетной загрузки Yahoo для эшелона {echelon_idx}: {batch_err}")
+                continue
+
+            # 🔄 ПОТОКОВАЯ ОБРАБОТКА И МАТЕМАТИЧЕСКИЙ СКОРИНГ
+            for yf_symbol in yahoo_symbols_list:
+                node = db_map[yf_symbol]
+                db_id, symbol, f_mic = node["id"], node["symbol"], node.get("exchange_mic")
+                
+                try:
+                    # 🔥 ИСПРАВЛЕНО НАМЕРТВО: Универсальное извлечение данных из MultiIndex yfinance.
+                    # Позволяет одинаково успешно читать историю как в пакетном режиме, так и для одиночной отладки.
+                    if isinstance(batch_data.columns, pd.MultiIndex):
+                        # Безопасно вырезаем срез для конкретного тикера по второму уровню колонок (level=1)
+                        if yf_symbol in batch_data.columns.get_level_values(1):
+                            hist = batch_data.xs(yf_symbol, axis=1, level=1).copy()
+                        else:
+                            continue
+                    else:
+                        # Если прилетела обычная плоская таблица (резервный случай)
+                        hist = batch_data.copy()
+
+                    if hist is None or hist.empty:
+                        continue
+
+                    # Намертво вырезаем пустые строки, если они просочились
+                    hist = hist.dropna(subset=['Close'])
+
+
+                    if hist is None or hist.empty:
+                        continue
+
+                    # Удаляем пустые строки (выходные дни), если они просочились
+                    hist = hist.dropna(subset=['Close'])
+                    total_days = len(hist)
+
+                    if total_days < 200:
+                        # Защитный барьер: если история слишком короткая, пропускаем расчет
+                        continue
+
+                    # Находим базовую текущую цену (самая свежая ячейка Close)
+                    raw_yf_price = float(hist['Close'].iloc[-1])
+                    raw_volume = float(hist['Volume'].iloc[-1]) if not hist['Volume'].empty else 0.0
+
+                    # 💸 ПОДТЯГИВАЕМ МЕТАДАННЫЕ ВАЛЮТЫ И НАШ СКВОЗНОЙ МУЛЬТИПЛИКАТОР
+                    sql_ex_meta = f"SELECT currency_id FROM public.exchanges WHERE mic = '{f_mic}' LIMIT 1;"
+                    res_ex_meta = db_sys.execute_query(sql_ex_meta)
+                    y_curr = str(res_ex_meta[0]["currency_id"]).strip().upper() if res_ex_meta and len(res_ex_meta) > 0 else "USD"
+                    
+                    sql_y_multiplier = f"SELECT multiplier FROM public.currencies WHERE id = '{y_curr}' LIMIT 1;"
+                    res_y_mult = db_sys.execute_query(sql_y_multiplier)
+                    y_multiplier = float(res_y_mult[0]["multiplier"]) if res_y_mult and len(res_y_mult) > 0 and res_y_mult[0].get("multiplier") else 1.0
+
+                    # 🔥 НАШ УНИВЕРСАЛЬНЫЙ СКВОЗНОЙ ПАТТЕРН: Применяем мультипликатор к цене
+                    # Лондонские пенсы превратятся в фунты, а доллары и тенге умножатся на 1.0
+                    clean_price = raw_yf_price * y_multiplier
+                    
+                    # Пересчитываем дневной оборот торгов в доллары США через rates_cache
+                    y_rate = float(rates_cache.get(y_curr, 1.0))
+                    calc_y_turnover_usd = (raw_volume * clean_price) * y_rate
+
+                    # 🧮 ВЕКТОРНЫЙ РАСЧЕТ ИНДИКАТОРОВ PANDAS (СБРОС ИНДЕКСОВ ДЛЯ ЗАЩИТЫ ПАМЯТИ)
+                    history_series = pd.Series(hist['Close'].values).reset_index(drop=True)
+
+                    ema_20 = float(history_series.ewm(span=20, adjust=False).mean().iloc[-1])
+                    sma_50 = float(history_series.tail(50).mean())
+                    sma_100 = float(history_series.tail(100).mean())
+                    sma_200 = float(history_series.tail(200).mean())
+                    
+                    # Расчет процентов отклонения
+                    price_to_sma100_pct = ((raw_yf_price / sma_100) - 1) * 100
+                    price_to_sma200_pct = ((raw_yf_price / sma_200) - 1) * 100
+                    
+                    # Расчет RSI-14 по методу Уайлдера
+                    delta = history_series.diff()
+                    gain = (delta.where(delta > 0, 0)).copy()
+                    loss = (-delta.where(delta < 0, 0)).copy()
+                    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+                    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+                    
+                    rs = avg_gain / np.where(avg_loss == 0, 0.00001, avg_loss)
+                    rsi_series = 100 - (100 / (1 + rs))
+                    rsi_14 = float(rsi_series.iloc[-1])
+                    
+                    # Расчет Линии MACD (EMA_12 - EMA_26)
+                    ema_12 = history_series.ewm(span=12, adjust=False).mean()
+                    ema_26 = history_series.ewm(span=26, adjust=False).mean()
+                    macd_line = ema_12 - ema_26
+                    macd_val = float(macd_line.iloc[-1])
+
+                    # Вычисление умной технической рекомендации UPort
+                    if raw_yf_price > sma_200 and raw_yf_price > sma_100:
+                        recommendation = "STRONG_BUY"
+                    elif raw_yf_price < sma_200 and raw_yf_price < sma_100:
+                        recommendation = "SELL"
+                    else:
+                        recommendation = "NEUTRAL"
+
+                    # Применяем мультипликатор к индикаторам для синхронизации с clean_price базы
+                    ema20_sql = f"{ema_20 * y_multiplier:.4f}"
+                    sma50_sql = f"{sma_50 * y_multiplier:.4f}"
+                    sma100_sql = f"{sma_100 * y_multiplier:.4f}"
+                    sma200_sql = f"{sma_200 * y_multiplier:.4f}"
+                    pct100_sql = f"{price_to_sma100_pct:.2f}"
+                    pct200_sql = f"{price_to_sma200_pct:.2f}"
+                    rsi_sql = f"{rsi_14:.2f}"
+                    macd_sql = f"{macd_val * y_multiplier:.4f}"
+
+                    # 🔥 АТОМАРНЫЙ UPDATE СТРОКИ В СУБД (БЕЗ ЗАТИРАНИЯ ДАТЫ ОТЧЕТОВ)
+                    sql_update_yhoo = f"""
+                        UPDATE public.tickers SET 
+                            current_price = {clean_price:.4f}, 
+                            currency_id = '{y_curr}', 
+                            daily_turnover_usd = {calc_y_turnover_usd:.2f},
+                            signal_recommendation = '{recommendation}', 
+                            signal_ema_20 = {ema20_sql},
+                            signal_sma_50 = {sma50_sql},
+                            signal_sma_100 = {sma100_sql}, 
+                            signal_price_to_sma100_pct = {pct100_sql},
+                            signal_sma_200 = {sma200_sql}, 
+                            signal_price_to_sma200_pct = {pct200_sql}, 
+                            signal_rsi = {rsi_sql},
+                            signal_macd = {macd_sql},
+                            signals_last_synced_at = CURRENT_TIMESTAMP, 
+                            fb_market = 'YAHOO_GLOBAL', 
+                            fb_exchange = 'YAHOO_GLOBAL'
+                        WHERE id = {db_id};
+                    """
+                    db_sys.execute_query(sql_update_yhoo)
+                    total_updated += 1
+
+                except Exception as single_err:
+                    logging.error(f"   🚨 Сбой расчета индикаторов Yahoo для '{symbol}': {single_err}")
+
+            # ⏳ БЕЗОПАСНАЯ ПАУЗА МЕЖДУ ЭШЕЛОНАМИ ДЛЯ ЗАЩИТЫ RATE LIMIT
+            time.sleep(config.PAUSE_SIGNALS_SEC)
+            logging.info(f"   ✅ [ЭШЕЛОН №{echelon_idx} ЗАВЕРШЕН]: Накопительный итог: {total_updated} шт.")
+
+    print("\n" + "="*120)
+    print(f"🏁 [GLOBAL YAHOO CONVEYER COMPLETE]: Успешно наполнено: {total_updated} из {total_tickers} акций!")
+    print("="*120 + "\n")
+
+if __name__ == "__main__":
+    # Запуск глобального экспресс-конвейера
+    sync_global_yahoo_signals()

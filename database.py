@@ -186,10 +186,10 @@ class Database:
         return int(ticker_id), int(listing_id)
 
     def ensure_watchlist_row(self, portfolio_id: int, listing_id: int, source_type: str = "user"):
-        """Гарантирует, что бумага присутствует в списке наблюдения со статусом considered."""
+        """Гарантирует, что бумага присутствует в Master-таблице с фиксацией даты первого интереса."""
         sql = f"""
-            INSERT INTO public.watchlist (portfolio_id, listing_id, status, source_type)
-            VALUES ({portfolio_id}, {listing_id}, 'considered'::public.ticker_lifecycle_status, '{source_type}')
+            INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at)
+            VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP)
             ON CONFLICT (portfolio_id, listing_id) DO NOTHING;
         """
         self.execute_query(sql)
@@ -471,6 +471,32 @@ class Database:
             "ownership": ownership_list,
             "active_orders": orders_list
         }
+
+    # ЗАПРОС: Контекст алертов 
+    def get_ticker_alerts_context(self, listing_id: int) -> list:
+        """
+        Метод Академического контура алертов v1.0.
+        Выгружает все активные и исторические триггеры по конкретному listing_id,
+        подтягивая имена владельцев портфелей и создателей алертов через реляционный слой.
+        """
+        sql = f"""
+            SELECT 
+                al.id, al.portfolio_id, al.source_type, al.trigger_type, al.condition_type, 
+                al.trigger_price, al.trigger_price_min, al.trigger_price_max, al.trigger_pct,
+                al.is_active, al.triggered_status, al.triggered_at, al.note, al.ai_strategy_id,
+                p.name AS portfolio_name,
+                u_owner.name AS portfolio_owner_name,
+                u_creator.name AS creator_name
+            FROM public.alerts al
+            JOIN public.portfolios p ON al.portfolio_id = p.id
+            JOIN public.users u_owner ON p.owner_id = u_owner.id
+            LEFT JOIN public.users u_creator ON al.created_by_user_id = u_creator.id
+            WHERE al.listing_id = {int(listing_id)}
+            ORDER BY al.is_active DESC, al.created_at DESC;
+        """
+        res = self.execute_query(sql)
+        return res if isinstance(res, list) else ([res] if res else [])
+
 
 # Глобальные изолированные инстансы базы данных для всей экосистемы UPort
 db_bot = Database(role="BOT")       

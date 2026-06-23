@@ -1,0 +1,201 @@
+# 📊 СТРАТЕГИЧЕСКИЕ СКРИНЕРЫ РЫНКА UPort v10.2
+> **Базовый стандарт:** PRODUCTION CORE // **Платформа:** PostgreSQL СУБД // **Режим:** Оптимизированный (Без избыточной арифметики)
+
+Документ содержит четыре эталонных SQL-запроса для формирования инвестиционных портфелей. Все фильтры полностью переведены на живые числовые поля, обороты и скользящие средние архитектуры `YAHOO_GLOBAL`. Для текстового поля `signal_macd` применено безопасное приведение типов `::numeric`.
+
+---
+
+## 💎 1. Скринер для долгосрочного портфеля («Качество со скидкой»)
+
+### 📌 Описание логики
+Запрос осуществляет поиск первоклассных, высоколиквидных американских корпораций с сильной маржинальностью бизнеса, стабильным историческим ростом и низкой долговой нагрузкой, которые прямо сейчас торгуются в локальной просадке — ниже своей 200-дневной скользящей средней (SMA-200). Отличная точка входа для консервативного накопления капитала.
+
+### 🛠️ SQL-код запроса V1
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    pe_trailing, 
+    return_on_equity, 
+    debt_to_equity, 
+    revenue_cagr_3y, 
+    signal_price_to_sma200_pct
+FROM public.tickers
+WHERE exchange_mic IN ('XNGS', 'XNYS', 'XNAS') -- Крупнейшие биржи США (NASDAQ, NYSE)
+  AND daily_turnover_usd > 100000000          -- Высокая долларовая ликвидность (> \$100 млн/день)
+  AND return_on_equity > 0.15                 -- Эффективность капитала ROE > 15%
+  AND debt_to_equity < 1.5                    -- Безопасный контролируемый долг (Debt/Equity < 150%)
+  AND revenue_cagr_3y > 0.05                  -- Среднегодовой рост выручки за 3 года > 5%
+  AND signal_price_to_sma200_pct < 0.00       -- Цена находится В ПРОСАДКЕ ниже линии SMA_200
+  AND pe_trailing > 0                         -- Чистая прибыль строго положительная (исключаем убытки)
+ORDER BY return_on_equity DESC;               -- Сортировка от самых эффективных бизнесов
+```
+### 🛠️ SQL-код запроса V2
+Поправка: Снижен порог оборота до $20 млн для захвата качественного Mid-Cap сегмента.
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    pe_trailing, 
+    return_on_equity, 
+    debt_to_equity, 
+    revenue_cagr_3y, 
+    signal_price_to_sma200_pct
+FROM public.tickers
+WHERE exchange_mic IN ('XNGS', 'XNYS', 'XNAS') 
+  AND daily_turnover_usd > 20000000           -- Снизили до $20 млн для зрячего поиска в S&P 400
+  AND return_on_equity > 0.15                 
+  AND debt_to_equity < 1.5                    
+  AND revenue_cagr_3y > 0.05                  
+  AND signal_price_to_sma200_pct < 0.00       -- Идеальный поиск недооцененного качества
+  AND pe_trailing > 0                         
+ORDER BY return_on_equity DESC;
+```
+---
+
+## 🎯 2. Скринер для револьверного портфеля («Импульс и Катализаторы»)
+
+### 📌 Описание логики
+Скринер краткосрочных и среднесрочных идей в спекулятивные слоты. Отбирает сверхликвидных гигантов, которые технически сильно перепроданы по осциллятору RSI-14 (акции незаслуженно укатали в пол), но уже показывают первый разворотный бычий импульс по MACD или имеют мощную поддержку консенсус-прогнозов Wall Street. Потенциал апсайда рассчитывается напрямую от живой цены базы.
+
+### 🛠️ SQL-код запроса V1
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    signal_rsi AS rsi,
+    signal_macd AS macd,
+    target_mean_price,
+    -- Прямой и быстрый расчет потенциала роста до средней цели аналитиков:
+    ((target_mean_price - current_price) / current_price) * 100 AS analyst_upside_pct
+FROM public.tickers
+WHERE daily_turnover_usd > 500000000         -- Сверхликвидные гиганты (> \$500 млн/день)
+  AND target_mean_price IS NOT NULL           
+  AND signal_rsi < 45                        -- Бумага локально перепродана или выходит из дна
+  -- Фильтр импульса: Бычий знак MACD ИЛИ сильная рекомендация аналитиков (Buy/Strong Buy)
+  AND (
+      (NULLIF(signal_macd, '')::numeric > 0) 
+      OR recommendation_mean <= 2.0
+  ) 
+ORDER BY analyst_upside_pct DESC              -- Сортировка по максимальному потенциалу апсайда
+LIMIT 15;
+```
+
+### 🛠️ SQL-код запроса V2
+Поправка: Заменена опасная сортировка по апсайду на жесткую сортировку по силе разворотного импульса MACD.
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    signal_rsi AS rsi,
+    signal_macd AS macd,
+    ((target_mean_price - current_price) / current_price) * 100 AS analyst_upside_pct
+FROM public.tickers
+WHERE daily_turnover_usd > 500000000         
+  AND target_mean_price IS NOT NULL           
+  AND signal_rsi < 45                        
+  AND (
+      (NULLIF(signal_macd, '')::numeric > 0) 
+      OR recommendation_mean <= 2.0
+  ) 
+-- 🔥 ИСПРАВЛЕНО: Сортируем от самого сильного разворотного импульса, защищаясь от банкротов
+ORDER BY NULLIF(signal_macd, '')::numeric DESC 
+LIMIT 15;
+```
+---
+
+## 🚂 3. Скринер «Поездов» (Вход в зарождающийся сильный тренд)
+
+### 📌 Описание логики
+Стратегия классического тренд-фолловинга. Запрос вычисляет активы, на которых сформировалась идеальная бычья структура долгосрочного движения (краткосрочные средние выше долгосрочных). Скрипт ловит активы в самом начале ускорения — когда цена уже оторвалась от дна минимум на 5%, импульс по MACD подтвержден, но бумага еще не успела критически перегреться по RSI (вход до начала массового хайпа).
+
+### 🛠️ SQL-код запроса
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    industry,
+    signal_rsi AS rsi,
+    signal_price_to_sma200_pct,
+    daily_turnover_usd
+FROM public.tickers
+WHERE daily_turnover_usd > 100000000          -- Высокая долларовая ликвидность (> \$100 млн/день)
+  -- Идеальная бычья иерархия скользящих средних:
+  AND signal_ema_20 > signal_sma_50           -- Локальный импульс сильнее среднесрочного
+  AND signal_sma_50 > signal_sma_100          -- Среднесрочный тренд сильнее долгосрочного
+  AND signal_price_to_sma200_pct > 5.00       -- Цена УЖЕ закрепилась выше SMA_200 как минимум на 5%
+  -- Защита от перекупленности на вершине:
+  AND signal_rsi BETWEEN 55 AND 68            -- Импульс сильный, но без экстремального перегрева (< 70)
+  AND NULLIF(signal_macd, '')::numeric > 0    -- Линия MACD подтверждает ускорение тренда вверх
+ORDER BY signal_price_to_sma200_pct ASC       -- Выбираем те, что ближе к точке зарождения тренда
+LIMIT 10;
+```
+
+### 🛠️ SQL-код запроса V2
+Поправка: Расширен рабочий коридор RSI до 72 и скорректировано условие иерархии средних (SMA_100 > SMA_200).
+```sql
+SELECT 
+    symbol, 
+    company_name, 
+    sector, 
+    industry,
+    signal_rsi AS rsi,
+    signal_price_to_sma200_pct,
+    daily_turnover_usd
+FROM public.tickers
+WHERE daily_turnover_usd > 100000000          
+  -- Пуленепробиваемая бычья структура тренда:
+  AND signal_ema_20 > signal_sma_50           
+  AND signal_sma_50 > signal_sma_100          
+  AND signal_sma_100 > signal_sma_200         -- Добавили проверку вековой скользящей среднесрока
+  AND signal_price_to_sma200_pct > 5.00       
+  -- 🔥 ИСПРАВЛЕНО: Расширили до 72, чтобы не упускать самые мощные и здоровые тренды
+  AND signal_rsi BETWEEN 50 AND 72            
+  AND NULLIF(signal_macd, '')::numeric > 0    
+ORDER BY signal_price_to_sma200_pct ASC       
+LIMIT 10;
+```
+---
+
+## 🛑 4. Робот автоматического выхода из «Поезда»
+
+### 📌 Описание логики
+Системный мониторинг для своевременного закрытия позиций. В тренд-фолловинге фиксация прибыли или убытка происходит строго по факту технического слома тенденции. Запрос сканирует ваши открытые позиции и выводит список тикеров, где зафиксирован локальный пробой скользящей вниз, глобальный разворот линий или критический перегрев с разворотом MACD. Сигнал к немедленной продаже.
+
+### 🛠️ SQL-код запроса V1
+```sql
+SELECT 
+    symbol, 
+    company_name,
+    current_price,
+    signal_ema_20,
+    signal_sma_50,
+    signal_rsi AS rsi,
+    signal_macd AS macd
+FROM public.tickers
+WHERE 
+  -- Условие 1: Локальный слом (Живая цена пробила вниз 20-дневную EMA)
+  (current_price < signal_ema_20)
+  
+  OR 
+  
+  -- Условие 2: Глобальный разворот (Быстрая EMA ушла под среднесрочную SMA_50)
+  (signal_ema_20 < signal_sma_50)
+  
+  OR 
+  
+  -- Условие 3: Экстремальный перегрев (Защитный выход: RSI > 80 при развороте MACD в минус)
+  (signal_rsi > 80 AND NULLIF(signal_macd, '')::numeric < 0)
+  
+ORDER BY signal_price_to_sma200_pct DESC;     -- Сортировка от самых улетевших акций
+```
+
+### 🛠️ SQL-код запроса V2
+```sql
+
+```

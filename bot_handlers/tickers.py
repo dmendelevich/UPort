@@ -133,6 +133,83 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if not isinstance(all_holders, list):
         all_holders = [all_holders] if all_holders else []
 
+    # =========================================================================
+    # 🔥 НОВЫЙ КОНТУР v1.0: ПРЯМОЙ ПЕРЕХВАТ И РЕНДЕРИНГ ШТОРКИ "СПИСОК АЛЕРТОВ"
+    # =========================================================================
+    if view == "alerts":
+        print(f"🎯 [ТИКЕР АЛЕРТЫ]: Сборка изолированной шторки алертов для listing_id = {l_id}")
+        await callback.answer("Загрузка радара алертов...")
+        
+        # Вытаскиваем все алерты тикера через наше новое реляционное ядро
+        alerts_list = db_bot.get_ticker_alerts_context(l_id)
+        
+        # Формируем стерильную шапку карточки UPort
+        report_text = f"🌟 ***  {pure_symbol}  ***\n"
+        report_text += f"{l_row['company_name'] if l_row else 'Инструмент UPort'}\n"
+        report_text += f"💵 Текущая цена рынка: **${last_price:,.2f}**\n\n"
+        report_text += f"🎯 **СПИСОК АЛЕРТОВ И ТРИГГЕРОВ:**\n"
+        
+        if alerts_list:
+            for idx, al in enumerate(alerts_list, 1):
+                # 1. Определяем контур и владельца стратегии счета
+                c_icon = "📡 [FB]" if al['source_type'] == 'broker' else "🧠 [UP]"
+                p_name = al['portfolio_name'] or f"П{p_id}"
+                u_owner = al['portfolio_owner_name'] or "Инвестор"
+                
+                report_text += f"\n**{idx}. {c_icon} • Портфель {p_name} ({u_owner})**\n"
+                
+                # 2. Форматируем условие цены на основе нашей новой 3NF-структуры колонок
+                if al['trigger_price_min'] is not None and al['trigger_price_max'] is not None:
+                    report_text += f" • Канал цен: **${float(al['trigger_price_min']):,.2f} - ${float(al['trigger_price_max']):,.2f}**\n"
+                elif al['trigger_pct'] is not None:
+                    report_text += f" • Динамический триггер: **{al['condition_type']}{float(al['trigger_pct'])}%**\n"
+                else:
+                    report_text += f" • Цена: **{al['condition_type']} ${float(al['trigger_price'] or 0):,.2f}**\n"
+                
+                # 3. Выводим статус и честное время срабатывания UPort
+                if al['is_active']:
+                    report_text += f" • ⏳ Ожидание триггера\n"
+                else:
+                    t_time = ""
+                    if al['triggered_at']:
+                        # Красиво форматируем timestamp в читаемую дату/время
+                        if isinstance(al['triggered_at'], str):
+                            t_time = " " + al['triggered_at'].split('.')[0].replace('T', ' ')
+                        else:
+                            t_time = " " + al['triggered_at'].strftime('%Y-%m-%d %H:%M:%S')
+                    report_text += f" • 🔥 **СРАБОТАЛ**{t_time}\n"
+                    
+                # 4. Выводим создателя (Инициатора) алерта
+                if al['ai_strategy_id'] is not None:
+                    report_text += f" • Установил: 🤖 ИИ (Стратегия #{al['ai_strategy_id']})\n"
+                else:
+                    creator = al['creator_name'] or u_owner
+                    report_text += f" • Установил: 👤 {creator}\n"
+                    
+                # 5. Выводим ручную текстовую заметку инвестора
+                if al['note']:
+                    report_text += f" • Заметка: *{al['note']}*\n"
+        else:
+            report_text += "   *Активные и сработавшие алерты по данной бумаге в СУБД отсутствуют.*\n"
+            
+        report_text += f"───────\n"
+        
+        # Строим пульт смарт-навигации для возврата строго в радары исследования
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(
+            text="🔙 Назад к радарам слежения", 
+            callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+        ))
+        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        
+        print("🖥️ [ТИКЕР АЛЕРТЫ]: Отправляю изолированную шторку в Telegram...")
+        try:
+            await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        except TelegramBadRequest:
+            pass
+        return # 🚨 ПРЕДОХРАНИТЕЛЬ: Выходим из метода, полностью блокируя выполнение старого кода кошелька!
+    # =========================================================================
+
     # 3. ФОРМИРОВАНИЕ УЛЬТИМАТИВНЫХ ШАПОК СТУДИИ ДИЗАЙНА UPORT
     if is_owner_view:
         # Вариант 1: В портфеле конкретного счета
@@ -345,6 +422,58 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                             text += f"  • 🔹 ЛИМИТНАЯ {op_lbl} ➡️ {float(o['q']):.0f} шт. по цене {o['sign']}{float(o['p'] or 0):,.2f} ({o['order_age_days']} дн. назад)\n"
             else:
                 text += "   *Активных приказов у членов семьи на бирже нет.*\n"
+
+        # =========================================================================
+        # 🔥 ВНЕДРЕНИЕ КОНТУРА АЛЕРТОВ НА ГЛАВНУЮ СТРАНИЦУ КАРТОЧКИ ТИКЕРА (ДЛЯ КОШЕЛЬКА)
+        # =========================================================================
+        text += "\n🎯 **Взведенные алерты и триггеры по бумаге:**\n"
+        
+        # Вытаскиваем алерты из нашего нового реляционного метода в database.py
+        alerts_list = db_bot.get_ticker_alerts_context(l_id)
+        
+        if alerts_list:
+            for idx, al in enumerate(alerts_list, 1):
+                c_icon = "📡 [FB]" if al['source_type'] == 'broker' else "🧠 [UP]"
+                
+                # Фильтруем алерты для вывода: 
+                # На личном экране (p_id > 0) показываем только алерты этого портфеля.
+                # На сводном экране (p_id == 0) — выводим алерты вообще всей семьи.
+                if p_id != 0 and al.get('portfolio_id') != p_id:
+                    continue
+                    
+                p_name = al['portfolio_name'] or f"П{p_id}"
+                
+                if al['trigger_price_min'] is not None and al['trigger_price_max'] is not None:
+                    c_condition = f"Канал цен: ${float(al['trigger_price_min']):,.2f} - ${float(al['trigger_price_max']):,.2f}"
+                elif al['trigger_pct'] is not None:
+                    c_condition = f"Динамический триггер: {al['condition_type']}{float(al['trigger_pct'])}%"
+                else:
+                    c_condition = f"Цена {al['condition_type']} ${float(al['trigger_price'] or 0):,.2f}"
+                
+                if al['is_active']:
+                    c_status = "⏳ Ожидание"
+                else:
+                    t_time = ""
+                    if al['triggered_at']:
+                        if isinstance(al['triggered_at'], str):
+                            t_time = " " + al['triggered_at'].split('.').replace('T', ' ')
+                        else:
+                            t_time = " " + al['triggered_at'].strftime('%Y-%m-%d %H:%M:%S')
+                    c_status = f"🔥 **СРАБОТАЛ**{t_time}"
+                    
+                if al['ai_strategy_id'] is not None:
+                    creator = f"🤖 ИИ (Стратегия #{al['ai_strategy_id']})"
+                else:
+                    creator = f"👤 {al['creator_name'] or al['portfolio_owner_name'] or 'Инвестор'}"
+                    
+                text += f" {idx}. {c_icon} ({p_name}) • {c_condition} • {c_status} • Установил: {creator}\n"
+                
+                if al['note']:
+                    text += f"     └ *Заметка: {al['note']}*\n"
+        else:
+            text += "   *Активные или сработавшие алерты в СУБД отсутствуют.*\n"
+        # =========================================================================
+
 
     # Смарт-навигация назад в зависимости от точки входа инвестора
     if is_owner_view:
