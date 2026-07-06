@@ -24,7 +24,7 @@ def run_forced_global_fundamentals():
     sql_get_empty = """
         SELECT symbol FROM public.tickers 
         WHERE fundamentals_last_synced_at IS NULL
-          AND (provenance::text LIKE '%"MS_%' OR provenance::text LIKE '%WL_ID=%' OR provenance::text LIKE '%USER_ID=%')
+          AND (provenance::text LIKE '%"MS_%' OR provenance::text LIKE '%LST_ID=%' OR provenance::text LIKE '%TG_USR_ID=%')
         ORDER BY symbol;
     """
     raw_rows = db_sys.execute_query(sql_get_empty)

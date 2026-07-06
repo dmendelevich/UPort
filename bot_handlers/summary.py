@@ -41,27 +41,35 @@ def get_back_to_menu_keyboard() -> types.InlineKeyboardMarkup:
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
     return builder.as_markup()
 
-
 # --- ХЭНДЛЕРЫ УРОВНЯ 1 ---
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    """Ловит команду /start, один раз проверяет админ-права в БД и сохраняет в FSM."""
+    """Ловит команду /start, проверяет админ-права и забирает числовой ID пользователя из СУБД, сохраняя в FSM."""
     await state.clear()
     
     is_admin = False
+    user_db_id = None
     try:
-        # Ищем флаг is_admin напрямую по Telegram ID
-        user_check = db_bot.execute_query(f"SELECT is_admin FROM public.users WHERE telegram_id = {message.from_user.id} LIMIT 1;")
+        # 🔥 МОДЕРНИЗАЦИЯ: Добавляем выборку поля id из public.users
+        user_check = db_bot.execute_query(
+            f"SELECT id, is_admin FROM public.users WHERE telegram_id = {message.from_user.id} LIMIT 1;"
+        )
         if user_check and isinstance(user_check, list) and len(user_check) > 0:
             user_row = user_check[0] if isinstance(user_check, list) else user_check
-            # Поддерживаем разные типы ответов шлюза (bool или строку)
+            
+            # Извлекаем внутренний числовой ID пользователя
+            if user_row.get('id') is not None:
+                user_db_id = int(user_row['id'])
+                
+            # Поддерживаем разные типы ответов шлюза (bool или строку) для админа
             is_admin = str(user_row.get('is_admin')).lower() in ('true', '1', 't')
+            
     except Exception as e:
-        print(f"⚠️ Ошибка определения админ-прав при старте: {e}")
+        print(f"⚠️ Ошибка определения прав и ID пользователя при старте: {e}")
 
-    # Запираем флаг в память текущей сессии
-    await state.update_data(is_admin=is_admin)
+    # 🔥 ЗАПИРАЕМ В ПАМЯТЬ: Сохраняем и флаг админа, и внутренний user_db_id текущей сессии
+    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
 
     await message.answer(
         f"Привет, {message.from_user.full_name}! Система UPort готова к работе.\n"
@@ -69,18 +77,19 @@ async def cmd_start(message: types.Message, state: FSMContext):
         reply_markup=get_main_menu_keyboard(is_admin=is_admin)
     )
 
-
 @router.callback_query(MenuAction.filter(F.action == "main_menu"))
 async def process_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
-    """Возврат из любой шторки обратно в Главное меню (без повторных запросов к БД)."""
+    """Возврат из любой шторки обратно в Главное меню (без потери user_db_id и без повторных запросов к БД)."""
     await callback.answer()
     
-    # Извлекаем сохраненную роль из памяти сессии
+    # Извлекаем сохраненную роль и ID из памяти сессии
     user_data = await state.get_data()
     is_admin = user_data.get("is_admin", False)
+    user_db_id = user_data.get("user_db_id", None)
     
+    # Очищаем временные состояния шторки, но бережно возвращаем системные данные
     await state.clear()
-    await state.update_data(is_admin=is_admin)
+    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
     
     try:
         await callback.message.edit_text(

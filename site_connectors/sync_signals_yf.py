@@ -19,7 +19,7 @@ import config
 # Настраиваем логирование для контроля пакетного прогресса в реальном времени
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def sync_global_yahoo_signals(single_symbol=None):
+def sync_global_yahoo_signals(single_ticker_id=None):
     print("\n" + "="*120)
     print("🌅 [UPort GLOBAL YAHOO CONVEYER v1.0]: Глобальный пакетный экспресс-скоринг (100% Yahoo Finance)...")
     print("="*120)
@@ -32,19 +32,19 @@ def sync_global_yahoo_signals(single_symbol=None):
     rates_cache["USD"] = 1.0  # Базовый доллар всегда равен единице
 
     # 🔥 ШАГ 2: SQL-ЗАПРОС НА ВЕСЬ UNIVERSE ТИКЕРОВ (С ПОДДЕРЖКОЙ ТОЧЕЧНОЙ ОТЛАДКИ)
-    if single_symbol:
-        logging.info(f"🎯 [РЕЖИМ ОТЛАДКИ]: Сбор котировок изолирован строго под символ: {single_symbol}")
-        sql_get_universe = f"SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers WHERE symbol = '{str(single_symbol).strip().upper()}';"
+    if single_ticker_id:
+        logging.info(f"🎯 [РЕЖИМ ОДИНОЧНОГО ТИКЕРА]: Сбор котировок изолирован строго под ticker_id: {single_ticker_id}")
+        sql_get_universe = f"SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol, exchange_mic FROM public.tickers WHERE id = {int(single_ticker_id)};"
     else:
         logging.info("📡 Запрашиваю полный Universe тикеров (S&P 500, S&P 400, FTSE 100) из СУБД...")
         # Выбираем только те боевые строки, которые прошли нашу генеральную чистку и имеют паспорт паспортистки
         sql_get_universe = """
             SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers 
             WHERE provenance::text LIKE '%"MS_%' 
-               OR provenance::text LIKE '%WL_ID=%' 
-               OR provenance::text LIKE '%USER_ID=%';
+               OR provenance::text LIKE '%TG_USR_ID=%'
+               OR provenance::text LIKE '%LST_ID=%';
         """
-    
+            
     active_rows = db_sys.execute_query(sql_get_universe)
     if not active_rows:
         logging.warning("⚠️ Инструментов для обработки в Universe СУБД не обнаружено.")
@@ -199,7 +199,7 @@ def sync_global_yahoo_signals(single_symbol=None):
                             signal_price_to_sma200_pct = {pct200_sql}, 
                             signal_rsi = {rsi_sql},
                             signal_macd = {macd_sql},
-                            signals_last_synced_at = CURRENT_TIMESTAMP, 
+                            signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), 
                             fb_market = 'YAHOO_GLOBAL', 
                             fb_exchange = 'YAHOO_GLOBAL'
                         WHERE id = {db_id};

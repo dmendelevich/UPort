@@ -135,22 +135,16 @@ class FreedomBrokerSyncManager:
 
                     total_market_value += market_val
                     
-                    # Запускаем Кит v3.0 с СУП-переводчиком имен Freedom Broker
-                    ticker_id, listing_id = self.db.ensure_ticker_v2(
+                    # 🔥 ОБНОВЛЕНО v3.0: Запускаем универсальные Главные Ворота СУБД
+                    # Передаем роль LST и живой fb_client из рук Синк-Менеджера.
+                    # Ядро мгновенно проверит кэш, защитит базу и вернет чистые реляционные ключи.
+                    ticker_id, listing_id = self.db.ensure_ticker_v3(
+                        ticker_name_raw=full_ticker, 
+                        caller_role="LST", 
+                        caller_id=None,
                         broker_id=1, 
-                        broker_symbol=full_ticker, 
-                        fallback_currency=currency,
                         fb_client=fb_client
                     )
-                    
-                    # Фиксируем интерес бумаги в watchlist со статусом 'bought'
-                    # self.db.ensure_watchlist_row(portfolio_id, listing_id)
-                    # self.db.execute_query(f"""
-                    #     UPDATE public.watchlist 
-                    #     SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP),
-                    #         updated_at = CURRENT_TIMESTAMP 
-                    #     WHERE id = {int(w_check['id'])};
-                    # """)
 
                     active_listing_ids.append(listing_id)
 
@@ -181,55 +175,55 @@ class FreedomBrokerSyncManager:
                         f"SELECT id FROM public.watchlist WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id};"
                     )
 
-                # 💵 РАБОТАЕМ С БАЛАНСАМИ ТАБЛИЦЫ ASSETS
-                asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id}"
-                asset_res = self.db.execute_query(asset_search)
+                    # 💵 РАБОТАЕМ С БАЛАНСАМИ ТАБЛИЦЫ ASSETS
+                    asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id}"
+                    asset_res = self.db.execute_query(asset_search)
 
-                if asset_res and len(asset_res) > 0:
-                    # Узел А: Обычное обновление цены или докупка существующей позиции
-                    # 🔥 ЖЕСТКИЙ ФИКС РАСПАКОВКИ СПИСКА СУБД: Сначала извлекаем словарь, а потом берем id
-                    if isinstance(asset_res, list):
-                        a_row = asset_res[0]
-                    else:
-                        a_row = asset_res
+                    if asset_res and len(asset_res) > 0:
+                        # Узел А: Обычное обновление цены или докупка существующей позиции
+                        # 🔥 ЖЕСТКИЙ ФИКС РАСПАКОВКИ СПИСКА СУБД: Сначала извлекаем словарь, а потом берем id
+                        if isinstance(asset_res, list):
+                            a_row = asset_res[0]
+                        else:
+                            a_row = asset_res
+                            
+                        a_id = int(a_row['id'])
+                        sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, last_updated = '{session_start_time}' WHERE id = {a_id}"
+                        self.db.execute_query(sql_asset_update)
                         
-                    a_id = int(a_row['id'])
-                    sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, last_updated = '{session_start_time}' WHERE id = {a_id}"
-                    self.db.execute_query(sql_asset_update)
-                    
-                    # Безопасно извлекаем w_id из w_check для обновления даты покупки
-                    w_id = None
-                    if w_check:
-                        if isinstance(w_check, list) and len(w_check) > 0:
-                            w_id = w_check[0].get('id')
-                        elif isinstance(w_check, dict):
-                            w_id = w_check.get('id')
-                    
-                    if w_id is not None:
-                        self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
-                else:
-                    # Узел Б: Первичное добавление абсолютно новой бумаги (Инсерт)
-                    w_id = None
-                    if w_check:
-                        if isinstance(w_check, list) and len(w_check) > 0:
-                            w_id = w_check[0].get('id')
-                        elif isinstance(w_check, dict):
-                            w_id = w_check.get('id')
-
-                    if w_id is not None:
-                        self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
+                        # Безопасно извлекаем w_id из w_check для обновления даты покупки
+                        w_id = None
+                        if w_check:
+                            if isinstance(w_check, list) and len(w_check) > 0:
+                                w_id = w_check[0].get('id')
+                            elif isinstance(w_check, dict):
+                                w_id = w_check.get('id')
+                        
+                        if w_id is not None:
+                            self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
                     else:
-                        # Если бумаги не было вообще ни в одном списке — легализуем её с нуля пачкой
-                        self.db.execute_query(f"INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at, watched_at, bought_at) VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+                        # Узел Б: Первичное добавление абсолютно новой бумаги (Инсерт)
+                        w_id = None
+                        if w_check:
+                            if isinstance(w_check, list) and len(w_check) > 0:
+                                w_id = w_check[0].get('id')
+                            elif isinstance(w_check, dict):
+                                w_id = w_check.get('id')
 
-                    # Фиксируем холдинг-дни position_opened_at
-                    sql_asset_insert = f"""
-                        INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at) 
-                        VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}', '{session_start_time}') 
-                        ON CONFLICT (portfolio_id, listing_id) 
-                        DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = '{session_start_time}';
-                    """
-                    self.db.execute_query(sql_asset_insert)
+                        if w_id is not None:
+                            self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
+                        else:
+                            # Если бумаги не было вообще ни в одном списке — легализуем её с нуля пачкой
+                            self.db.execute_query(f"INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at, watched_at, bought_at) VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+
+                        # Фиксируем холдинг-дни position_opened_at
+                        sql_asset_insert = f"""
+                            INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at) 
+                            VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}', '{session_start_time}') 
+                            ON CONFLICT (portfolio_id, listing_id) 
+                            DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = '{session_start_time}';
+                        """
+                        self.db.execute_query(sql_asset_insert)
 
                 # 🔥 ИНТЕЛЛЕКТУАЛЬНЫЙ МАССОВЫЙ ФИКС ФАНТОМОВ v5.0 (КРУГОВОРОТ В WATCHLIST)
                 # Старый поштучный цикл со статусами полностью удален ради чистоты природы Master-таблицы.
@@ -272,11 +266,12 @@ class FreedomBrokerSyncManager:
                         self.db.ensure_currency(order['currency_id'])
                         self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, order['currency_id'])
                         
-                        # Гарантируем регистрацию листинга ордера через наш СУП-переводчик имен
-                        ord_ticker_id, ord_listing_id = self.db.ensure_ticker_v2(
+                        # 🔥 ОБНОВЛЕНО v3.0: Гарантируем регистрацию листинга ордера брокера через Главные Ворота
+                        ord_ticker_id, ord_listing_id = self.db.ensure_ticker_v3(
+                            ticker_name_raw=order['ticker'], 
+                            caller_role="LST", 
+                            caller_id=None,
                             broker_id=1, 
-                            broker_symbol=order['ticker'], 
-                            fallback_currency=order['currency_id'],
                             fb_client=fb_client
                         )
                         

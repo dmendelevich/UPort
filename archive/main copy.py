@@ -1,14 +1,11 @@
-#!/usr/bin/env python3
 import os
 import sys
 import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
 
-# 🔥 ЖЕЛЕЗНЫЙ АВТОМАТ ПУТЕЙ UPORT: Гарантирует корректный импорт модулей ядра при любом запуске
-sys.path.append(str(Path(__file__).parent.resolve()))
-
-# Импортируем готовый инстанс шлюза СУБД (лишний класс Database удален)
+# Импортируем компоненты шлюза СУБД
+from database import Database
 from database import db_sys
 
 # Импортируем асинхронный сокет-демон Freedom Broker и реле времени
@@ -18,22 +15,23 @@ from brokers_connectors.sync_account_fb import FreedomBrokerSyncManager
 
 import cron_scheduler
 
+
 # Загружаем переменные окружения
 env_path = Path('/root/UPort/.env')
 load_dotenv(dotenv_path=env_path)
 
-# Глобальная инициализация синк-менеджера
+# 🔥 ГЛОБАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ СИНК-МЕНЕДЖЕРА НА СВОЕМ ЗАКОННОМ МЕСТЕ
 sync_manager = FreedomBrokerSyncManager(db_instance=db_sys, fb_client_class=FreedomBrokerClient)
 
 async def start_uport_system():
-    # Подсказываем Python, чтобы он брал менеджер из глобального поля файла
+    # 🔥 ПОДСКАЗЫВАЕМ PYTHON, ЧТОБЫ ОН БРАЛ МЕНЕДЖЕР ИЗ ГЛОБАЛЬНОГО ПОЛЯ ФАЙЛА
     global sync_manager
     
     print("=== 🚀 [UPort Система] Глобальный запуск семейной экосистемы ===")
 
     # 1. Запрашиваем префиксы и базовые номера аккаунтов из таблицы users
     print("🧠 [Оркестратор]: Анализ конфигурации пользователей из таблицы users...")
-    sql_get_users = "SELECT id, name, prefix, account_number FROM public.users;"
+    sql_get_users = "SELECT prefix, account_number FROM public.users;"
     
     try:
         active_users = db_sys.execute_query(sql_get_users)
@@ -59,36 +57,27 @@ async def start_uport_system():
 
     # 3. Динамически собираем потоки сокетов Freedom Broker на основе префиксов
     for row in active_users:
-        u_id = row['id']
-        u_name = row['name']
-        prefix = row.get('prefix')
-        base_account = row.get('account_number')
-
-        # 🛡️ ПРАВКА №1: Защита от пустых профилей и служебных записей (типа AI)
-        if not prefix or not base_account:
-            print(f"ℹ️ [Оркестратор]: Профиль [{u_name}] (ID: {u_id}) пропущен — отсутствует префикс или номер счета.")
+        if not row.get('prefix') or not row.get('account_number'):
             continue
             
-        prefix_upper = prefix.upper().strip()
-        account_clean = str(base_account).strip()
+        prefix = row['prefix'].upper()
+        base_account = str(row['account_number'])
 
-        # 🛡️ ПРАВКА №2: Зрячая проверка ключей брокера в .env вместо капризного костыля "MDM"
-        api_key_env = f"FB_{prefix_upper}_API_KEY"
-        if not os.getenv(api_key_env):
-            print(f"ℹ️ [Оркестратор]: Профиль [{u_name}] (ID: {u_id}, {prefix_upper}) передан под внешний контроль СУБД (нет ключей FB в .env).")
+        if prefix == "MDM":
+            print(f"ℹ️ [Оркестратор]: Профиль сына [{prefix}] (Trading 212) передан под контроль планировщика.")
             continue
             
         # Контур Freedom Broker: ТОРГОВЫЙ СЧЕТ
-        print(f"➕ [Оркестратор]: Регистрирую сокет Freedom Broker [{prefix_upper}] -> ТОРГОВЫЙ ({account_clean})")
+        print(f"➕ [Оркестратор]: Регистрирую сокет Freedom Broker [{prefix}] -> ТОРГОВЫЙ ({base_account})")
         async_tasks.append(
-            asyncio.create_task(listen_freedom_broker(prefix_upper, "trade", account_clean, sync_manager))
+            asyncio.create_task(listen_freedom_broker(prefix, "trade", base_account, sync_manager))
         )
         
         # Контур Freedom Broker: НАКОПИТЕЛЬНЫЙ СЧЕТ (автоматически добавляем префикс 'D')
-        deposit_account = "D" + account_clean
-        print(f"➕ [Оркестратор]: Регистрирую сокет Freedom Broker [{prefix_upper}] -> НАКОПИТЕЛЬНЫЙ ({deposit_account})")
+        deposit_account = "D" + base_account
+        print(f"➕ [Оркестратор]: Регистрирую сокет Freedom Broker [{prefix}] -> НАКОПИТЕЛЬНЫЙ ({deposit_account})")
         async_tasks.append(
-            asyncio.create_task(listen_freedom_broker(prefix_upper, "deposit", deposit_account, sync_manager))
+            asyncio.create_task(listen_freedom_broker(prefix, "deposit", deposit_account, sync_manager))
         )
 
     # 4. Добавляем в Event Loop запуск Telegram-бота

@@ -5,7 +5,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
-from database import db_bot
+from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
@@ -76,10 +76,24 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # Сценарий Б: Вход по текстовому поиску чистого глобального тикера из Телеграм
         t_name = callback_data.ticker_name.strip().upper()
         
-        # 🔥 КАСКАДНЫЙ ИНТЕЛЛЕКТ v3.9: Прогоняем через Кит-метод ядра с проверкой кэша СУБД и СУП брокера!
+        # 🔥 КАСКАДНЫЙ ИНТЕЛЛЕКТ v3.0: Прогоняем через универсальный автономный шлюз СУБД с проверкой кэша!
         try:
-            # Если тикер новый, ensure_ticker_v2 сам создаст tickers и listings без дублирования запросов
-            t_id, l_id = db_bot.ensure_ticker_v2(broker_id=1, broker_symbol=t_name, fb_client=None)
+            # Импортируем db_sys для безопасной легализации и записи новой бумаги, если её нет в кэше
+            from database import db_sys
+            
+            # Переключаем алерты и поиск бота на Главные Ворота экосистемы UPort с ролью TG_USR
+            t_id, l_id = db_sys.ensure_ticker_v3(
+                ticker_name_raw=t_name, 
+                caller_role="TG_USR", 
+                caller_id=None, 
+                broker_id=1, 
+                fb_client=None
+            )
+            
+            # Если шлюз не смог распознать или легализовать бумагу — прерываем обработку
+            if not l_id:
+                print(f"⚠️ [TG BOT]: Не удалось легализовать символ '{t_name}' через ядро СУБД.")
+                return
             
             # Извлекаем созданные/найденные параметры
             listing_sql = f"""
@@ -89,11 +103,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 WHERE l.id = {l_id};
             """
             l_res = db_bot.execute_query(listing_sql)
-            l_row = l_res
-            pure_symbol = l_row['symbol']
-            broker_symbol = l_row['broker_symbol']
-            last_price = float(l_row['last_price'] or 0)
-            currency_id = l_row['currency_id']
+            
         except Exception as err:
             print(f"❌ [КАСКАДНЫЙ ПОИСК ОШИБКА]: Инструмент {t_name} не найден на мировых биржах: {err}")
             await callback.answer(f"❌ Ошибка: тикер '{t_name}' не найден в СУБД и СУП брокера.", show_alert=True)

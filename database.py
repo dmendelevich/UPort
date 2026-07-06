@@ -5,6 +5,8 @@ from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from pathlib import Path
 import asyncio
+import json
+import logging
 
 # Глобальная потокобезопасная очередь задач для сквозного анализа ETF
 ETF_LOOK_THROUGH_QUEUE = asyncio.Queue()
@@ -72,30 +74,6 @@ class Database:
         ON CONFLICT (account_number, currency_id) DO NOTHING;
         """
         self.execute_query(sql)
-
-    def ensure_ticker(self, full_ticker: str, currency_id: str, broker_id: int = 1):
-        """
-        Кит №3 (Legacy-совместимый): Оставлен для фоновой работы старого кода до полной миграции.
-        """
-        symbol, suffix = full_ticker.split(".", 1) if "." in full_ticker else (full_ticker, "US")
-        sql = f"""
-        INSERT INTO public.tickers (symbol, suffix, full_ticker, currency_id, broker_id)
-        VALUES ('{symbol}', '{suffix}', '{full_ticker}', '{currency_id}', {broker_id})
-        ON CONFLICT (full_ticker) DO NOTHING;
-        """
-        self.execute_query(sql)
-        try:
-            t_info = self.execute_query(f"SELECT id FROM public.tickers WHERE full_ticker = '{full_ticker}';")
-            if t_info:
-                t_row = t_info[0] if isinstance(t_info, list) and len(t_info) > 0 else (t_info if isinstance(t_info, dict) else {})
-                t_id = t_row.get('id')
-                if t_id:
-                    check_h = self.execute_query(f"SELECT 1 FROM public.etf_holdings WHERE etf_ticker_id = {t_id} LIMIT 1;")
-                    if not check_h:
-                        task_data = {"id": t_id, "symbol": symbol, "suffix": suffix, "full_ticker": full_ticker, "currency_id": currency_id, "broker_id": broker_id}
-                        ETF_LOOK_THROUGH_QUEUE.put_nowait(task_data)
-        except Exception as q_err:
-            print(f"⚠️ Предупреждение постановки {full_ticker} в ETF очередь: {q_err}")
 
     def ensure_ticker_v2(self, broker_id: int, broker_symbol: str, fallback_currency: str = "USD", fb_client = None) -> tuple:
         """
@@ -185,15 +163,284 @@ class Database:
 
         return int(ticker_id), int(listing_id)
 
-    def ensure_watchlist_row(self, portfolio_id: int, listing_id: int, source_type: str = "user"):
-        """Гарантирует, что бумага присутствует в Master-таблице с фиксацией даты первого интереса."""
-        sql = f"""
-            INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at)
-            VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP)
-            ON CONFLICT (portfolio_id, listing_id) DO NOTHING;
+    def ensure_ticker_v3(self, ticker_name_raw: str, caller_role: str, caller_id=None, broker_id: int = None, fb_client = None) -> tuple:
         """
-        self.execute_query(sql)
+        ГЛАВНЫЕ ВОРОТА СУБД UPort v3.0 (УНИВЕРСАЛЬНЫЙ АВТОНОМНЫЙ ШЛЮЗ ПАСПОРТИЗАЦИИ).
+        
+        Параметры:
+            ticker_name_raw (str): Сырой тикер от любого источника (напр. 'AAPL', 'BROS.US', 'BRK.B').
+            caller_role (str): Роль вызывающего процесса ('TG_USR', 'LST', 'ETF_LT', 'MS').
+            caller_id: Спецификация автора запроса (user_db_id, parent_etf_id, код индекса или None).
+            broker_id (int): Идентификатор брокера из СУБД (1 - Freedom Broker, 2 - Trading212), если применимо.
+            fb_client: Живой объект транспорта Freedom Broker (если передан сверху из Синк-Менеджера).
+            
+        Возвращает:
+            tuple: (ticker_id, listing_id) — эталонные реляционные ключи СУБД.
+        """
+        from utils import ensure_ticker_passport_in_db, manage_provenance
+        
+        symbol_clean = str(ticker_name_raw).strip().upper()
+        role_clean = str(caller_role).strip().upper()
+        
+        logging.info(f"🧱 [ЯДРО v3.0 START]: Входной запрос от [{role_clean}] для символа '{symbol_clean}'")
+        
+        ticker_id = None
+        res_ticker = None
 
+        # ─── ШАГ 1: ПЕРВИЧНАЯ ПРОВЕРКА НАЛИЧИЯ ТИКЕРА В ЛОКАЛЬНОМ СПРАВОЧНИКЕ ───
+        json_pattern_fb = json.dumps({"FB": symbol_clean})
+        json_pattern_t212 = json.dumps({"T212": symbol_clean})
+        
+        sql_check_ticker = f"""
+            SELECT id FROM public.tickers 
+            WHERE ticker_name_map @> '{json_pattern_fb}'::jsonb 
+            OR ticker_name_map @> '{json_pattern_t212}'::jsonb 
+            LIMIT 1;
+        """
+        res_ticker = self.execute_query(sql_check_ticker)
+        if res_ticker and isinstance(res_ticker, list) and len(res_ticker) > 0:
+            row_t = res_ticker[0] if isinstance(res_ticker, list) else res_ticker
+            ticker_id = int(row_t.get('id') if isinstance(row_t, dict) else row_t)
+            logging.info(f"🎯 [ЯДРО v3.0 КЭШ-Т] Справочник по матрице имен содержит '{symbol_clean}'. ticker_id = {ticker_id}")
+
+        # ─── ШАГ 2: МИРОВАЯ ЛЕГАЛИЗАЦИЯ (ВЫЗОВ ПАСПОРТИСТКИ ДЛЯ РЕАЛЬНО НОВЫХ БУМАГ) ───
+        # Если по кэшу ничего не нашли (или это торговый след брокера LST, где нужно дозаписать кодировки)
+        if ticker_id is None:
+            # 🔥 ИСПРАВЛЕНО v3.2: Переключаем внутренний контур ядра на монолитную фабрику связей по user_id=1
+            # Это гарантирует успешную сборку робота в контексте ТГ-бота без явного вызова load_dotenv()
+            if fb_client is None and broker_id == 1:
+                try:
+                    from brokers_connectors.fb_client import FreedomBrokerClient
+                    fb_client = FreedomBrokerClient.create_for_user(user_id=1, db_instance=self)
+                    if fb_client:
+                        logging.info("📡 [ЯДРО v3.0]: Системный робот FreedomBrokerClient успешно собран через фабрику по user_id=1.")
+                except Exception as transport_err:
+                    logging.error(f"⚠️ [ЯДРО v3.0]: Не удалось собрать фабричного робота брокера: {transport_err}")
+
+            # Вызываем Паспортистку. Теперь fb_client гарантированно живой для контура ФБ!
+            ticker_id = ensure_ticker_passport_in_db(self, symbol_clean, fb_client)
+
+        if not ticker_id:
+            logging.error(f"❌ [ЯДРО v3.0 ОШИБКА]: Паспортистка не смогла легализовать символ '{symbol_clean}'")
+            return (None, None)
+
+        # ─── ШАГ 3: СКАНДИРОВАНИЕ СУЩЕСТВУЮЩЕГО ЛИСТИНГА БРОКЕРА ───
+        listing_id = None
+        if broker_id is not None:
+            sql_check_listing = f"""
+                SELECT id FROM public.listings 
+                WHERE ticker_id = {int(ticker_id)} AND broker_id = {int(broker_id)} LIMIT 1;
+            """
+            res_listing = self.execute_query(sql_check_listing)
+            if res_listing and isinstance(res_listing, list) and len(res_listing) > 0:
+                row_l = res_listing[0] if isinstance(res_listing, list) else res_listing
+                listing_id = int(row_l.get('id') if isinstance(row_l, dict) else row_l)
+                logging.info(f"🎯 [ЯДРО v3.0 КЭШ-L]: Найден существующий листинг LST_ID = {listing_id}")
+
+        # ─── ШАГ 4: АТОМАРНОЕ МЯГКОЕ СОЗДАНИЕ ЛИСТИНГА (СТРОГО ДЛЯ РОЛИ LST) ───
+        if listing_id is None and role_clean == "LST" and broker_id is not None:
+            # Вызываем наш новый, вынесенный наружу универсальный метод регистрации
+            listing_id = self.ensure_listing(
+                ticker_id=ticker_id,
+                broker_id=broker_id,
+                fb_client=fb_client
+            )
+
+        # ─── ШАГ 5: КОНТУР РЕГИСТРАТОРА (ЧИСТАЯ И ПОНЯТНАЯ РАЗВИЛКА ДЛЯ ВСЕХ 4 РОЛЕЙ) ───
+        if role_clean == "LST":
+            source_key = f"LST_ID={listing_id}"
+        elif role_clean == "MS":
+            source_key = f"MS_{caller_id}"
+        else:
+            # Для TG_USR и ETF_LT ключ соберется автоматически (напр. TG_USR_ID=1 или ETF_LT_ID=345)
+            source_key = f"{role_clean}_ID={caller_id}"
+
+        manage_provenance(self, ticker_id=ticker_id, source_key=source_key, action="add")
+
+        # ─── ШАГ 6: ПОСЛЕДОВАТЕЛЬНЫЙ ПИНОК СБОРЩИКАМ (СТРОГО ДЛЯ РЕАЛЬНО НОВЫХ БУМАГ) ───
+        # Жесткий заградительный щит: пинаем сборщиков только для живых контуров (TG_USR, LST)
+        # и только если бумага реально новая для базы данных (ticker_id не был найден в локальном кэше на старте)!
+        # Для пакетных роботов ETF_LT и MS этот шаг полностью блокируется, спасая ресурсы и IP от банов Yahoo.
+        if role_clean in ("TG_USR", "LST") and (res_ticker is None or len(res_ticker) == 0):
+            try:
+                from site_connectors.sync_signals_yf import sync_global_yahoo_signals
+                from site_connectors.sync_fundamentals_yhoo import sync_fundamentals
+                
+                logging.info(f"🚀 [ЯДРО v3.0]: Запуск последовательного экспресс-скоринга для ticker_id = {ticker_id}")
+                sync_global_yahoo_signals(single_ticker_id=ticker_id)
+                sync_fundamentals(self, single_ticker_id=ticker_id)
+                
+            except Exception as sync_trigger_err:
+                logging.error(f"⚠️ [ЯДРО v3.0]: Сбой фонового триггера сборщиков Yahoo: {sync_trigger_err}")
+
+        return int(ticker_id), (int(listing_id) if listing_id is not None else None)
+
+    def ensure_watchlist_row_v2(self, portfolio_id: int, listing_id: int, reason: str = "watched"):
+        """
+        📋 УМНЫЙ РЕГИСТРАТОР ВАТЧЛИСТА v2.0
+        Гарантирует присутствие бумаги в портфеле с фиксацией контекста (причины) её появления.
+        Защищает внутренний счетчик ID СУБД от холостой накрутки при повторных вызовах.
+        
+        Допустимые значения параметра reason (строго 4 контекста):
+            'watched'  - Бумага поставлена на наблюдение (алерты брокера, ручной фокус).
+            'ordered'  - По бумаге выставлен активный приказ/ордер (ожидание исполнения).
+            'bought'   - Совершена сделка покупки (бумага зашла в реальный баланс).
+            'sold_out' - Позиция полностью закрыта/продана (выход из актива).
+        """
+        import logging
+        
+        p_id = int(portfolio_id)
+        l_id = int(listing_id)
+        reason_clean = str(reason).strip().lower()
+        
+        # Строгая карта соответствия причин и целевых колонок в СУБД UPort
+        reason_columns = {
+            "watched": "watched_at",
+            "ordered": "ordered_at",
+            "bought": "bought_at",
+            "sold_out": "sold_out_at"
+        }
+        
+        if reason_clean not in reason_columns:
+            logging.error(f"❌ [WATCHLIST v2]: Недопустимый контекст reason='{reason}'. Допускаются только: {list(reason_columns.keys())}")
+            return
+            
+        target_column = reason_columns[reason_clean]
+        
+        # 🛡️ ЗАЩИТА СПИДОМЕТРА ID: Сначала зряче проверяем, существует ли уже запись
+        sql_check = f"SELECT id FROM public.watchlist WHERE portfolio_id = {p_id} AND listing_id = {l_id} LIMIT 1;"
+        res_wl = self.execute_query(sql_check)
+        
+        if res_wl and len(res_wl) > 0:
+            # --- ВЕТКА UPDATE: Запись уже есть, точечно взводим нужную метку времени ---
+            row_id = int(res_wl[0]['id'])
+            sql_update = f"""
+                UPDATE public.watchlist 
+                SET {target_column} = CURRENT_TIMESTAMP(0),
+                    updated_at = CURRENT_TIMESTAMP(0)
+                WHERE id = {row_id};
+            """
+            self.execute_query(sql_update)
+            logging.info(f"📝 [WATCHLIST v2]: Бумага LST_ID={l_id} в портфеле ID={p_id} актуализирована по причине '{reason_clean}' (ID строки: {row_id}).")
+        else:
+            # --- ВЕТКА INSERT: Абсолютно новая запись, заполняем стартовую колонку, остальные NULL ---
+            columns_list = ["portfolio_id", "listing_id", "updated_at", target_column]
+            values_list = [str(p_id), str(l_id), "CURRENT_TIMESTAMP(0)", "CURRENT_TIMESTAMP(0)"]
+            
+            # Дописываем остальные колонки времени как NULL, чтобы запрос был монолитным
+            for col in reason_columns.values():
+                if col != target_column:
+                    columns_list.append(col)
+                    values_list.append("NULL")
+                    
+            sql_insert = f"""
+                INSERT INTO public.watchlist ({', '.join(columns_list)})
+                VALUES ({', '.join(values_list)});
+            """
+            self.execute_query(sql_insert)
+            logging.info(f"➕ [WATCHLIST v2]: Бумага LST_ID={l_id} впервые добавлена в портфель ID={p_id} по причине '{reason_clean}'.")
+
+    def ensure_listing(self, ticker_id: int, broker_id: int, fb_client = None) -> int:
+        """
+        📈 УНИВЕРСАЛЬНЫЙ РЕГИСТРАТОР ЛИСТИНГОВ v1.0
+        Гарантирует присутствие бумаги в таблице listings брокера с получением живой цены.
+        Выбрасывает ValueError, если инструмент не поддерживается выбранным брокером.
+        """
+        t_id = int(ticker_id)
+        b_id = int(broker_id)
+        
+        # 🛡️ ПЕРВИЧНАЯ ПРОВЕРКА КЭША: Если листинг уже существует, мгновенно отдаем его ID
+        sql_check = f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = {b_id} LIMIT 1;"
+        res_listing = self.execute_query(sql_check)
+        if res_listing and len(res_listing) > 0:
+            row_l = res_listing[0] if isinstance(res_listing, list) else res_listing
+            return int(row_l.get('id') if isinstance(row_l, dict) else row_l)
+            
+        # 🔗 РЕЛЯЦИОННОЕ ИЗВЛЕЧЕНИЕ КАННОНИЧЕСКОГО ИМЕНИ ИЗ КАРТЫ СУБД
+        sql_get_canonical = f"""
+            SELECT ticker_name_map ->> (SELECT short_name FROM public.brokers WHERE id = {b_id}) AS broker_symbol
+            FROM public.tickers 
+            WHERE id = {t_id};
+        """
+        try:
+            res_canonical = self.execute_query(sql_get_canonical)
+            row_c = res_canonical[0] if isinstance(res_canonical, list) else res_canonical
+            broker_ticker_name = row_c.get('broker_symbol') if isinstance(row_c, dict) else row_c
+        except Exception as db_json_err:
+            logging.error(f"❌ Ошибка SQL-парсинга JSONB-карты имен в ensure_listing: {db_json_err}")
+            broker_ticker_name = None
+
+        # 🛑 ШЛАГБАУМ БЕЗОПАСНОСТИ: Если брокер не поддерживает бумагу — выбрасываем исключение
+        if not broker_ticker_name or str(broker_ticker_name).strip().upper() == "UNSUPPORTED":
+            raise ValueError("Этот инструмент не торгуется через выбранного брокера")
+
+        broker_ticker_name = str(broker_ticker_name).strip().upper()
+        target_currency = "USD"  # Дефолт
+        live_price = 0.0         # Стартовая цена по умолчанию
+        
+        # Контур сбора параметров с биржи под конкретного брокера
+        if b_id == 1:
+            try:
+                if not fb_client:
+                    from brokers_connectors.fb_client import FreedomBrokerClient
+                    pub_key = os.getenv("FB_DLM_API_KEY")
+                    priv_key = os.getenv("FB_DLM_API_SECRET")
+                    if pub_key and priv_key:
+                        fb_client = FreedomBrokerClient(pub_key, priv_key)
+                
+                if fb_client:
+                    # Запрашиваем справочную валюту по каноническому имени (напр. 'RKLB.US')
+                    sec_info = fb_client.get_security_info(broker_ticker_name)
+                    if isinstance(sec_info, dict) and sec_info.get("currency"):
+                        target_currency = str(sec_info["currency"]).strip().upper()
+                    
+                    # Сразу забираем живую котировку float через наш универсальный метод
+                    live_price = fb_client.get_quotes(broker_ticker_name)
+                    logging.info(f"📊 [ENSURE LISTING]: Получена стартовая котировка для {broker_ticker_name}: {live_price}")
+                    
+            except Exception as api_err:
+                logging.error(f"⚠️ [ENSURE LISTING]: Ошибка запроса параметров через робота ФБ: {api_err}")
+        elif b_id == 2:
+            # Контур Trading 212
+            target_currency = "GBP"
+            live_price = 0.0
+            
+        self.ensure_currency(target_currency)
+        
+        # Фиксируем листинг с правильным именем и живой котировкой
+        sql_insert_listing = f"""
+            INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id, last_price)
+            VALUES ({t_id}, {b_id}, '{broker_ticker_name}', '{target_currency}', {float(live_price)})
+            ON CONFLICT (broker_id, broker_symbol) DO NOTHING;
+        """
+        self.execute_query(sql_insert_listing)
+        
+        res_id = self.execute_query(
+            f"SELECT id FROM public.listings WHERE broker_id = {b_id} AND broker_symbol = '{broker_ticker_name}' LIMIT 1;"
+        )
+        if res_id and len(res_id) > 0:
+            # 🔥 ФИКС v5.3: Зряче извлекаем нулевой элемент списка словарей PostgreSQL
+            row_id = res_id[0] if isinstance(res_id, list) else res_id
+            listing_id = int(row_id.get('id') if isinstance(row_id, dict) else row_id)
+            
+            # Фоновый запуск декомпозиции без блокировки Event Loop
+            try:
+                sql_get_type = f"SELECT asset_type FROM public.tickers WHERE id = {t_id};"
+                res_type = self.execute_query(sql_get_type)
+                if res_type and len(res_type) > 0:
+                    row_t = res_type[0] if isinstance(res_type, list) else res_type
+                    asset_type = str(row_t.get('asset_type', 'UNDETERMINED')).strip().upper()
+                    
+                    if asset_type == "ETF":
+                        from site_connectors.trigger_etf_look_through import run_etf_look_through_decomposition
+                        logging.info(f"🔬 [ЯДРО - LISTING]: Обнаружен листинг фонда ETF! Порождаю фоновую задачу декомпозиции для ticker_id = {t_id}")
+                        asyncio.create_task(run_etf_look_through_decomposition(target_ticker_id=t_id))
+            except Exception as etf_trigger_err:
+                logging.error(f"⚠️ [ЯДРО - LISTING]: Сбой фонового запуска декомпозиции ETF: {etf_trigger_err}")
+
+            return listing_id
+            
+        return 0
     # === ОСНОВНОЙ ЭТАП ЗАПИСИ ПРИКАЗОВ ===
 
     @staticmethod
@@ -496,6 +743,7 @@ class Database:
         """
         res = self.execute_query(sql)
         return res if isinstance(res, list) else ([res] if res else [])
+
 
 
 # Глобальные изолированные инстансы базы данных для всей экосистемы UPort

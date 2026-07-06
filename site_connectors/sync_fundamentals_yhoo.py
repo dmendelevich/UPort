@@ -18,7 +18,7 @@ import config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 🔥 ИСПРАВЛЕНО: Добавили аргумент single_symbol для обработки одиночных новичков из ТГ в реальном времени
-def sync_fundamentals(db_instance, single_symbol=None):
+def sync_fundamentals(db_instance, single_ticker_id=None):
     """
     Контур В (UPort PRODUCTION v10.1): Ночное интеллектуальное обновление 18 фундаментальных показателей.
     Реализует концепцию 'Умного постотчетного триггера' и 'Размазывающего фонового щита' (LIMIT 20) через UNION.
@@ -26,13 +26,13 @@ def sync_fundamentals(db_instance, single_symbol=None):
     """
     
     # 🔥 ШАГ 1: ФОРМИРОВАНИЕ ИНТЕЛЛЕКТУАЛЬНОГО SQL-ЗАПРОСА С ДРОССЕЛИРОВАНИЕМ НАГРУЗКИ
-    if single_symbol:
-        logging.info(f"🎯 [ФУНДАМЕНТАЛ ШЛЮЗ]: Экстренный сбор показателей для одиночной новой бумаги: '{single_symbol}'")
+    if single_ticker_id:
+        logging.info(f"🎯 [ФУНДАМЕНТАЛ ШЛЮЗ]: Экстренный сбор показателей для одиночной новой бумаги с ticker_id: {single_ticker_id}")
         # Извлекаем yahoo_symbol из JSONB-карты по ключу "YAHOO" для конкретного тикера
         sql_tickers = f"""
             SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol
             FROM public.tickers
-            WHERE symbol = '{str(single_symbol).strip().upper()}';
+            WHERE id = {int(single_ticker_id)};
         """
     else:
         logging.info("📡 [УМНЫЙ ТРИГГЕР]: Формирую двухконтурную ночную выборку Universe...")
@@ -46,7 +46,11 @@ def sync_fundamentals(db_instance, single_symbol=None):
                 SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol, 1 AS priority
                 FROM public.tickers
                 WHERE signal_next_report_date = CURRENT_DATE - INTERVAL '2 days'
-                  AND (provenance::text LIKE '%"MS_%' OR provenance::text LIKE '%WL_ID=%' OR provenance::text LIKE '%USER_ID=%')
+                  AND (
+                      provenance::text LIKE '%"MS_%' 
+                      OR provenance::text LIKE '%TG_USR_ID=%'
+                      OR provenance::text LIKE '%LST_ID=%'
+                  )
             )
             UNION ALL
             (
@@ -54,13 +58,17 @@ def sync_fundamentals(db_instance, single_symbol=None):
                 SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol, 2 AS priority
                 FROM public.tickers
                 WHERE (fundamentals_last_synced_at IS NULL OR fundamentals_last_synced_at < CURRENT_DATE - INTERVAL '90 days')
-                  AND (provenance::text LIKE '%"MS_%' OR provenance::text LIKE '%WL_ID=%' OR provenance::text LIKE '%USER_ID=%')
+                  AND (
+                      provenance::text LIKE '%"MS_%' 
+                      OR provenance::text LIKE '%TG_USR_ID=%'
+                      OR provenance::text LIKE '%LST_ID=%'
+                  )
                 ORDER BY fundamentals_last_synced_at ASC NULLS FIRST
                 LIMIT 20 -- Наша главная защита от сентябрьского затора и банов Yahoo!
             )
             ORDER BY priority ASC, id ASC;
         """
-        
+
     tickers_data = db_instance.execute_query(sql_tickers)
 
     if not tickers_data or not isinstance(tickers_data, list):

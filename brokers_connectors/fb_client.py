@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 import requests
+import os
 
 class FreedomBrokerClient:
     """Транспортный ('глупый') клиент к API Freedom Broker (Tradernet v2, Казахстан)."""
@@ -12,6 +13,47 @@ class FreedomBrokerClient:
         self.private_key = private_key
         # Безопасная склейка URL
         self.host = f"{'https'}://{'tradernet.kz'}/{'api'}/"
+
+    @classmethod
+    def create_for_user(cls, user_id: int, db_instance) -> "FreedomBrokerClient":
+        """
+        🏭 Унифицированная фабрика для автоматического создания клиента по user_id.
+        Сам ходит в базу за префиксом и вытягивает ключи из загруженного .env.
+        """
+        print(f"🏭 [FB CLIENT FACTORY]: Сборка клиента для пользователя ID: {user_id}...")
+        
+        # 1. Запрашиваем префикс пользователя из базы данных через f-строку (безопасно для int)
+        sql = f"SELECT prefix FROM public.users WHERE id = {int(user_id)} LIMIT 1;"
+        user_rows = db_instance.execute_query(sql)
+        
+        # Проверяем, что база вернула непустой список
+        if not user_rows or len(user_rows) == 0:
+            print(f"⚠️ [FACTORY WARNING]: Пользователь с ID {user_id} не найден в БД.")
+            return None
+            
+        # Извлекаем первую строку-словарь из полученного списка
+        user_row = user_rows[0]
+        
+        prefix = user_row.get('prefix')
+        if not prefix:
+            print(f"⚠️ [FACTORY WARNING]: У пользователя ID {user_id} отсутствует текстовый prefix.")
+            return None
+            
+        prefix_upper = prefix.upper().strip()
+        
+        # 2. Формируем имена переменных и забираем ключи из памяти процесса (.env)
+        api_key_env = f"FB_{prefix_upper}_API_KEY"
+        api_secret_env = f"FB_{prefix_upper}_API_SECRET"
+        
+        public_key = os.getenv(api_key_env)
+        private_key = os.getenv(api_secret_env)
+        
+        if not public_key or not private_key:
+            print(f"⚠️ [FACTORY WARNING]: В .env не найдены ключи {api_key_env} или {api_secret_env}.")
+            return None
+            
+        print(f"✅ [FACTORY SUCCESS]: Клиент для префикса {prefix_upper} успешно собран.")
+        return cls(public_key=public_key, private_key=private_key)
 
     def execute(self, command: str, params: dict = None) -> dict:
         """Базовый универсальный метод для отправки любой команды к API."""
@@ -168,8 +210,8 @@ class FreedomBrokerClient:
             
             # Страхуемся от точечных ошибок по конкретным инструментам ("Instrument not found")
             if isinstance(alerts_list, list) and len(alerts_list) > 0:
-                if isinstance(alerts_list[0], dict) and "error" in alerts_list[0]:
-                    print(f"⚠️ [API ALERTS WARNING]: Брокер вернул ошибку: {alerts_list[0]['error']}")
+                if isinstance(alerts_list, dict) and "error" in alerts_list:
+                    print(f"⚠️ [API ALERTS WARNING]: Брокер вернул ошибку: {alerts_list['error']}")
                     return []
                     
             return alerts_list if isinstance(alerts_list, list) else []
@@ -178,3 +220,62 @@ class FreedomBrokerClient:
             print(f"❌ [FB CLIENT CRITICAL EXCEPTION]: Не удалось забрать алерты по API: {api_err}")
             return []
 
+    def get_quotes(self, tickers) -> dict | float:
+        """
+        📊 УНИВЕРСАЛЬНЫЙ ИНСТРУМЕНТ: Пакетный и одиночный REST-сборщик котировок.
+        Принимает как одну строку (тикер), так и список строк (пачку тикеров).
+        Автоматически зачищает текстовые JSON-запятые брокера и выдает чистые float.
+        """
+        # 1. Унифицируем входной параметр: превращаем одиночную строку в список из одного элемента
+        is_single = isinstance(tickers, str)
+        tickers_list = [tickers.strip().upper()] if is_single else [str(t).strip().upper() for t in tickers]
+        
+        if not tickers_list:
+            return 0.0 if is_single else {}
+
+        # 2. Отправляем пакетный запрос к брокеру через наш универсальный транспорт execute
+        try:
+            raw_response = self.execute(command="getStockQuotesJson", params={"tickers": tickers_list})
+            
+            if isinstance(raw_response, dict) and "code" in raw_response and "errMsg" in raw_response:
+                print(f"🚨 [API QUOTES ERROR]: Сбой метода ФБ! Код {raw_response['code']}: {raw_response['errMsg']}")
+                return 0.0 if is_single else {}
+                
+            result_node = raw_response.get("result", {}) if isinstance(raw_response, dict) else {}
+            result_array = result_node.get("q", []) if isinstance(result_node, dict) else []
+            
+            if not result_array or not isinstance(result_array, list):
+                return 0.0 if is_single else {}
+                
+            # 3. Собираем результаты в чистый словарь Python с валидацией типов данных
+            parsed_quotes = {}
+            for quote in result_array:
+                ticker_name = quote.get("c")
+                if not ticker_name:
+                    continue
+                    
+                ticker_name = str(ticker_name).upper().strip()
+                raw_price = quote.get("ltp")
+                
+                if raw_price is not None and str(raw_price) != 'nan' and str(raw_price).strip() != '':
+                    try:
+                        # Физически истребляем десятичные запятые брокера, переводя в стерильный float
+                        clean_price = float(str(raw_price).replace(',', '.').strip())
+                        parsed_quotes[ticker_name] = clean_price
+                    except (ValueError, TypeError):
+                        parsed_quotes[ticker_name] = 0.0
+                else:
+                    parsed_quotes[ticker_name] = 0.0
+
+            # 4. Умный возврат в зависимости от того, как метод был вызван
+            if is_single:
+                # Возвращаем просто число float для одиночной бумаги (нужно для ядра базы)
+                target_ticker = tickers_list[0]
+                return parsed_quotes.get(target_ticker, 0.0)
+            
+            # Возвращаем весь словарь {тикер: float_цена} для пакетного обновителя
+            return parsed_quotes
+
+        except Exception as e:
+            print(f"❌ [FB CLIENT CRITICAL EXCEPTION] Сбой метода get_quotes: {e}")
+            return 0.0 if is_single else {}

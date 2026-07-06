@@ -1,57 +1,90 @@
+#!/usr/bin/env python3
+import sys
+import os
+import logging
+from pathlib import Path
+
+# 🔥 ЖЕЛЕЗНЫЙ АВТОМАТ ПУТЕЙ UPORT: поднимаемся на одну папку выше из site_connectors в корень
+sys.path.append(str(Path(__file__).parent.parent.resolve()))
+
 import yfinance as yf
-from datetime import datetime
 import time
 
 def sync_rates(db_instance):
     """
     Контур Б: Обновление макрокурсов валют Форекс к доллару США через Yahoo Finance.
-    ИСПРАВЛЕНО: Запрос переведен на чистый справочник public.currencies и добавлен маппинг RUR->RUB.
+    ОПТИМИЗИРОВАНО: Собирает только используемые валюты из tickers и listings.
+    ВЫВЕРЕНО: Сохраняет оригинальный регистр кода (напр. GBp) для связей FK в СУБД.
+    СТАНДАРТ: Фиксация времени строго по правилам UPort UTC TIMESTAMP(0).
     """
-    print("📡 [Yahoo Forex]: Сбор валют из системного справочника public.currencies...")
+    logging.info("📡 [Yahoo Forex]: Сбор реально используемых валют из СУБД...")
     
-    # Идеальный, легкий запрос к СУБД строго по вашему плану
-    sql_currencies = "SELECT id FROM public.currencies WHERE id != 'USD';"
-    currencies_data = db_instance.execute_query(sql_currencies)
+    # Зрячий SQL-запрос: собираем только те валюты, которые есть в активах, исключая USD
+    sql_used_currencies = """
+        SELECT DISTINCT currency_id FROM public.tickers WHERE currency_id IS NOT NULL AND currency_id != 'USD'
+        UNION
+        SELECT DISTINCT currency_id FROM public.listings WHERE currency_id IS NOT NULL AND currency_id != 'USD';
+    """
+    db_res = db_instance.execute_query(sql_used_currencies)
     
-    if not currencies_data:
-        print("ℹ️ [Yahoo Forex]: В справочнике currencies не обнаружено дополнительных валют.")
+    if not db_res:
+        logging.info("ℹ️ [Yahoo Forex]: Используемых дополнительных валют в СУБД не обнаружено. Обновление не требуется.")
         return
 
-    # Извлекаем чистые строковые коды валют
-    currencies_to_update = [row['id'].upper() for row in currencies_data]
-    print(f"📊 [Yahoo Forex]: Запуск обновления для пар к USD: {currencies_to_update}")
+    # Извлекаем оригинальные коды валют прямо из базы (сохраняя регистр, например 'GBp')
+    currencies_to_update = [row['currency_id'].strip() for row in db_res]
+    logging.info(f"📊 [Yahoo Forex]: Запуск точечного обновления для пар: {currencies_to_update} к USD")
 
     for code in currencies_to_update:
         try:
-            print(f"   • Обновляю курс {code} -> USD...", end=" ")
+            # 🛡️ РАЗДЕЛЯЕМ РЕГИСТРЫ: Для Yahoo всегда UPPER, для базы — оригинал (code)
+            code_for_yahoo = code.upper()
+            logging.info(f"   • Запрос курса {code_for_yahoo} -> USD...")
             
             # ФИНАНСОВЫЙ МАППИНГ: Переводим архивный код RUR в понятный для Yahoo RUB
-            yf_code = "RUB" if code == "RUR" else code
+            yf_code = "RUB" if code_for_yahoo == "RUR" else code_for_yahoo
             
-            # Формируем тикер валютной пары для Yahoo Finance
-            pair = f"{yf_code}USD=X" if yf_code != 'RUB' else "RUB=X"
+            # Формируем универсальный лаконичный тикер валютной пары
+            pair = f"{yf_code}USD=X"
             
             ticker_obj = yf.Ticker(pair)
             raw_price = ticker_obj.fast_info['last_price']
             rate = float(raw_price)
 
-            # Если это рубль (RUB=X), Yahoo возвращает курс доллара к рублю (напр. 91.5).
-            # Инвертируем его, чтобы получить чистую стоимость одного рубля в USD
-            if yf_code == 'RUB' and rate > 1:
-                rate = 1 / rate
-
-            # Записываем курс в таблицу currency_rates под ОРИГИНАЛЬНЫМ кодом 'code' (RUR или RUB)
-            sql_insert_rate = f"""
-                INSERT INTO public.currency_rates (from_currency, to_currency, rate, updated_at)
-                VALUES ('{code}', 'USD', {rate}, '{datetime.now()}')
-                ON CONFLICT (from_currency, to_currency) 
-                DO UPDATE SET rate = EXCLUDED.rate, updated_at = EXCLUDED.updated_at;
+            # Проверяем наличие записи, используя оригинальный code для составного PK (from_currency, to_currency)
+            sql_check = f"""
+                SELECT 1 FROM public.currency_rates 
+                WHERE from_currency = '{code}' AND to_currency = 'USD' 
+                LIMIT 1;
             """
-            db_instance.execute_query(sql_insert_rate)
-            print(f"✅ {rate:.6f}")
+            exists = db_instance.execute_query(sql_check)
+
+            if exists:
+                # Путь А: Строка есть — UPDATE с точным сохранением updated_at по UTC TIMESTAMP(0)
+                sql_write = f"""
+                    UPDATE public.currency_rates 
+                    SET rate = {rate}, 
+                        updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
+                    WHERE from_currency = '{code}' AND to_currency = 'USD';
+                """
+            else:
+                # Путь Б: Строки нет — INSERT со строгим соблюдением Foreign Key СУБД
+                sql_write = f"""
+                    INSERT INTO public.currency_rates (from_currency, to_currency, rate, updated_at)
+                    VALUES ('{code}', 'USD', {rate}, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0));
+                """
+            
+            db_instance.execute_query(sql_write)
+            logging.info(f"   ✅ Пара {code} -> USD успешно сохранена в СУБД. Курс: {rate:.6f}")
             
         except Exception as e:
-            print(f"❌ Ошибка пары {code}: {e}")
+            logging.error(f"   ❌ Ошибка обработки валютной пары {code}: {e}")
             
-        time.sleep(0.5) # Защитная пауза
-    print("🏁 [Yahoo Forex]: Синхронизация валютных курсов завершена.")
+        time.sleep(0.5) # Защитная пауза от блокировок Yahoo
+
+    logging.info("🏁 [Yahoo Forex]: Синхронизация валютных курсов завершена.")
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    from database import db_sys
+    sync_rates(db_sys)

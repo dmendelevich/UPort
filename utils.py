@@ -5,6 +5,7 @@ import time
 import json
 from contextlib import contextmanager
 import yfinance as yf
+from datetime import datetime
 
 # Глобальный кэш суффиксов в оперативной памяти сервера UPort
 _EXCHANGE_SUFFIXES_CACHE = None
@@ -240,13 +241,33 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
         symbol_uport = body_upper
         yahoo_symbol_request = body_upper.replace('.', '-')
 
-    # 🎯 ШАГ 3: РЕЗЕРВНАЯ СЕТЕВАЯ РАЗВЕДКА YAHOO FINANCE (Если MIC не определился в цикле очистки)
+    # 🎯 ШАГ 3: РЕЗЕРВНАЯ СЕТЕВАЯ РАЗВЕДКА YAHOO FINANCE, СБОР ТИПА И КОНТРОЛЬ ДЕЛИСТИНГА
     if not target_mic:
         try:
             logging.info(f"   [GATEWAY]: Сетевой поиск в Yahoo Finance для '{yahoo_symbol_request}'...")
             ticker_obj = yf.Ticker(yahoo_symbol_request)
+            
+            # Попытка №1: Извлекаем код биржи и тип актива через быстрый fast_info контур
             yf_exchange_code = ticker_obj.fast_info.get("exchange")
-            if not yf_exchange_code or yf_exchange_code == "Unknown":
+            
+            # 🔥 БОЕВОЙ ПРЕДОХРАНИТЕЛЬ: Если биржа пустая или неизвестная — проверяем историю на делистинг
+            if not yf_exchange_code or str(yf_exchange_code).strip().upper() in ("UNKNOWN", ""):
+                h_test = ticker_obj.history(period="1d")
+                if h_test is None or h_test.empty:
+                    raise ValueError("Этот инструмент не найден на мировых биржах")
+                
+                # Если история выдала структуру, проверяем древность последней сделки
+                last_date = h_test.index[-1]
+                if hasattr(last_date, 'to_pydatetime'):
+                    last_date = last_date.to_pydatetime().replace(tzinfo=None)
+                
+                import pandas as pd
+                days_delta = (pd.Timestamp.now().replace(tzinfo=None) - last_date).days
+                if days_delta > 7:
+                    # Торгов на бирже нет больше недели — это мертвый делистинг, блокируем!
+                    raise ValueError("Этот инструмент не найден на мировых биржах")
+                
+                # Если проверка времени пройдена, принудительно восстанавливаем код биржи (например для SATS)
                 yf_exchange_code = "UNKNOWN"
 
             # Ищем MIC в СУБД по коду ответа от Yahoo Finance
@@ -262,16 +283,17 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
                 target_currency_id = match_rows[0]["currency_id"]
                 logging.info(f"   [GATEWAY]: Код сопоставлен. Выдан MIC: {target_mic}")
                 
-                # Дополнительный барьер защиты: если международная биржа определилась по сети,
-                # пересобираем symbol_uport с её суффиксом, защищая базу от дубликатов позиций
                 sql_recheck = f"SELECT yahoo_suffix FROM public.exchanges WHERE mic = '{target_mic}' LIMIT 1;"
                 res_recheck = db_instance.execute_query(sql_recheck)
                 if res_recheck and isinstance(res_recheck, list) and len(res_recheck) > 0:
                     sfx_str = str(res_recheck[0].get("yahoo_suffix", "")).strip().upper()
                     if sfx_str and sfx_str != "":
                         symbol_uport = f"{body_upper}{sfx_str}"
+            else:
+                # Если биржа вернулась, но она не поддерживается нашей СУБД — ставим шлагбаум
+                raise ValueError("Этот инструмент торгуется на неподдерживаемой мировой бирже")
 
-            # 🔥 НАШ НОВЫЙ БЕЗОПАСНЫЙ СБОР ДАТЫ ОТЧЕТА ПО СЕТИ ДЛЯ ЧИСТЫХ ТИКЕРОВ
+            # Безопасный сбор даты отчета по сети
             cal = ticker_obj.calendar
             if isinstance(cal, dict) and 'Earnings Date' in cal and cal['Earnings Date']:
                 earnings_dates = cal['Earnings Date']
@@ -281,7 +303,12 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
                         target_report_date = str(first_date_obj.strftime('%Y-%m-%d')).strip()
 
         except Exception as network_err:
-            logging.error(f"   🚨 [GATEWAY СБОЙ YAHOO]: {network_err}")
+            # Пробрасываем наши осознанные ValueError наверх в ТГ-бот без изменений
+            if isinstance(network_err, ValueError):
+                raise network_err
+                                
+            logging.error(f"   🚨 [GATEWAY СБОЙ ПРЕДОХРАНИТЕЛЯ YAHOO]: {network_err}")
+            raise ValueError("Этот инструмент не найден на мировых биржах")
 
     else:
         # 🔥 ЕСЛИ МИК ОПРЕДЕЛЕН ИЗ БАЗЫ БЕЗ СЕТИ (Например, AAPL.US или ULVR.L)
@@ -300,6 +327,19 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
 
     # Окончательно фиксируем эталонный ключ для запросов к Yahoo в нашей карте имен
     ticker_name_map["YAHOO"] = yahoo_symbol_request
+
+    # ─── ШАГ 4: СКВОЗНОЙ ЛИНЕЙНЫЙ СБОР ТИПА АКТИВА YAHOO (ОБЯЗАТЕЛЕН ДЛЯ ВСЕХ) ───
+    yf_asset_type = "UNDETERMINED"
+    try:
+        # Инициализируем сетевой объект для гарантированного сбора типа (для ТГ и Брокера)
+        ticker_obj = yf.Ticker(yahoo_symbol_request)
+        raw_type = ticker_obj.fast_info.get("quoteType")
+        if raw_type:
+            yf_asset_type = str(raw_type).strip().upper()
+    except Exception as t_type_err:
+        # Если fast_info выдал технический сбой, страхуем оригинальным маркером неизвестности
+        logging.warning(f"   ⚠️ [GATEWAY]: Не удалось извлечь quoteType для '{yahoo_symbol_request}': {t_type_err}")
+        yf_asset_type = "UNDETERMINED"
 
     # =======================================================================================================
     # 🎯 ЧАСТЬ 2: РАБОТА С БРОКЕРАМИ И АТОМАРНАЯ ЗАПИСЬ ПАСПОРТА В СУБД
@@ -356,35 +396,109 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
     currency_sql = f"'{target_currency_id}'" if target_currency_id else "NULL"
     yahoo_symbol_sql = f"'{yahoo_symbol_request}'"
     json_map_sql = f"'{json.dumps(ticker_name_map, ensure_ascii=False)}'::jsonb"
-    
-    # Финальный SQL-запрос на создание/обновление записи. 
-    # Обратите внимание: существующие MIC и Валюту мы бережно НЕ затираем, если они уже были заполнены!
-    sql_upsert_ticker = f"""
-        INSERT INTO public.tickers (
-            symbol, yahoo_symbol, exchange_mic, currency_id, fb_ticker, ticker_name_map, signal_next_report_date, last_updated_at
-        ) 
-        VALUES (
-            '{symbol_uport}', {yahoo_symbol_sql}, {mic_sql}, {currency_sql}, {fb_ticker_sql}, {json_map_sql}, {report_date_sql}, CURRENT_TIMESTAMP
-        )
-        ON CONFLICT (symbol) DO UPDATE SET
-            yahoo_symbol = EXCLUDED.yahoo_symbol,
-            ticker_name_map = EXCLUDED.ticker_name_map,
-            signal_next_report_date = EXCLUDED.signal_next_report_date, -- Обновляем дату при каждом прогоне
-            exchange_mic = CASE WHEN public.tickers.exchange_mic IS NULL OR public.tickers.exchange_mic = '' THEN EXCLUDED.exchange_mic ELSE public.tickers.exchange_mic END,
-            currency_id = CASE WHEN public.tickers.currency_id IS NULL OR public.tickers.currency_id = '' THEN EXCLUDED.currency_id ELSE public.tickers.currency_id END,
-            fb_ticker = CASE WHEN public.tickers.fb_ticker IS NULL OR public.tickers.fb_ticker = '' THEN EXCLUDED.fb_ticker ELSE public.tickers.fb_ticker END,
-            last_updated_at = CURRENT_TIMESTAMP
-        RETURNING id;
-    """    
-    try:
-        db_instance.execute_query(sql_upsert_ticker)
-        # Надежно вытягиваем сгенерированный базой ID тикера для возврата
-        res_id = db_instance.execute_query(f"SELECT id FROM public.tickers WHERE symbol = '{symbol_uport}';")
-        if res_id and isinstance(res_id, list) and len(res_id) > 0:
-            logging.info(f"🏁 [UPort GATEWAY COMPLETE]: Паспорт для '{symbol_uport}' зафиксирован.")
-            # Печатаем красивую единую сводку в консоль при каждом вызове функции
-            print(f"📌 [PASSPORT SUMMARY] {raw_string}: {json.dumps(ticker_name_map, ensure_ascii=False)}")
-            return res_id[0].get("id")
-    except Exception as db_err:
-        logging.error(f"   🚨 [GATEWAY КРИТИЧЕСКИЙ СБОЙ ЗАПИСИ В БД]: {db_err}")
+
+    # 🛡️ ПРЕДОХРАНИТЕЛЬ: Гарантируем наличие переменной yf_asset_type, если MIC определился без сети
+    if 'yf_asset_type' not in locals():
+        try:
+            raw_type = ticker_obj.fast_info.get("quoteType") if 'ticker_obj' in locals() else None
+            yf_asset_type = str(raw_type).strip().upper() if raw_type else "EQUITY"
+        except:
+            yf_asset_type = "EQUITY"
+
+    # 🕵️‍♂️ ЗРЯЧАЯ ПРОВЕРКА КЭША СУБД: Истребляем холостую накрутку ID
+    sql_check_exist = f"SELECT id FROM public.tickers WHERE symbol = '{symbol_uport}' LIMIT 1;"
+    res_exist = db_instance.execute_query(sql_check_exist)
+
+    # Стандарт времени: UTC с точностью до секунд без timezone
+    system_now_sql = "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)"
+
+    if res_exist and isinstance(res_exist, list) and len(res_exist) > 0:
+        # --- ВЕТКА UPDATE: Паспорт уже существует, обновляем точечно по его ID ---
+        row_t = res_exist[0] if isinstance(res_exist, list) else res_exist
+        ticker_id = int(row_t["id"])
+        
+        sql_update_passport = f"""
+            UPDATE public.tickers 
+            SET yahoo_symbol = {yahoo_symbol_sql},
+                ticker_name_map = public.tickers.ticker_name_map || {json_map_sql},
+                signal_next_report_date = {report_date_sql},
+                asset_type = '{yf_asset_type}',
+                exchange_mic = CASE WHEN public.tickers.exchange_mic IS NULL OR public.tickers.exchange_mic = '' THEN {mic_sql} ELSE public.tickers.exchange_mic END,
+                currency_id = CASE WHEN public.tickers.currency_id IS NULL OR public.tickers.currency_id = '' THEN {currency_sql} ELSE public.tickers.currency_id END,
+                fb_ticker = CASE WHEN public.tickers.fb_ticker IS NULL OR public.tickers.fb_ticker = '' THEN {fb_ticker_sql} ELSE public.tickers.fb_ticker END,
+                last_updated_at = {system_now_sql}
+            WHERE id = {ticker_id};
+        """
+        db_instance.execute_query(sql_update_passport)
+        logging.info(f"📝 [PASSPORT]: Паспорт бумаги {symbol_uport} успешно актуализирован (ID: {ticker_id}).")
+    else:
+        # --- ВЕТКА INSERT: Новый уникальный паспорт в системе, берем чистый ID ---
+        sql_insert_passport = f"""
+            INSERT INTO public.tickers (
+                symbol, yahoo_symbol, exchange_mic, currency_id, fb_ticker, ticker_name_map, signal_next_report_date, asset_type, last_updated_at
+            ) 
+            VALUES (
+                '{symbol_uport}', {yahoo_symbol_sql}, {mic_sql}, {currency_sql}, {fb_ticker_sql}, {json_map_sql}, {report_date_sql}, '{yf_asset_type}', {system_now_sql}
+            );
+        """
+        db_instance.execute_query(sql_insert_passport)
+        
+        # Надежно забираем свежесгенерированный ID
+        res_new_id = db_instance.execute_query(f"SELECT id FROM public.tickers WHERE symbol = '{symbol_uport}' LIMIT 1;")
+        row_n = res_new_id[0] if res_new_id and isinstance(res_new_id, list) and len(res_new_id) > 0 else (res_new_id if isinstance(res_new_id, dict) else {})
+        ticker_id = int(row_n.get("id", 0))
+        logging.info(f"➕ [PASSPORT]: Впервые создан эталонный паспорт для {symbol_uport} (ID: {ticker_id}).")
+
+    if ticker_id > 0:
+        logging.info(f"🏁 [UPort GATEWAY COMPLETE]: Паспорт для '{symbol_uport}' зафиксирован.")
+        print(f"📌 [PASSPORT SUMMARY] {raw_string}: {json.dumps(ticker_name_map, ensure_ascii=False)}")
+        return ticker_id
+
     return None
+
+
+def manage_provenance(db_instance, ticker_id: int, source_key: str, action: str = "add") -> bool:
+    """
+    Универсальная служба управления историческими автографами provenance (JSONB) in public.tickers.
+    """
+    from datetime import timezone
+    # 🔥 ИСПРАВЛЕНО UTC-СТАНДАРТ: Генерируем стерильное время по Гринвичу без часовых поясов и микросекунд.
+    # Новые автографы зафиксируются в премиальном ровном виде: 'YYYY-MM-DD HH:MM:SS'
+    current_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    
+    action_clean = str(action).strip().lower()
+    source_key_clean = str(source_key).strip().replace("'", "''")
+    
+    if action_clean == "add":
+        # 🛡️ ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА СТАТИЧЕСКОЙ ДАТЫ:
+        # С помощью оператора '?' проверяем, есть ли уже такой ключ в JSONB.
+        # Если ЕСТЬ (CASE WHEN ... ? THEN) — оставляем старый provenance без изменений.
+        # Если НЕТ — безопасно конкатенируем (||) новый ключ.
+        sql_manage = f"""
+            UPDATE public.tickers
+            SET provenance = CASE 
+                WHEN COALESCE(provenance, '{{}}'::jsonb) ? '{source_key_clean}' THEN provenance
+                ELSE COALESCE(provenance, '{{}}'::jsonb) || '{{"{source_key_clean}": "{current_timestamp}"}}'::jsonb
+            END
+            WHERE id = {int(ticker_id)};
+        """
+        logging.info(f"💾 [PROVENANCE]: Попытка фиксации метки '{source_key_clean}' для ticker_id = {ticker_id}")
+
+    elif action_clean == "remove":
+        sql_manage = f"""
+            UPDATE public.tickers
+            SET provenance = COALESCE(provenance, '{{}}'::jsonb) - '{source_key_clean}'
+            WHERE id = {int(ticker_id)};
+        """
+        logging.info(f"🧹 [PROVENANCE]: Команда удаления метки '{source_key_clean}' для ticker_id = {ticker_id}")
+        
+    else:
+        logging.error(f"❌ [PROVENANCE ERROR]: Передана неподдерживаемая операция: '{action}'")
+        return False
+
+    try:
+        db_instance.execute_query(sql_manage)
+        return True
+    except Exception as err:
+        logging.error(f"🚨 [PROVENANCE CRITICAL СБОЙ СУБД]: Не удалось выполнить {action_clean} для {source_key_clean}: {err}")
+        return False

@@ -1,91 +1,108 @@
+#!/usr/bin/env python3
 import os
-from datetime import datetime
+import sys
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
 
-def sync_quotes_fb_branch(tickers_data, db_instance, fb_client_class):
+# Подтягиваем системные пути ядра UPort, чтобы Python всегда видел модуль database
+sys.path.append(str(Path(__file__).parent.parent.resolve()))
+
+from database import db_sys
+from brokers_connectors.fb_client import FreedomBrokerClient
+
+def sync_quotes_fb_autonomous():
     """
-    Пакетный REST-обновитель цен акций Freedom Broker Казахстан.
-    Принимает список тикеров, опрашивает getStockQuotesJson и обновляет last_price и company_name.
+    Автономный пакетный REST-обновитель цен акций Freedom Broker Казахстан.
+    Самостоятельно собирает тикеры из СУБД (из JSON-карты), запрашивает API
+    и обновляет last_price в public.listings по стандарту времени UPort.
     """
-    if not tickers_data:
-        return
+    logging.info("📡 [REST FB]: Запуск автономной синхронизации котировок...")
 
-    # Динамически собираем список тикеров для отправки одной пачкой
-    tickers_list = [row['full_ticker'] for row in tickers_data]
-    print(f"📡 [REST FB]: Запрос котировок getStockQuotesJson для: {tickers_list}")
-
-    # Инициализируем базовый FreedomBrokerClient (DLM Т-ключи)
-    api_key = os.getenv("FB_DLM_API_KEY")
-    api_secret = os.getenv("FB_DLM_API_SECRET")
+    # 1. Извлекаем short_name брокера для динамического ключа в JSON
+    sql_broker = "SELECT short_name FROM public.brokers WHERE id = 1 LIMIT 1;"
+    broker_rows = db_sys.execute_query(sql_broker)
     
-    if not api_key or not api_secret:
-        print("❌ [REST FB ERROR]: В .env отсутствуют базовые ключи FB_DLM для запроса котировок.")
+    if not broker_rows:
+        logging.error("❌ [REST FB ERROR]: Брокер с ID=1 не найден в таблице public.brokers.")
+        return
+        
+    broker_key = broker_rows[0]['short_name'] # Вернет 'FB'
+
+    # 2. Схлопнутый SQL-запрос: достаем тикер прямо из JSON-карты по ключу брокера
+    sql_get_tickers = f"""
+        SELECT 
+            l.id AS listing_id,
+            (t.ticker_name_map ->> '{broker_key}') AS full_ticker
+        FROM public.listings l
+        JOIN public.tickers t ON l.ticker_id = t.id
+        WHERE l.broker_id = 1 
+          AND (t.ticker_name_map ->> '{broker_key}') IS NOT NULL;
+    """
+    tickers_data = db_sys.execute_query(sql_get_tickers)
+
+    if not tickers_data:
+        logging.warning(f"⚠️ [REST FB]: В СУБД не найдено активных листингов для брокера {broker_key}.")
         return
 
-    fb_client = fb_client_class(public_key=api_key, private_key=api_secret)
+    # Динамически собираем список тикеров для отправки одной пачкой брокеру
+    tickers_list = [row['full_ticker'] for row in tickers_data]
+    logging.info(f"📡 [REST FB]: Запрос котировок getStockQuotesJson для пачки: {tickers_list}")
+
+    # 3. Сборка фабричного клиента по user_id=1 (для общих котировок)
+    fb_client = FreedomBrokerClient.create_for_user(user_id=1, db_instance=db_sys)
+    
+    if not fb_client:
+        logging.error("❌ [REST FB ERROR]: Не удалось собрать фабричный клиент брокера через класс.")
+        return
 
     try:
         # Отправляем пакетный запрос строго по нашему проверенному шаблону execute
         raw_res = fb_client.execute(command="getStockQuotesJson", params={"tickers": tickers_list})
         
         if isinstance(raw_res, dict) and "error" in raw_res:
-            print(f"❌ [REST FB API ERROR]: {raw_res['error']}")
+            logging.error(f"❌ [REST FB API ERROR]: {raw_res['error']}")
             return
             
-        # СТРОГО ПО ТЕСТУ: проваливаемся в result -> q
+        # Проваливаемся в result -> q согласно спецификации брокера
         result_node = raw_res.get("result", {}) if isinstance(raw_res, dict) else {}
         result_array = result_node.get("q", []) if isinstance(result_node, dict) else []
         
         if not result_array or not isinstance(result_array, list):
-            print("⚠️ [REST FB]: Сервер брокера вернул пустой массив котировок.")
+            logging.warning("⚠️ [REST FB]: Сервер брокера вернул пустой массив котировок.")
             return
 
-        # Мапим множители и внутренние ID ЛИСТИНГОВ из новых данных СУБД
-        multipliers_map = {row['full_ticker']: float(row['multiplier']) for row in tickers_data}
-        
-        # КРИТИЧЕСКИЙ СДВИГ: теперь мапим на listing_id, который прилетит из cron_scheduler!
+        # Мапим очищенный full_ticker на listing_id, полученный напрямую из БД
         listing_id_map = {row['full_ticker']: int(row['listing_id']) for row in tickers_data}
 
         for quote in result_array:
-            # Строго по спецификации FB: тикер лежит в ключе 'c', цена в 'ltp'
             ticker = quote.get("c")
-            if not ticker or ticker not in multipliers_map:
+            if not ticker or ticker not in listing_id_map:
                 continue
                 
             raw_price = quote.get("ltp")
-            comp_name = quote.get("name", "")
             
-            # Экранируем одинарные кавычки в названии компании (напр. Apple Inc.), чтобы SQL-запрос не падал
-            if comp_name:
-                comp_name = comp_name.replace("'", "''")
-
-            if raw_price is not None and str(raw_price) != 'nan':
-                # Умножаем на multiplier (напр. 0.01 для британских пенсов на будущее)
-                final_price = float(raw_price) * multipliers_map[ticker]
+            # 🔥 ЖЕЛЕЗНЫЙ ЗАГРАДИТЕЛЬНЫЙ БАРЬЕР ОТ НУЛЕВЫХ И НАНО-ЦЕН БРОКЕРА
+            if raw_price is not None and str(raw_price) != 'nan' and float(raw_price) > 0.0:
+                final_price = float(raw_price)
                 l_id = listing_id_map[ticker]
                 
-                # 🔥 АКАДЕМИЧЕСКИЙ UPDATE v3.0: Локальная цена — это свойство листинга, а не акции!
-                # Одновременно обновляем название компании в глобальном tickers по связи
+                # 🔥 СТАНДАРТ ВРЕМЕНИ UPORT — СТЕРИЛЬНЫЙ UTC ДО СЕКУНД TIMESTAMP(0)
                 sql_update_listing = f"""
                     UPDATE public.listings 
                     SET last_price = {final_price}, 
-                        last_updated_at = transaction_timestamp() 
+                        last_updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) 
                     WHERE id = {l_id};
                 """
-                db_instance.execute_query(sql_update_listing)
-                
-                # Мягко обогащаем название компании в tickers, если оно там пустое
-                sql_update_company = f"""
-                    UPDATE public.tickers 
-                    SET company_name = '{comp_name}' 
-                    WHERE id = (SELECT ticker_id FROM public.listings WHERE id = {l_id}) 
-                      AND (company_name IS NULL OR company_name = 'Unknown Company' OR company_name = '');
-                """
-                db_instance.execute_query(sql_update_company)
-                
-                print(f"   • {ticker} успешно актуализирован в listings: {final_price:.2f}")
+                db_sys.execute_query(sql_update_listing)
+                # logging.info(f"   • {ticker:8} успешно актуализирован в listings: {final_price:.2f}")
             else:
-                print(f"   • {ticker} ⚠️ В пакете отсутствует значение ltp.")
+                logging.warning(f"   • {ticker:8} ⚠️ В пакете брокера отсутствует или некорректно значение ltp: {raw_price}")
 
-                
     except Exception as e:
-        print(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")
+        logging.error(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")
+
+if __name__ == "__main__":
+    # Настройка базового логирования для возможности прямого автономного запуска файла
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    sync_quotes_fb_autonomous()

@@ -3,7 +3,7 @@ import sys
 import asyncio
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import yfinance as yf
 import pandas as pd
@@ -15,19 +15,16 @@ from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
 import utils
 
-# Настройка логирования для крона и фоновых вызовов
+# Настройка логирования для крона
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-async def run_etf_look_through_decomposition(target_ticker_id=None):
+async def run_etf_look_through_decomposition():
     print("\n" + "="*95)
-    if target_ticker_id:
-        logging.info(f"🔬 [UPort LAB]: Старт ТОЧЕЧНОЙ мгновенной декомпозиции фонда ID={target_ticker_id}...")
-    else:
-        logging.info("🔬 [UPort LAB]: Старт ПЛАНОВОЙ пакетной декомпозиции Лаборатории ETF...")
+    logging.info("🔬 [UPort LAB]: Старт Сита Декомпозиции Лаборатории ETF...")
     print("="*95)
     
     # 1. ФАБРИКА СВЯЗЕЙ БРОКЕРА: Собираем ровно ОДИН живой клиент на старте процесса
@@ -38,24 +35,23 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         logging.error("❌ Критическая ошибка: Не удалось собрать фабричный клиент брокера. Скрипт остановлен.")
         return
         
-    # 2. УНИВЕРСАЛЬНАЯ СЕЛЕКЦИЯ: Выгребаем либо один целевой фонд, либо все активные из листингов
-    # Полностью очищено от старых костылей provenance и asset_metadata
-    sql_get_active_etfs = f"""
+    # 2. ЗРЯЧАЯ СЕЛЕКЦИЯ: Выгребаем только те ETF, которые реально заведены в листингах системы
+    sql_get_active_etfs = """
         SELECT DISTINCT t.id AS ticker_id, t.symbol, t.ticker_name_map ->> 'YAHOO' AS yahoo_symbol
         FROM public.tickers t
         INNER JOIN public.listings l ON l.ticker_id = t.id
-        WHERE t.asset_type = 'ETF'
-          AND ({'NULL' if target_ticker_id is None else int(target_ticker_id)} IS NULL OR t.id = {'NULL' if target_ticker_id is None else int(target_ticker_id)});
+        WHERE t.asset_type = 'ETF';
     """
     
+    logging.info("📡 Запрашиваю из ядра список активных инвестиционных фондов ETF...")
     active_etfs = db_sys.execute_query(sql_get_active_etfs)
     
     if not active_etfs:
-        logging.warning("info: Целевых фондов ETF для раскрытия в СУБД прямо сейчас не обнаружено.")
+        logging.warning("info: В таблице листингов СУБД прямо сейчас не обнаружено фондов ETF для раскрытия.")
         return
 
     total_etfs = len(active_etfs)
-    logging.info(f"📊 Обнаружено живых целей для раскрытия: {total_etfs} шт. Запуск конвейера...")
+    logging.info(f"📊 Обнаружено живых фондов в Universe: {total_etfs} шт. Запуск линейного конвейера...")
     print("-" * 95)
 
     processed_count = 0
@@ -74,7 +70,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         logging.info(f"🧱 [ФОНД {processed_count}/{total_etfs}]: Разбор {symbol} (Yahoo-ключ: {yahoo_symbol}, ID={t_id})...")
         
         try:
-            # Делаем строго одиночный изолированный вызов по карте имен без текстовых хаков
+            # Делаем строго одиночный, изолированный вызов по карте имен без текстовых .replace дефисов
             ticker_obj = yf.Ticker(yahoo_symbol)
             
             holdings_df = None
@@ -92,6 +88,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
 
             if not holdings_data:
                 logging.warning(f"   ⚠️ Не удалось извлечь внутренние холдинги для фонда {symbol}.")
+                # Делаем обязательную паузу безопасности даже при пустом ответе
                 await asyncio.sleep(1.5)
                 continue
 
@@ -111,7 +108,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                     
                 comp_global_symbol = str(comp_sym).strip().upper()
                 
-                # ─── ШАГ 3.1: АВТОНОМНЫЙ ЗАЩИТНЫЙ КАПКАН КОМПОНЕНТА ───
+                # 🔥 ШАГ 3.1: АВТОНОМНЫЙ ЗАЩИТНЫЙ КАПКАН КОМПОНЕНТА
                 try:
                     # Легализация с пробросом готовой фабрики через Главные Ворота
                     comp_id, comp_listing_id = await asyncio.to_thread(
@@ -136,11 +133,10 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                     existing_holding = db_sys.execute_query(sql_check_holding)
 
                     if existing_holding and len(existing_holding) > 0:
-                        # ВЕТКА UPDATE: Извлекаем первый элемент из списка ответов СУБД
+                        # ВЕТКА UPDATE: Извлекаем ПЕРВЫЙ элемент [0] из списка ответов СУБД!
                         row_h = existing_holding[0] if isinstance(existing_holding, list) else existing_holding
                         old_weight = float(row_h.get("weight_percentage") or 0)
                         
-                        # Перезаписываем диск только если вес компонента реально изменился
                         if abs(old_weight - weight) > 0.001:
                             sql_update_holding = f"""
                                 UPDATE public.etf_holdings 
@@ -151,7 +147,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                             """
                             db_sys.execute_query(sql_update_holding)
                     else:
-                        # ВЕТКА INSERT: Впервые заносим новый компонент в структуру фонда (сберегая ID)
+                        # ВЕТКА INSERT: Впервые заносим новый компонент в структуру фонда
                         sql_insert_holding = f"""
                             INSERT INTO public.etf_holdings (
                                 etf_ticker_id, component_ticker_id, weight_percentage, last_updated_at
@@ -162,7 +158,8 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                         db_sys.execute_query(sql_insert_holding)
                         
                 except Exception as comp_err:
-                    # Изолируем экзотический мусор — фонд продолжает обрабатываться!
+                    # Если один экзотический компонент (вроде фьючерса FGTXX) отвалился — 
+                    # фонд продолжает жить, скрипт переходит к следующей акции!
                     logging.warning(f"   ⚠️ [КОМПОНЕНТ ПРОПУЩЕН]: Сбой легализации '{comp_global_symbol}' внутри фонда: {comp_err}")
                     continue
                     
@@ -171,18 +168,12 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         except Exception as fund_err:
             logging.error(f"❌ Ошибка декомпозиции на фонде {symbol}: {fund_err}")
             
-        # Пауза 1.5 секунды между фондами для защиты лимитов IP
+        # 🔥 ЗАГРАДИТЕЛЬНЫЙ РУБЕЖ ЗАЩИТЫ YAHOO FINANCE: Пауза 1.5 секунды между фондами
         await asyncio.sleep(1.5)
 
     print("\n" + "="*95)
-    print("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Процесс Лаборатории ETF успешно отработал!")
+    print("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Все активные фонды Universe успешно выпотрошены!")
     print("="*95 + "\n")
 
-
-# ─── МЕХАНИЗМ АВТОНОМНОГО ВЫЗОВА СТАНДАРТНОГО КРОНА ───
-async def main_forced_trigger():
-    # По умолчанию при прямом пуске файла из консоли гоним плановую пакетную обработку
-    await run_etf_look_through_decomposition(target_ticker_id=None)
-
 if __name__ == "__main__":
-    asyncio.run(main_forced_trigger())
+    asyncio.run(run_etf_look_through_decomposition())

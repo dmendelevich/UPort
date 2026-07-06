@@ -4,7 +4,7 @@ import sys
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Подгружаем системные пути ядра UPort, чтобы скрипт видел соседние модули
@@ -37,7 +37,7 @@ class StockDonorsScanner:
     def execute_sync(self):
         logging.info("🚀 [STOCK SCANNER]: Запуск каскадного обновления корзин акций-доноров...")
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         
         for source in GITHUB_INDEX_SOURCES:
             index_name = source["index_name"]
@@ -113,7 +113,7 @@ class EtfLeadersScanner:
 
     def execute_sync(self):
         logging.info(f"🚀 [ETF SCANNER]: Запуск парсинга манифеста фондов из файла: {self.json_path}")
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         
         if not os.path.exists(self.json_path):
             logging.error(f"❌ [ETF SCANNER КРИТИЧЕСКИЙ СБОЙ]: Файл конфигурации не найден по пути {self.json_path}")

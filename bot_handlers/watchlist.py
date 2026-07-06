@@ -1,7 +1,9 @@
+import logging
 import asyncio
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
 
 # Импортируем готовые объекты СУБД, фабрику и навигацию
 from database import db_bot, db_sys
@@ -205,3 +207,134 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
         await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
     except TelegramBadRequest:
         pass
+
+# =========================================================================
+# 🔥 КОНТУР ВНЕДРЕНИЯ ИНВЕСТ-ИДЕЙ v1.0 (ИНТЕЛЛЕКТУАЛЬНЫЙ РАДАР WATCHLIST)
+# =========================================================================
+from aiogram.fsm.context import FSMContext
+
+@router.callback_query(MenuAction.filter(F.action == "add_to_wl"))
+async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    """
+    Этап А: Перехват клика "В список наблюдения".
+    Сканирует торговые портфели инвестора. Реализует смарт-разводку mono/multi-портфелей.
+    """
+    await callback.answer()
+    
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    # 🔥 ФИКС: Считываем чистый, уникальный ticker_id из фабрики без AttributeError!
+    t_id = callback_data.ticker_id
+
+    if not user_db_id or not t_id:
+        await callback.message.edit_text("❌ Критическая ошибка сессии. Пройдите /start.", reply_markup=get_back_to_menu_keyboard())
+        return
+
+    sql_get_portfolios = f"""
+        SELECT id, name FROM public.portfolios 
+        WHERE owner_id = {int(user_db_id)} AND id NOT IN (0, 9999)
+        ORDER BY id ASC;
+    """
+    p_res = await execute_sql_async(sql_get_portfolios)
+    user_portfolios = p_res if isinstance(p_res, list) else ([p_res] if p_res else [])
+
+    if not user_portfolios:
+        await callback.message.edit_text("⚠️ У вас нет зарегистрированных торговых портфелей.", reply_markup=get_back_to_menu_keyboard())
+        return
+
+    # 🔹 СЦЕНАРИЙ 1: У пользователя ровно ОДИН портфель — штампуем в один клик
+    if len(user_portfolios) == 1:
+        p_row = user_portfolios[0] if isinstance(user_portfolios, list) else user_portfolios
+        target_p_id = int(p_row["id"])
+        print(f"🧬 [WATCHLIST SMART ROUTE]: Моно-портфель обнаружен. Авто-выбор portfolio_id = {target_p_id}")
+        
+        await execute_watchlist_fixation(callback.message, target_p_id, t_id)
+        return
+
+    # 🔹 СЦЕНАРИЙ 2: Несколько портфелей — выводим лаконичное меню выбора портфеля
+    builder = InlineKeyboardBuilder()
+    for p in user_portfolios:
+        # Передаем выбранный portfolio_id и сохраняем исследуемый ticker_id в кнопке подтверждения
+        builder.row(types.InlineKeyboardButton(
+            text=f"💼 {p['name']}",
+            callback_data=MenuAction(action="confirm_wl_add", portfolio_id=int(p["id"]), ticker_id=int(t_id)).pack()
+        ))
+    
+    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+
+    try:
+        await callback.message.edit_text("Выберите портфель:", reply_markup=builder.as_markup())
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "confirm_wl_add"))
+async def process_confirm_watchlist_addition(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Этап Б: Фиксация выбора в мульти-портфельном режиме.
+    """
+    await callback.answer("Легализую актив...")
+    await execute_watchlist_fixation(callback.message, callback_data.portfolio_id, callback_data.ticker_id)
+
+
+async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, ticker_id: int):
+    """
+    Атомарный системный исполнитель v2.0
+    Легализует листинг через изолированный метод ensure_listing и штампует статус в ватчлист.
+    """
+    import logging
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    
+    try:
+        # 1. Извлекаем данные тикера для красивого финального вывода
+        sql_get_ticker = f"SELECT symbol, (ticker_name_map->>'YAHOO') as yahoo_symbol FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
+        t_data = db_sys.execute_query(sql_get_ticker)
+        t_row = t_data[0] if t_data and isinstance(t_data, list) else (t_data if isinstance(t_data, dict) else {})
+        
+        if not t_row:
+            await message.edit_text("❌ Ошибка: Ticker ID не найден в СУБД.", reply_markup=get_back_to_menu_keyboard())
+            return
+            
+        raw_symbol = t_row["symbol"]
+        yahoo_symbol = t_row.get("yahoo_symbol", raw_symbol)
+
+        # 2. Вычисляем ID брокера, к которому привязан выбранный портфель
+        sql_get_broker = f"SELECT broker_id FROM public.portfolios WHERE id = {int(portfolio_id)} LIMIT 1;"
+        p_data = db_sys.execute_query(sql_get_broker)
+        p_row = p_data[0] if p_data and isinstance(p_data, list) else (p_data if isinstance(p_data, dict) else {})
+        target_broker_id = int(p_row["broker_id"]) if p_row and p_row.get("broker_id") else 1
+
+        print(f"🧱 [WATCHLIST FIX v2]: Легализация листинга для T_ID={ticker_id} (Portfolio: {portfolio_id}, Broker: {target_broker_id})...")
+        
+        # 3. 🔥 ВЫЗЫВАЕМ НАШ НОВЫЙ ИЗОЛИРОВАННЫЙ МЕТОД ЛИСТИНГОВ (Без захода в паспортистку!)
+        # Метод сам зряче проверит кэш, найдет имя брокера и снимет котировку последней сделки.
+        l_id = db_sys.ensure_listing(
+            ticker_id=int(ticker_id),
+            broker_id=target_broker_id,
+            fb_client=None
+        )
+
+        if not l_id or l_id == 0:
+            await message.edit_text("❌ Критическая ошибка: Не удалось легализовать листинг брокера для ватчлиста.")
+            return
+
+        # 4. АТОМАРНАЯ ЗАПИСЬ В ТАБЛИЦУ WATCHLIST
+        db_sys.ensure_watchlist_row_v2(portfolio_id=int(portfolio_id), listing_id=int(l_id), reason="watched")
+        
+        # 5. ВЫВОД ФИНАЛЬНОГО ПРЕМИАЛЬНОГО СТАТУСА
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        
+        await message.edit_text(f"✅ Добавлено: **{yahoo_symbol}**", parse_mode="Markdown", reply_markup=builder.as_markup())
+        print(f"🏁 [WATCHLIST FIX COMPLETE]: Бумага {yahoo_symbol} успешно прописана в СУБД.")
+
+    except ValueError as val_err:
+        # Перехватываем наш кастомный шлагбаум безопасности ("Этот инструмент не торгуется...")
+        logging.warning(f"⚠️ [WATCHLIST LIBS BLOCK]: {val_err}")
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        await message.edit_text(f"❌ {val_err}", reply_markup=builder.as_markup())
+
+    except Exception as fix_err:
+        logging.error(f"🚨 [WATCHLIST CRITICAL СБОЙ]: Ошибка фиксации инвест-идеи: {fix_err}")
+        await message.edit_text("❌ Сбой записи актива в списки наблюдения СУБД.", reply_markup=get_back_to_menu_keyboard())
