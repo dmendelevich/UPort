@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
+#from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
 from analytics.portfolio_auditor import audit_ticker_for_portfolio
@@ -50,20 +50,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             WHERE l.id = {l_id};
         """
         print(f"   • 📡 [ДЕБАГ SQL]: Отправляю запрос по листингу {l_id}...")
-        l_res = db_bot.execute_query(listing_sql)
-        print(f"   • [ДЕБАГ СУБД ОТВЕТ]: {l_res}")
+        # 🔥 РЕФАКТОРИНГ: Заменяем на execute_row, убирая кашу проверок на списки/словари
+        l_row = db_bot.execute_row(listing_sql)
+        print(f"   • [ДЕБАГ СУБД ОТВЕТ]: {l_row}")
         
-        if not l_res:
+        if not l_row:
             print("   • ❌ СУБД вернула пустоту для этого l_id!")
             await callback.answer("❌ Листинг актива не найден в СУБД.", show_alert=True)
-            return
-            
-        if isinstance(l_res, list) and len(l_res) > 0:
-            l_row = l_res[0]
-        elif isinstance(l_res, dict):
-            l_row = l_res
-        else:
-            await callback.answer("❌ Ошибка формата данных листинга.", show_alert=True)
             return
 
         t_id = int(l_row['ticker_id'])
@@ -114,16 +107,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     # Вытаскиваем знак валюты листинга
     sql_base_cur = f"SELECT sign FROM public.currencies WHERE id = '{currency_id}';"
-    cur_res = db_bot.execute_query(sql_base_cur)
-    # Проверяем структуру ответа шлюза до самого последнего ключа
-    if cur_res and isinstance(cur_res, list) and len(cur_res) > 0:
-        first_row = cur_res[0]
-        # Если внутри списка лежит словарь, берем из него ключ, иначе берем сам элемент как знак
-        sign = first_row.get('sign', '$') if isinstance(first_row, dict) else str(first_row)
-    elif isinstance(cur_res, dict):
-        sign = cur_res.get('sign', '$')
-    else:
-        sign = "$"
+    cur_row = db_bot.execute_row(sql_base_cur)
+    sign = cur_row.get('sign', '$')
 
     # Динамически вычисляем типы отображения (Владение, Общий капитал, Исследование)
     is_owner_view = (p_id > 0 and p_id != 9999)
@@ -316,17 +301,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
     if is_owner_view or is_research_portfolio:
         audit_id = p_id if is_owner_view else 1
-        p_info_res = db_bot.execute_query(f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
-        
-        # 🔥 ФИКС РАСПАКОВКИ СПИСКА: Достаем словарь из списка ответов СУБД
-        if p_info_res and isinstance(p_info_res, list) and len(p_info_res) > 0:
-            p_row = p_info_res[0]
-            p_title = p_row.get('name', f"Счет #{audit_id}")
-        elif isinstance(p_info_res, dict):
-            p_title = p_info_res.get('name', f"Счет #{audit_id}")
-        else:
-            p_title = f"Счет #{audit_id}"
-        
+        # 🔥 РЕФАКТОРИНГ: Заменяем на чистый execute_row
+        p_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
+        p_title = p_row.get('name', f"Счет #{audit_id}")
+
         warnings_list = audit_ticker_for_portfolio(broker_symbol if l_id > 0 else pure_symbol, audit_id, db_bot)
         text += f"───────\n🛡️ **Риск-аудит IPS {p_title}:**\n"
         if warnings_list:
@@ -346,9 +324,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # 5. ЛОГИКА РАЗВОДКИ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "yahoo":
         print("📊 [ТИКЕР]: Выгружаю фундаментальные коэффициенты из public.tickers...")
-        t_raw = db_bot.execute_query(f"SELECT * FROM public.tickers WHERE id = {t_id};")
-        t = t_raw if isinstance(t_raw, list) and len(t_raw) > 0 else (t_raw if isinstance(t_raw, dict) else {})
-        
+        # 🔥 РЕФАКТОРИНГ: Точечно переводим на безопасное чтение одной строки
+        t = await asyncio.to_thread(db_bot.execute_row, f"SELECT * FROM public.tickers WHERE id = {t_id};")
+
         if t and (t.get('pe_trailing') is not None or t.get('debt_to_equity') is not None):
             fcf_val = float(t['free_cash_flow'] or 0) / 1_000_000
             text += (
@@ -493,9 +471,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     else:
         builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
         
+    # Системная кнопка безусловного сброса в корень UPort
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
 
     print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")
+
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
     except TelegramBadRequest as e:

@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
-from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text
 
 # Импортируем независимый аналитический модуль аудитора портфеля
 from analytics.portfolio_auditor import generate_portfolio_passport
@@ -14,15 +14,15 @@ from analytics.portfolio_auditor import generate_portfolio_passport
 # Инициализируем локальный роутер для модуля портфелей
 router = Router()
 
-def get_superscript_badge(count: int) -> str:
-    """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы для кошелька."""
-    if count <= 0:
-        return ""
-    superscripts = {
-        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-    }
-    return "🔔" + "".join(superscripts.get(char, char) for char in str(count))
+# def get_superscript_badge(count: int) -> str:
+#     """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы для кошелька."""
+#     if count <= 0:
+#         return ""
+#     superscripts = {
+#         '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+#         '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
+#     }
+#     return "🔔" + "".join(superscripts.get(char, char) for char in str(count))
 
 @router.callback_query(MenuAction.filter(F.action == "view_portfolio"))
 async def process_view_portfolio(callback: types.CallbackQuery, callback_data: MenuAction):
@@ -218,12 +218,15 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
 
                 clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
                 
-                # 🔥 ВНЕДРЕНИЕ ЦИФРОВОГО БЭДЖА АЛЕРТОВ (ВСТАЕТ СРАЗУ ПОСЛЕ ТИКЕРА)
-                alerts_count = int(asset.get('active_alerts_count') or 0)
-                alert_badge = get_superscript_badge(alerts_count)
-                
-                # Сборка премиального текста инлайн-кнопки
-                button_text = f"{crystal} {clean_ticker}{alert_badge} • {clean_qty}шт • {p_sign}${position_profit:,.2f} ({p_sign}{position_profit_pct:.1f}%) • {days}д"
+                # 🔥 РЕФАКТОРИНГ: Полностью переводим на жесткую модульную LEGO-сетку UPort
+                # Вызываем высокоуровневый генератор строки кнопки портфеля
+                button_text = generate_portfolio_button_text(
+                    crystal=crystal,
+                    ticker=clean_ticker,
+                    quantity=int(qty),
+                    profit=position_profit,
+                    profit_pct=position_profit_pct
+                )
                 
                 l_id = int(asset.get('listing_id') or 0)
                 
@@ -278,11 +281,21 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         )
 
     # Блок навигации назад
-    builder.row(types.InlineKeyboardButton(text="🔙 К общей сводке", callback_data=MenuAction(action="show_summary").pack()))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    # Вытаскиваем переключатели вкладок портфеля, а нижний блок генерируем через универсальный пульт
+    tabs_markup = builder.as_markup()
+    
+    # Создаем универсальную навигационную клавиатуру
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="🔙 К общей сводке",
+        full_back_callback=MenuAction(action="show_summary").pack()
+    )
+    
+    # Объединяем кнопки вкладок и кнопки универсального возврата UPort
+    final_builder = InlineKeyboardBuilder.from_markup(tabs_markup)
+    final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
 
     print("🖥️ [ПОРТФЕЛЬ]: Отправляю собранную шторку в Telegram...")
     try:
-        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())        
     except TelegramBadRequest:
         pass

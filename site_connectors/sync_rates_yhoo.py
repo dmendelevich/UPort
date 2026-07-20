@@ -19,14 +19,19 @@ def sync_rates(db_instance):
     """
     logging.info("📡 [Yahoo Forex]: Сбор реально используемых валют из СУБД...")
     
-    # Зрячий SQL-запрос: собираем только те валюты, которые есть в активах, исключая USD
+    # 🔥 ЖЕЛЕЗНЫЙ ТРОЙНОЙ ШЛЮЗ UPORT: собираем валюты из паспортов, планируемых ордеров и накопительных сейфов
     sql_used_currencies = """
-        SELECT DISTINCT currency_id FROM public.tickers WHERE currency_id IS NOT NULL AND currency_id != 'USD'
-        UNION
-        SELECT DISTINCT currency_id FROM public.listings WHERE currency_id IS NOT NULL AND currency_id != 'USD';
+        SELECT currency_id FROM (
+            SELECT currency_id FROM public.tickers
+            UNION
+            SELECT currency_id FROM public.listings
+            UNION
+            SELECT currency_id FROM public.accounts
+        ) as raw_pool 
+        WHERE currency_id IS NOT NULL AND currency_id != 'USD';
     """
-    db_res = db_instance.execute_query(sql_used_currencies)
-    
+    db_res = db_instance.execute_query(sql_used_currencies)   
+
     if not db_res:
         logging.info("ℹ️ [Yahoo Forex]: Используемых дополнительных валют в СУБД не обнаружено. Обновление не требуется.")
         return

@@ -10,7 +10,8 @@ from aiogram.exceptions import TelegramBadRequest
 # 🔥 ИМПОРТИРУЕМ ОБОИХ РОБОТОВ СУБД: db_sys для шлюза ворот, db_bot для чтения интерфейса
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.summary import get_back_to_menu_keyboard
+#from bot_handlers.summary import get_back_to_menu_keyboard
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard
 
 router = Router()
 
@@ -88,9 +89,9 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
 
     # 4. ШАГ 4: СБОР АНАЛИТИЧЕСКИХ ДАННЫХ ИЗ ТАБЛИЦЫ TICKERS
     try:
+        # 🔥 РЕФАКТОРИНГ: Заменяем на метод одной строки execute_row
         sql_get_ticker = f"SELECT * FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
-        t_res = await asyncio.to_thread(db_bot.execute_query, sql_get_ticker)
-        t = t_res[0] if isinstance(t_res, list) and len(t_res) > 0 else (t_res if isinstance(t_res, dict) else {})
+        t = await asyncio.to_thread(db_bot.execute_row, sql_get_ticker)
         
         if not t:
             await status_msg.edit_text("❌ Ошибка: не удалось извлечь паспорт бумаги из СУБД.")
@@ -202,10 +203,18 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         text="🔬 В список наблюдения", 
         callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id)).pack()
     ))
-    builder.row(types.InlineKeyboardButton(
-        text="💤 Оставить в покое", 
-        callback_data=MenuAction(action="main_menu").pack()
-    ))
+    context_markup = builder.as_markup()
+    
+    # Нижнюю кнопку отмены генерируем через наш универсальный подпрограммный подвал UPort
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="💤 Оставить в покое",
+        full_back_callback=MenuAction(action="main_menu").pack()
+    )
+    
+    # Склеиваем контекстную кнопку ватчлиста и системный навигационный подвал
+    final_builder = InlineKeyboardBuilder.from_markup(context_markup)
+    final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
+
 
     try:
         await status_msg.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())

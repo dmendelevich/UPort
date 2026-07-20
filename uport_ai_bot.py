@@ -8,6 +8,7 @@ from pathlib import Path
 # Импортируем готовые инстанции базы данных и мапперов из ядра
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
+from bot_handlers import strategy_resolver   #!!!!!!!!!!!!!!!!!!!!!!
 
 # ЗАГРУЗКА ОКРУЖЕНИЯ
 env_path = Path('/root/UPort/.env')
@@ -33,7 +34,8 @@ dp.include_routers(
     tickers.router,
     settings.router,
     watchlist.router, 
-    ticker_search.router
+    ticker_search.router,
+    strategy_resolver.router
 )
 
 async def main():

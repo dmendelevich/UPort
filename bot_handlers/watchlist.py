@@ -8,19 +8,19 @@ from aiogram.fsm.context import FSMContext
 # Импортируем готовые объекты СУБД, фабрику и навигацию
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text
 
 router = Router()
 
-def get_superscript_badge(count: int) -> str:
-    """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы."""
-    if count <= 0:
-        return ""
-    superscripts = {
-        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-    }
-    return "🔔" + "".join(superscripts.get(char, char) for char in str(count)) + " "
+# def get_superscript_badge(count: int) -> str:
+#     """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы."""
+#     if count <= 0:
+#         return ""
+#     superscripts = {
+#         '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+#         '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
+#     }
+#     return "🔔" + "".join(superscripts.get(char, char) for char in str(count)) + " "
 
 @router.callback_query(MenuAction.filter(F.action == "show_watchlist_focus"))
 async def process_watchlist_focus_menu(callback: types.CallbackQuery):
@@ -35,7 +35,7 @@ async def process_watchlist_focus_menu(callback: types.CallbackQuery):
         WHERE p.id != 9999
         ORDER BY p.id ASC;
     """
-    p_res = await execute_sql_async(sql_portfolios)
+    p_res = await asyncio.to_thread(db_bot.execute_query, sql_portfolios)
     portfolios_list = p_res if isinstance(p_res, list) else ([p_res] if p_res else [])
 
     text = (
@@ -154,27 +154,51 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                 l_id = int(item['listing_id'] or 0)
                 last_price = float(item['last_price'] or 0)
                 
-                # 🛠️ НОВЫЙ ДИЗАЙН-КОД: Вычисляем иконку фазы жизненного цикла UPort
-                if item.get('sold_out_at') is not None:
-                    crystal = "🏁"
-                elif item.get('bought_at') is not None:
-                    crystal = "💼"
-                elif item.get('ordered_at') is not None:
-                    crystal = "📃" # Заменяем старую иконку на аккуратный биржевый свиток приказа
-                elif item.get('watched_at') is not None:
-                    crystal = "🎯"
-                elif item.get('considered_at') is not None:
-                    crystal = "🔍"
-                else:
-                    crystal = "🔹"
+                # # 🛠️ НОВЫЙ ДИЗАЙН-КОД: Вычисляем иконку фазы жизненного цикла UPort
+                # if item.get('sold_out_at') is not None:
+                #     crystal = "🏁"
+                # elif item.get('bought_at') is not None:
+                #     crystal = "💼"
+                # elif item.get('ordered_at') is not None:
+                #     crystal = "📃" # Заменяем старую иконку на аккуратный биржевый свиток приказа
+                # elif item.get('watched_at') is not None:
+                #     crystal = "🎯"
+                # elif item.get('considered_at') is not None:
+                #     crystal = "🔍"
+                # else:
+                #     crystal = "🔹"
                 
-                # 🔥 ВНЕДРЕНИЕ СУПЕРСКРИПТ-БЭДЖА АЛЕРТОВ (ВСТАЕТ МЕЖДУ ИКОНКОЙ И ТИКЕРOM)
+                # # 🔥 ВНЕДРЕНИЕ СУПЕРСКРИПТ-БЭДЖА АЛЕРТОВ (ВСТАЕТ МЕЖДУ ИКОНКОЙ И ТИКЕРОМ)  #----
+                # # Вызываем универсальный конструктор смарт-индикаторов UPort  #----
+                # alert_badge = build_smart_badge(text=item.get('active_alerts_count'), icon="🔔", convert_to_superscript=True)  #----
+                
+                # # Собираем премиальный текст кнопки по новому ТЗ  #----
+                # button_text = f"{crystal} {alert_badge}{pure_symbol} • ${last_price:,.2f}"  #----
+
+                # 🛠️ НОВЫЙ ДИЗАЙН-КОД: Вычисляем многомерный радар фаз жизненного цикла UPort
+                b_study = "🔍" if item.get('considered_at') is not None else ""
+                b_watch = "👀" if item.get('watched_at') is not None else ""
+                b_order = "📃" if item.get('ordered_at') is not None else ""
+                b_asset = "💼" if item.get('bought_at') is not None else ""
+                b_sold  = "🏁" if item.get('sold_out_at') is not None else ""
+
+                # Извлекаем честный счетчик активных алертов из базы
                 alerts_count = int(item.get('active_alerts_count') or 0)
-                alert_badge = get_superscript_badge(alerts_count)
+                # Логика видимости колокольчика вынесена ВНЕ генератора по вашему ТЗ
+                b_alert = "🔔" if alerts_count > 0 else ""
                 
-                # Собираем премиальный текст кнопки по новому ТЗ (Иконка + Колокольчик + Тикер + Цена)
-                button_text = f"{crystal} {alert_badge}{pure_symbol} • ${last_price:,.2f}"
-                
+                # 🔥 РЕФАКТОРИНГ: Переводим Списки наблюдения на жесткую LEGO-сетку с радаром
+                button_text = generate_watchlist_button_text(
+                    ticker=pure_symbol,
+                    f1=b_study,
+                    f2=b_watch,
+                    f3=b_order,
+                    f4=b_asset,
+                    f5=b_sold,
+                    alert_icon=b_alert,
+                    alerts_count=alerts_count
+                )
+
                 builder.row(types.InlineKeyboardButton(
                     text=button_text,
                     callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="alerts").pack()
@@ -199,10 +223,18 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
             callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
         ))
         
-    builder.row(types.InlineKeyboardButton(text="🔙 К выбору фокуса", callback_data=MenuAction(action="show_watchlist_focus").pack()))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    # 🔥 НАДЕЖНЫЙ ПРЯМОЙ СПОСОБ: Добавляем кнопки возврата прямо в текущий builder
+    builder.row(types.InlineKeyboardButton(
+        text="🔙 К выбору фокуса", 
+        callback_data=MenuAction(action="show_watchlist_focus").pack()
+    ))
+    builder.row(types.InlineKeyboardButton(
+        text="📱 В главное меню", 
+        callback_data=MenuAction(action="main_menu").pack()
+    ))
 
     print("🖥️ [WATCHLIST]: Отправляю обновленную шторку в Telegram...")
+        
     try:
         await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
     except TelegramBadRequest:

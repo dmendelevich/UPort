@@ -54,6 +54,17 @@ class Database:
             print(f"🚨 [ЯДРО ERROR]: Шлюз вернул исключение на запрос: {sql_query[:60]}... | Ошибка: {e}")
             return []
 
+    def execute_row(self, sql_query: str) -> dict:
+        """
+        Выполняет SQL-запрос и гарантированно возвращает ОДНУ строку в виде словаря.
+        Если база данных ничего не нашла, возвращает пустой словарь {}.
+        Идеально подходит для точечных запросов (LIMIT 1) и избавляет от скобок.
+        """
+        res = self.execute_query(sql_query)
+        if isinstance(res, list) and len(res) > 0:
+            return res[0]
+        return {}
+
     # === ТРИ КИТА ИНФРАСТРУКТУРЫ (ПОДГОТОВКА ДО ТРАНЗАКЦИИ) ===
 
     def ensure_currency(self, currency_id: str):
@@ -747,5 +758,5 @@ class Database:
 
 
 # Глобальные изолированные инстансы базы данных для всей экосистемы UPort
-db_bot = Database(role="BOT")       
-db_sys = Database(role="SYSTEM")
+db_bot = Database(role="BOT")       # read only       
+db_sys = Database(role="SYSTEM")    # read/write

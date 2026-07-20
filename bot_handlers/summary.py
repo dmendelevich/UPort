@@ -8,6 +8,7 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД и фабрику из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_main_menu_keyboard
 
 # Инициализируем изолированный роутер модуля
 router = Router()
@@ -15,31 +16,31 @@ router = Router()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И КЛАВИАТУРЫ ---
 
-async def execute_sql_async(sql_query: str) -> list:
-    """Потокобезопасный асинхронный вызов шлюза СУБД."""
-    return await asyncio.to_thread(db_bot.execute_query, sql_query)
+# async def execute_sql_async(sql_query: str) -> list:
+#     """Потокобезопасный асинхронный вызов шлюза СУБД."""
+#     return await asyncio.to_thread(db_bot.execute_query, sql_query)
 
 
-def get_main_menu_keyboard(is_admin: bool = False) -> types.InlineKeyboardMarkup:
-    """Генерирует пульт Главного меню на основе флага из памяти FSM."""
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
-    builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
-    builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
-    builder.row(types.InlineKeyboardButton(text="🛠️ Бэклог разработки", callback_data=MenuAction(action="backlog_main").pack()))
+# def get_main_menu_keyboard(is_admin: bool = False) -> types.InlineKeyboardMarkup:
+#     """Генерирует пульт Главного меню на основе флага из памяти FSM."""
+#     builder = InlineKeyboardBuilder()
+#     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
+#     builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
+#     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
+#     builder.row(types.InlineKeyboardButton(text="🛠️ Бэклог разработки", callback_data=MenuAction(action="backlog_main").pack()))
     
-    # ⚙️ Проверяем гибкий флаг админа. Кнопка доступна вам (и сыну в будущем)
-    if is_admin:
-        builder.row(types.InlineKeyboardButton(text="⚙️ Настройки системы", callback_data=MenuAction(action="settings_main").pack()))
+#     # ⚙️ Проверяем гибкий флаг админа. Кнопка доступна вам (и сыну в будущем)
+#     if is_admin:
+#         builder.row(types.InlineKeyboardButton(text="⚙️ Настройки системы", callback_data=MenuAction(action="settings_main").pack()))
         
-    return builder.as_markup()
+#     return builder.as_markup()
 
 
-def get_back_to_menu_keyboard() -> types.InlineKeyboardMarkup:
-    """Кнопка возврата в меню."""
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-    return builder.as_markup()
+# def get_back_to_menu_keyboard() -> types.InlineKeyboardMarkup:
+#     """Кнопка возврата в меню."""
+#     builder = InlineKeyboardBuilder()
+#     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+#     return builder.as_markup()
 
 # --- ХЭНДЛЕРЫ УРОВНЯ 1 ---
 
@@ -51,20 +52,18 @@ async def cmd_start(message: types.Message, state: FSMContext):
     is_admin = False
     user_db_id = None
     try:
-        # 🔥 МОДЕРНИЗАЦИЯ: Добавляем выборку поля id из public.users
-        user_check = db_bot.execute_query(
+        # 🔥 РЕФАКТОРИНГ: Заменяем на execute_row и полностью убираем проверку списков [0]
+        user_row = db_bot.execute_row(
             f"SELECT id, is_admin FROM public.users WHERE telegram_id = {message.from_user.id} LIMIT 1;"
         )
-        if user_check and isinstance(user_check, list) and len(user_check) > 0:
-            user_row = user_check[0] if isinstance(user_check, list) else user_check
-            
-            # Извлекаем внутренний числовой ID пользователя
+        if user_row:
+            # Извлекаем внутренний числовой ID пользователя напрямую из словаря
             if user_row.get('id') is not None:
                 user_db_id = int(user_row['id'])
                 
-            # Поддерживаем разные типы ответов шлюза (bool или строку) для админа
-            is_admin = str(user_row.get('is_admin')).lower() in ('true', '1', 't')
-            
+            # Поддерживаем разные типы ответов шлюза для админа
+            is_admin = str(user_row.get('is_admin')).lower() in ('true', '1', 't')   
+
     except Exception as e:
         print(f"⚠️ Ошибка определения прав и ID пользователя при старте: {e}")
 
@@ -74,7 +73,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await message.answer(
         f"Привет, {message.from_user.full_name}! Система UPort готова к работе.\n"
         f"Управляйте семейным капиталом через интерактивный пульт:",
-        reply_markup=get_main_menu_keyboard(is_admin=is_admin)
+        reply_markup=generate_main_menu_keyboard(is_admin=is_admin)
     )
 
 @router.callback_query(MenuAction.filter(F.action == "main_menu"))
@@ -94,7 +93,7 @@ async def process_back_to_menu(callback: types.CallbackQuery, state: FSMContext)
     try:
         await callback.message.edit_text(
             "📱 Главное меню системы UPort. Выберите действие:", 
-            reply_markup=get_main_menu_keyboard(is_admin=is_admin)
+            reply_markup=generate_main_menu_keyboard(is_admin=is_admin)
         )
     except TelegramBadRequest:
         pass
@@ -107,12 +106,17 @@ async def process_summary_callback(callback: types.CallbackQuery):
 
     summary = await asyncio.to_thread(db_bot.get_family_summary, callback.from_user.id)
     if not summary:
+        # Генерируем лаконичную одиночную кнопку Главного меню
+        fallback_markup = generate_nav_back_keyboard(
+            one_step_back_text="📱 В главное меню",
+            full_back_callback=MenuAction(action="main_menu").pack()
+        )
         await callback.message.edit_text(
             "❌ Ваш Telegram ID не зарегистрирован в базе данных UPort.", 
-            reply_markup=get_back_to_menu_keyboard()
+            reply_markup=fallback_markup
         )
         return
-
+        
     sign = summary.get("currency_sign", "$")
     
     text = (
@@ -135,6 +139,18 @@ async def process_summary_callback(callback: types.CallbackQuery):
         ))
     
     builder.row(types.InlineKeyboardButton(text="📦 Сводный портфель семьи", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="").pack()))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
     
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
+    # Вытаскиваем накопленные в цикле кнопки срезов портфелей
+    portfolios_markup = builder.as_markup()
+    
+    # Генерируем лаконичную одиночную кнопку Главного меню через универсальный навигационный пульт UPort
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="📱 В главное меню",
+        full_back_callback=MenuAction(action="main_menu").pack()
+    )
+    
+    # Ювелирно склеиваем кнопки портфелей и системный универсальный подвал
+    final_builder = InlineKeyboardBuilder.from_markup(portfolios_markup)
+    final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
+    
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())

@@ -41,7 +41,7 @@ def run_ai_portfolio_audit(portfolio_id: int):
         # ─── ШАГ 1: ВЫГРУЖАЕМ ПАСПОРТ СТРАТЕГИИ ───
         cur.execute("""
             SELECT strategy_name, engine_type, rules_config, manifest, response_format
-            FROM public.strategies WHERE portfolio_id = %s AND is_active = true LIMIT 1;
+            FROM public.ai_prompts WHERE portfolio_id = %s AND is_active = true LIMIT 1;
         """, (portfolio_id,))
         strategy_row = cur.fetchone()
         if not strategy_row: return
@@ -113,7 +113,7 @@ def run_ai_portfolio_audit(portfolio_id: int):
         
         # Фиксируем обоснование ИИ в СУБД
         ai_rationale = ai_json.get("ai_analysis_rationale", "No rationale provided.")
-        cur.execute("UPDATE public.strategies SET ai_rationale = %s, updated_at = CURRENT_TIMESTAMP WHERE portfolio_id = %s;", (ai_rationale, portfolio_id))
+        cur.execute("UPDATE public.ai_prompts SET ai_rationale = %s, updated_at = CURRENT_TIMESTAMP WHERE portfolio_id = %s;", (ai_rationale, portfolio_id))
         
         # ─── ШАГ 7: ТРАНЗАКЦИОННАЯ ЗАПИСЬ АЛЕРТОВ (3NF) ───
         actions = ai_json.get("recommended_actions", [])

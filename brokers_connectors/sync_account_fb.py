@@ -6,6 +6,8 @@ from pathlib import Path
 import traceback
 import logging
 
+from brokers_connectors.sync_strategy_asset_fb import SyncStrategyAssetFB   #!!!!!!!!!!!!!!!!!!!
+
 # Загружаем переменные из .env
 env_path = Path('/root/UPort/.env')
 load_dotenv(dotenv_path=env_path)
@@ -19,11 +21,11 @@ class FreedomBrokerSyncManager:
 
     def sync_by_account_number(self, account_number: str) -> dict:
         """Синхронизирует активы, кэш и ордера, динамически создавая структуру в БД при её отсутствии."""
-        
-        try:
-            # 🔔 ВНИМАНИЕ: Весь ваш текущий код функции, который шел ниже, 
-            # теперь просто смещается на один отступ вправо (внутрь блока try)!
 
+        # Инициализируем наш новый менеджер стратегий
+        strat_sync = SyncStrategyAssetFB(self.db)   #!!!!!!!!!!!!!!!!!!!
+
+        try:
             w_check = None  # 🔥 Объявляем переменную пустой на старте функции!
 
             # 1. Проверяем наличие счета в таблице accounts
@@ -179,6 +181,10 @@ class FreedomBrokerSyncManager:
                     asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id}"
                     asset_res = self.db.execute_query(asset_search)
 
+                    # 🔥 НАЧАЛО ВНЕДРЕНИЯ (ТОЧКА 1): Замеряем, сколько акций БЫЛО в базе до обновления   #!!!!!!!!!!!!!!!!!!!
+                    old_quantity = strat_sync.get_current_quantity(portfolio_id, listing_id)
+                    # 🔥 КОНЕЦ ВНЕДРЕНИЯ (ТОЧКА 1)
+
                     if asset_res and len(asset_res) > 0:
                         # Узел А: Обычное обновление цены или докупка существующей позиции
                         # 🔥 ЖЕСТКИЙ ФИКС РАСПАКОВКИ СПИСКА СУБД: Сначала извлекаем словарь, а потом берем id
@@ -224,6 +230,17 @@ class FreedomBrokerSyncManager:
                             DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = '{session_start_time}';
                         """
                         self.db.execute_query(sql_asset_insert)
+
+                    # 🔥 НАЧАЛО ВНЕДРЕНИЯ (ТОЧКА 2): Базовый asset обновлен! Запускаем умное распределение по стратегиям   #!!!!!!!!!!!!!!!!!!!
+                    # quantity — это то новое количество, которое только что прислал брокер
+                    strat_sync.distribute_asset_delta(
+                        portfolio_id=portfolio_id, 
+                        listing_id=listing_id, 
+                        ticker_id=ticker_id, 
+                        old_qty=old_quantity, 
+                        new_qty=float(quantity)
+                    )
+                    # 🔥 КОНЕЦ ВНЕДРЕНИЯ (ТОЧКА 2)
 
                 # 🔥 ИНТЕЛЛЕКТУАЛЬНЫЙ МАССОВЫЙ ФИКС ФАНТОМОВ v5.0 (КРУГОВОРОТ В WATCHLIST)
                 # Старый поштучный цикл со статусами полностью удален ради чистоты природы Master-таблицы.
