@@ -55,6 +55,42 @@ async def format_premium_header(ticker_id: int, portfolio_id: int) -> str:
         logging.error(f"🚨 [BOT SCREENS ERROR]: Сбой сборщика шапки id={ticker_id}: {e}")
         return "🔬 **Инструмент UPort**\n⚠️ Ошибка сбора паспортных данных."
 
+async def format_strategy_header(strategy_id: int) -> str:
+    """
+    Универсальный сборщик шапки карточки стратегии UPort.
+    Переиспользуется списком стратегий портфеля и самой карточкой стратегии,
+    чтобы не дублировать формат в двух местах (см. Claude/BACKLOG.md #13).
+    """
+    sql = f"""
+        SELECT s.strategy_name, s.strategy_share_pct, s.human_philosophy, s.is_active,
+               p.name AS portfolio_name, p.id AS portfolio_id,
+               u.name AS owner_name
+        FROM public.strategies s
+        JOIN public.portfolios p ON s.portfolio_id = p.id
+        JOIN public.users u ON p.owner_id = u.id
+        WHERE s.id = {int(strategy_id)}
+        LIMIT 1;
+    """
+    s = await asyncio.to_thread(db_bot.execute_row, sql)
+
+    if not s:
+        return "🎯 **Стратегия UPort**\n❌ Стратегия не найдена в СУБД."
+
+    share_pct = float(s.get("strategy_share_pct") or 0.0)
+    philosophy = s.get("human_philosophy") or "Описание философии стратегии не задано."
+    status_badge = "" if s.get("is_active") else " ⏸️ (неактивна)"
+
+    header = (
+        f"🎯 **{s.get('strategy_name', 'Без названия')}**{status_badge}\n"
+        f"💼 Портфель {s.get('portfolio_name', '')} ({s.get('owner_name', 'Unknown')})\n"
+        f"📐 Целевая доля капитала: **{share_pct:.0f}%**\n"
+        f"───────\n"
+        f"_{philosophy}_\n"
+        f"───────\n"
+    )
+    return header
+
+
 def generate_confirm_screen(header_text: str, action_title: str, details_list: list, parse_mode: str = "Markdown") -> str:
     """
     Универсальная двухрежимная подпрограмма генерации экранов подтверждения (Шторок).

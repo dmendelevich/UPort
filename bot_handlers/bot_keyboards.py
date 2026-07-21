@@ -86,6 +86,23 @@ async def generate_target_strategies_keyboard(portfolio_id: int, ticker_id: int,
     builder.row(types.InlineKeyboardButton(text="💤 Оставить в покое", callback_data=MenuAction(action="main_menu").pack()))
     return builder.as_markup()
 
+def generate_tab_switch_keyboard(tabs: list, current_sub_view: str) -> InlineKeyboardMarkup:
+    """
+    Универсальный подвал-переключатель вкладок одного экрана (см. Claude/BACKLOG.md #13).
+    tabs -- список пар (текст кнопки, MenuAction). Рендерит кнопки всех вкладок,
+    КРОМЕ той, чей sub_view совпадает с current_sub_view (уже открытую вкладку не показываем).
+    """
+    builder = InlineKeyboardBuilder()
+    buttons = [
+        types.InlineKeyboardButton(text=label, callback_data=action.pack())
+        for label, action in tabs
+        if action.sub_view != current_sub_view
+    ]
+    if buttons:
+        builder.row(*buttons)
+    return builder.as_markup()
+
+
 def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str) -> InlineKeyboardMarkup:
     """
     Абсолютно универсальный навигационный пульт возврата экосистемы UPort.
@@ -154,6 +171,19 @@ def build_ticker_block(ticker: str) -> str:
     clean_ticker = str(ticker).strip().upper()
     padding_count = max(0, 5 - len(clean_ticker))
     return f"{clean_ticker}{EN_SPACE * padding_count}{BRAILLE_EMPTY}{BRAILLE_EMPTY}"
+
+def build_name_block(name: str, width: int = 24) -> str:
+    """
+    Микро-станок 2б: Жесткий блок фиксированной ширины для произвольного текста
+    (например, названия стратегии). В отличие от тикера, ширина текста не задана
+    доменной моделью -- поэтому она параметризована, а слишком длинные имена
+    обрезаются с многоточием, чтобы не сломать выравнивание колонок соседних блоков.
+    """
+    clean_name = str(name).strip()
+    if len(clean_name) > width:
+        clean_name = clean_name[:width - 1].rstrip() + "…"
+    padding_count = max(0, width - len(clean_name))
+    return f"{clean_name}{EN_SPACE * padding_count}{BRAILLE_EMPTY}"
 
 def build_number_block(value: int, suffix: str = "шт", show_sign: bool = False) -> str:
     """
@@ -277,6 +307,8 @@ def assemble_lego_line(json_blueprint: list) -> str:
             final_string += build_smart_badge(icon=block.get("icon", ""), value=int(block.get("index", 0)))
         elif b_type == "ticker":
             final_string += build_ticker_block(ticker=block.get("value", ""))
+        elif b_type == "name":
+            final_string += build_name_block(name=block.get("value", ""), width=int(block.get("width", 24)))
         elif b_type == "number":
             final_string += build_number_block(value=int(block.get("value", 0)), suffix=block.get("suffix", "шт"), show_sign=bool(block.get("show_sign", False)))
         elif b_type == "finance":
@@ -291,6 +323,22 @@ def assemble_lego_line(json_blueprint: list) -> str:
     return final_string
 
 # 🏗️ ВЫСОКОУРОВНЕВЫЕ ВЫЗЫВАЕМЫЕ ГЕНЕРАТОРЫ СТРОК ДЛЯ ИНЛАЙН-КНОПОК
+
+def generate_strategy_button_text(name: str, target_pct: float, actual_pct: float) -> str:
+    """
+    Генерирует жесткую монолитную строку для инлайн-кнопок списка стратегий портфеля.
+    Название стратегии -- произвольной длины (не тикер), поэтому идёт через build_name_block;
+    план/факт доли всё равно выравниваются в колонки, как и в остальных экранах UPort.
+    """
+    blueprint = [
+        {"type": "badge", "icon": "🎯", "index": 0},
+        {"type": "name", "value": name},
+        {"type": "percent", "value": target_pct, "show_sign": False},
+        {"type": "separator", "value": "/"},
+        {"type": "percent", "value": actual_pct, "show_sign": False},
+        {"type": "final_row", "value": ""}
+    ]
+    return assemble_lego_line(blueprint)
 
 def generate_portfolio_button_text(crystal: str, ticker: str, quantity: int, profit: float, profit_pct: float) -> str:
     """

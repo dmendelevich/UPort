@@ -6,10 +6,11 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text
 
 # Импортируем независимый аналитический модуль аудитора портфеля
 from analytics.portfolio_auditor import generate_portfolio_passport
+from analytics.portfolio_inspector import PortfolioInspector
 
 # Инициализируем локальный роутер для модуля портфелей
 router = Router()
@@ -263,22 +264,46 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             f" • Общий свободный кэш компаний: **${avg['free_cash_flow_m']:,.1f}M**\n"
         )
 
-    # Динамический пульт шторки
-    if view == "assets":
-        builder.row(types.InlineKeyboardButton(
-            text="📊 Паспорт качества", 
-            callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport").pack()
-        ))
-    elif view == "passport":
-        builder.row(types.InlineKeyboardButton(
-            text="📦 Состав портфеля", 
-            callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()
-        ))
-    else:
-        builder.row(
-            types.InlineKeyboardButton(text="📦 Состав портфеля", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()),
-            types.InlineKeyboardButton(text="📊 Паспорт качества", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport").pack())
-        )
+    elif view == "strategies":
+        print("🎯 [ПОРТФЕЛЬ]: Рендеринг списка активных стратегий...")
+        report_text += "🎯 **Активные стратегии портфеля:**"
+
+        if p_id <= 0 or p_id == 9999:
+            report_text += "\n   *Стратегии применимы только к персональному портфелю конкретного брокера.*"
+        else:
+            inspector = await asyncio.to_thread(PortfolioInspector, db_bot, p_id)
+            balances = await asyncio.to_thread(inspector.get_virtual_cash_balances)
+            total_capital = float(balances.get("total_capital_usd") or 0.0)
+            strat_map = balances.get("strategies", {})
+
+            if strat_map:
+                for s_id, s in strat_map.items():
+                    target_pct = float(s["target_share_pct"])
+                    current_usd = float(s["current_holdings_usd"])
+                    actual_pct = (current_usd / total_capital * 100.0) if total_capital > 0 else 0.0
+                    button_text = generate_strategy_button_text(
+                        name=s['strategy_name'],
+                        target_pct=target_pct,
+                        actual_pct=actual_pct
+                    )
+                    builder.row(types.InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=MenuAction(action="view_strategy", strategy_id=int(s_id), portfolio_id=p_id).pack()
+                    ))
+            else:
+                report_text += "\n   *Активные стратегии в этом портфеле не найдены.*"
+
+    # Динамический пульт шторки: переключатель вкладок через общий кубик-сборщик (см. Claude/BACKLOG.md #13)
+    tabs = [
+        ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets")),
+        ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport")),
+    ]
+    if p_id > 0 and p_id != 9999:
+        tabs.append(("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies")))
+
+    tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)
+    for tab_row in tab_switch_markup.inline_keyboard:
+        builder.row(*tab_row)
 
     # Блок навигации назад
     # Вытаскиваем переключатели вкладок портфеля, а нижний блок генерируем через универсальный пульт

@@ -11,3 +11,4 @@ class MenuAction(CallbackData, prefix="uport"):
     task_id: int = 0         # ID задачи бэклога для кнопок закрытия
     user_id: int = 0         # ID пользователя (владельца) из public.users
     broker_id: int = 0       # ID брокера из public.brokers
+    strategy_id: int = 0     # ID стратегии из public.strategies

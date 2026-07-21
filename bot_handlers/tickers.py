@@ -37,6 +37,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         
     t_name = getattr(callback_data, 'ticker_name', '') or ''
     view = callback_data.sub_view or "owner"
+    strategy_id = getattr(callback_data, 'strategy_id', 0) or 0  # Контекст "пришли из карточки стратегии" для кнопки "назад"
     
     print(f"   • Итоговые переменные после парсинга: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
 
@@ -317,8 +318,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     builder = InlineKeyboardBuilder()
     builder.row(
-        types.InlineKeyboardButton(text="💼 Владение и Ордера", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner").pack()),
-        types.InlineKeyboardButton(text="📊 Метрики Yahoo", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo").pack())
+        types.InlineKeyboardButton(text="💼 Владение и Ордера", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id).pack()),
+        types.InlineKeyboardButton(text="📊 Метрики Yahoo", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo", strategy_id=strategy_id).pack())
     )
 
     # 5. ЛОГИКА РАЗВОДКИ ВНУТРЕННОСТЕЙ ШТОРОК
@@ -464,7 +465,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
 
     # Смарт-навигация назад в зависимости от точки входа инвестора
-    if is_owner_view:
+    if strategy_id > 0:
+        builder.row(types.InlineKeyboardButton(text="🔙 К стратегии", callback_data=MenuAction(action="view_strategy", strategy_id=strategy_id, portfolio_id=p_id).pack()))
+    elif is_owner_view:
         builder.row(types.InlineKeyboardButton(text="🔙 К списку активов", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()))
     elif is_family_view:
         builder.row(types.InlineKeyboardButton(text="🔙 К сводке капитала", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="assets").pack()))
