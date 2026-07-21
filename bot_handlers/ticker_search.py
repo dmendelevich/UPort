@@ -3,6 +3,7 @@ import logging
 import asyncio
 import yfinance as yf
 from aiogram import Router, types, F
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
@@ -15,11 +16,14 @@ from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyb
 
 router = Router()
 
-@router.message(F.text)
+@router.message(StateFilter(None), F.text)
 async def process_global_ticker_search(message: types.Message, state: FSMContext):
     """
     Глобальный текстовый перехватчик инвест-идей.
     Ловит любой текст, валидирует, легализует бумагу через db_sys и выводит Паспорт качества.
+    StateFilter(None) -- срабатывает только вне любого активного FSM-состояния (idle-чат),
+    иначе перехватывал бы текстовый ввод любых будущих многошаговых экранов (создание
+    портфеля, бэклог и т.п.) независимо от порядка регистрации роутеров.
     """
     # 1. ШАГ 1: АВТОРИЗАЦИЯ И ПЕРЕХВАТ USER_DB_ID ИЗ ПАМЯТИ FSM
     user_data = await state.get_data()

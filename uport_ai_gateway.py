@@ -80,13 +80,19 @@ def execute_custom_query(payload: QueryPayload, x_token: str = Header(None)):
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(query)
-        
-        if query_lower.startswith("select"):
+
+        # cur.description -- факт от Postgres "есть ли у этого запроса набор колонок результата".
+        # В отличие от query_lower.startswith("select"), корректно работает и для WITH...SELECT (CTE),
+        # и для INSERT/UPDATE...RETURNING, которые тоже возвращают строки, не начинаясь со слова SELECT.
+        if cur.description is not None:
             result = cur.fetchall()
         else:
-            conn.commit()
             result = [{"status": "success", "message": f"Command executed successfully via {role} role"}]
-            
+
+        # Коммитим всегда: и для чистых SELECT (безвредно), и для RETURNING-запросов, которые
+        # одновременно меняют данные И возвращают строки -- иначе изменения откатятся при conn.close().
+        conn.commit()
+
         cur.close()
         conn.close()
         return result

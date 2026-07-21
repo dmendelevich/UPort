@@ -114,21 +114,23 @@ class SyncStrategyAssetFB:
 
     def _get_unallocated_strategy_id(self, portfolio_id: int) -> int:
         """
-        Быстро находит ID виртуальной стратегии "Нераспределенные" (Шаблон №5) для данного портфеля.
+        Находит ID буферной стратегии для данного портфеля через связь с
+        "заводским" шаблоном (system_key = 'UNALLOCATED'), а не по тексту имени.
         """
         sql = f"""
-            SELECT id FROM public.strategies 
-            WHERE portfolio_id = {int(portfolio_id)} 
-              AND strategy_name = 'Нераспределенные' 
-               OR strategy_name = 'Неопределенная стратегия';
+            SELECT s.id
+            FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.portfolio_id = {int(portfolio_id)}
+              AND st.system_key = 'UNALLOCATED';
         """
         # Безопасно забираем одну строку буфера
         row = self.db.execute_row(sql)
         if row:
             return int(row['id'])
-        
+
         # Жесткий аварийный fallback, если стратегии-буфера вдруг нет в базе
-        raise ValueError(f"Критическая ошибка: В портфеле {portfolio_id} отсутствует буферная стратегия 'Нераспределенные'!")
+        raise ValueError(f"Критическая ошибка: В портфеле {portfolio_id} отсутствует буферная стратегия (system_key='UNALLOCATED')!")
 
     def _apply_strategy_balance(self, portfolio_id: int, listing_id: int, strategy_id: int, delta: float):
         """

@@ -46,9 +46,10 @@ def run_simulation():
         unalloc_id = manager._get_unallocated_strategy_id(p_id)
         
         # 4. Создаем фейковую целевую стратегию (например, Трендовая №999) для чистоты теста
+        #    template_id обязателен (NOT NULL) -- берём любой существующий шаблон (TREND_FOLLOWING).
         db_sys.execute_query(f"""
-            INSERT INTO public.strategies (id, portfolio_id, strategy_name, strategy_share_pct)
-            VALUES (999, {p_id}, 'Тестовая Трендовая', 20.00)
+            INSERT INTO public.strategies (id, portfolio_id, template_id, strategy_name, strategy_share_pct)
+            VALUES (999, {p_id}, (SELECT id FROM public.strategy_templates WHERE system_key = 'TREND_FOLLOWING'), 'Тестовая Трендовая', 20.00)
             ON CONFLICT (id) DO NOTHING;
         """)
         

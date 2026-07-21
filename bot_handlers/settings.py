@@ -35,8 +35,12 @@ async def process_settings_main(callback: types.CallbackQuery, state: FSMContext
     builder = InlineKeyboardBuilder()
     # Кнопка принудительного пинка Yahoo-контура
     builder.row(types.InlineKeyboardButton(
-        text="📊 Обновить фундаментал (Yahoo)", 
+        text="📊 Обновить фундаментал (Yahoo)",
         callback_data=MenuAction(action="run_yahoo_sync").pack()
+    ))
+    builder.row(types.InlineKeyboardButton(
+        text="➕ Создать портфель",
+        callback_data=MenuAction(action="admin_portfolio_new").pack()
     ))
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
 
