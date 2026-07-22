@@ -10,7 +10,13 @@
 
 ## Файлы
 
-(будет пополняться по мере разбора)
+- [01_workflow_rules.md](01_workflow_rules.md) — правила взаимодействия
+- [02_universal_views.md](02_universal_views.md) — универсальные view БД
+- [03_strategies_and_templates.md](03_strategies_and_templates.md) — стратегии как субпортфели
+- [04_gateway_and_portfolio_admin.md](04_gateway_and_portfolio_admin.md) — шлюз и админ портфелей
+- [05_strategy_screen_and_kubiki.md](05_strategy_screen_and_kubiki.md) — экран стратегии и общие кубики UI
+- [06_tracks.md](06_tracks.md) — три трека работы (Советник / Админ-интерфейс стратегий / Наведение порядка) и принцип "система только советует"
+- [BACKLOG.md](BACKLOG.md) — бэклог, разложен по трекам
 
 ## Общая структура репозитория (первичный обзор, требует уточнения)
 

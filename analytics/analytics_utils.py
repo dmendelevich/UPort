@@ -137,15 +137,25 @@ class TickerEvaluator:
         if not f or "id" not in f:
             return {"error": f"Ошибка распаковки структуры данных тикера ID={ticker_id}"}
 
-        # 2. ЗАГРУЗКА КОНФИГУРАЦИЙ СТРАТЕГИЙ ТЕКУЩЕГО ПОРТФЕЛЯ
-        sql_strat = f"SELECT id, rules_config FROM public.strategies WHERE portfolio_id = {int(target_portfolio_id)} AND is_active = true;"
+        # 2. ЗАГРУЗКА КОНФИГУРАЦИЙ СТРАТЕГИЙ ТЕКУЩЕГО ПОРТФЕЛЯ (классифицируем по system_key,
+        # т.к. strategies.id — сквозной автоинкремент по всей БД и не привязан к порядковому
+        # номеру стратегии внутри портфеля)
+        sql_strat = f"""
+            SELECT s.id, s.rules_config, st.system_key
+            FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.portfolio_id = {int(target_portfolio_id)} AND s.is_active = true;
+        """
         strat_rows = self.db.execute_query(sql_strat) or []
         clean_strat_rows = strat_rows if isinstance(strat_rows, list) else [strat_rows]
-        
-        strategy_configs = {}
+
+        strategy_configs = {}  # system_key -> rules_config
+        strategy_ids = {}      # system_key -> реальный strategies.id (нужен для адресации в отчете)
         for s in clean_strat_rows:
-            if s and "id" in s:
-                strategy_configs[int(s["id"])] = s["rules_config"] or {}
+            if s and s.get("system_key"):
+                key = s["system_key"]
+                strategy_configs[key] = s["rules_config"] or {}
+                strategy_ids[key] = int(s["id"])
 
         # Инициализируем итоговый универсальный Python-словарь паспорта
         evaluation_report = {
@@ -183,8 +193,9 @@ class TickerEvaluator:
         # -------------------------------------------------------------------------
         # СТРАТЕГИЯ 1: РЕВОЛЬВЕРНАЯ СТРАТЕГИЯ (Аудит и формирование лог-карты)
         # -------------------------------------------------------------------------
-        if 1 in strategy_configs:
-            conf1 = strategy_configs[1]
+        if "REVOLVER" in strategy_configs:
+            sid1 = strategy_ids["REVOLVER"]
+            conf1 = strategy_configs["REVOLVER"]
             limit_turnover1 = self._get_rule_value(conf1, "idea_min_turnover_usd", 500000000.0)
             limit_rsi1 = self._get_rule_value(conf1, "idea_rsi_oversold_num", 45.0)
             limit_buffer1 = self._get_rule_value(conf1, "idea_report_buffer_days", 5)
@@ -202,18 +213,19 @@ class TickerEvaluator:
             
             is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
             
-            evaluation_report["explain_map"][1] = {
+            evaluation_report["explain_map"][sid1] = {
                 "strategy_name": "Револьверная стратегия",
                 "is_compatible_technically": is_compat1,
                 "metrics": m1,
                 "ranking_value": round(upside_pct, 2)
             }
-            self._apply_tax_and_warning_filters(evaluation_report, 1, is_compat1, config=conf1, div_yield_pct=div_yield_pct, m_report=m1)
+            self._apply_tax_and_warning_filters(evaluation_report, sid1, is_compat1, config=conf1, div_yield_pct=div_yield_pct, m_report=m1)
         # -------------------------------------------------------------------------
         # СТРАТЕГИЯ 2: КОНСЕРВАТИВНОЕ НАКОПЛЕНИЕ (Аудит и формирование лог-карты)
         # -------------------------------------------------------------------------
-        if 2 in strategy_configs:
-            conf2 = strategy_configs[2]
+        if "CONSERVATIVE_ACCUMULATION" in strategy_configs:
+            sid2 = strategy_ids["CONSERVATIVE_ACCUMULATION"]
+            conf2 = strategy_configs["CONSERVATIVE_ACCUMULATION"]
             limit_turnover2 = self._get_rule_value(conf2, "idea_min_turnover_usd", 20000000.0)
             limit_buffer2 = self._get_rule_value(conf2, "idea_report_buffer_days", 5)
 
@@ -233,19 +245,20 @@ class TickerEvaluator:
             is_compat2 = all(x["status"] == "PASS" for k, x in m2.items() if k != "idea_report_buffer_days")
             rank2 = (roe / debt_to_equity) if debt_to_equity > 0 else roe
 
-            evaluation_report["explain_map"][2] = {
+            evaluation_report["explain_map"][sid2] = {
                 "strategy_name": "Консервативное накопление",
                 "is_compatible_technically": is_compat2,
                 "metrics": m2,
                 "ranking_value": round(rank2, 4)
             }
-            self._apply_tax_and_warning_filters(evaluation_report, 2, is_compat2, config=conf2, div_yield_pct=div_yield_pct, m_report=m2)
+            self._apply_tax_and_warning_filters(evaluation_report, sid2, is_compat2, config=conf2, div_yield_pct=div_yield_pct, m_report=m2)
 
         # -------------------------------------------------------------------------
         # СТРАТЕГИЯ 3: СЛЕДОВАНИЕ ЗА ТРЕНДОМ («Поезда», Аудит и лог-карта)
         # -------------------------------------------------------------------------
-        if 3 in strategy_configs:
-            conf3 = strategy_configs[3]
+        if "TREND_FOLLOWING" in strategy_configs:
+            sid3 = strategy_ids["TREND_FOLLOWING"]
+            conf3 = strategy_configs["TREND_FOLLOWING"]
             limit_turnover3 = self._get_rule_value(conf3, "idea_min_turnover_usd", 100000000.0)
             limit_buffer3 = self._get_rule_value(conf3, "idea_report_buffer_days", 5)
 
@@ -271,13 +284,13 @@ class TickerEvaluator:
 
             is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
 
-            evaluation_report["explain_map"][3] = {
+            evaluation_report["explain_map"][sid3] = {
                 "strategy_name": "Стратегия следования за трендом",
                 "is_compatible_technically": is_compat3,
                 "metrics": m3,
                 "ranking_value": price_to_sma200
             }
-            self._apply_tax_and_warning_filters(evaluation_report, 3, is_compat3, config=conf3, div_yield_pct=div_yield_pct, m_report=m3)
+            self._apply_tax_and_warning_filters(evaluation_report, sid3, is_compat3, config=conf3, div_yield_pct=div_yield_pct, m_report=m3)
 
         return evaluation_report
 
