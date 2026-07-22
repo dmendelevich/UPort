@@ -16,6 +16,7 @@
 - [04_gateway_and_portfolio_admin.md](04_gateway_and_portfolio_admin.md) — шлюз и админ портфелей
 - [05_strategy_screen_and_kubiki.md](05_strategy_screen_and_kubiki.md) — экран стратегии и общие кубики UI
 - [06_tracks.md](06_tracks.md) — три трека работы (Советник / Админ-интерфейс стратегий / Наведение порядка) и принцип "система только советует"
+- [07_glossary.md](07_glossary.md) — толковый словарь терминов, полей и параметров системы
 - [BACKLOG.md](BACKLOG.md) — бэклог, разложен по трекам
 
 ## Общая структура репозитория (первичный обзор, требует уточнения)
