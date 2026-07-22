@@ -108,6 +108,68 @@ def run_database_janitor(db_instance):
     except Exception as janitor_err:
         logging.error(f"❌ [ДВОРНИК КРИТИЧЕСКИЙ СБОЙ]: Ошибка очистки СУБД: {janitor_err}")
 
+# === ПЕРСИСТЕНТНАЯ ЗАЩИТА "УМНЫХ БУДИЛЬНИКОВ" ОТ ПОВТОРНОГО СРАБАТЫВАНИЯ ===
+
+async def run_daily_job_once(db_instance, job_name: str, coro_factory):
+    """
+    Универсальный враппер для суточных/недельных будильников.
+    Проверяет через public.cron_job_runs (не через переменную в памяти -- она не
+    переживает рестарт процесса, а uport.service настроен на Restart=always и
+    реально перезапускается по нескольку раз в день), не выполнялась ли уже эта
+    задача сегодня (по UTC-дате), и честно фиксирует SUCCESS/FAILED по факту
+    исключения (а не безусловное "успех" в логе).
+
+    coro_factory -- функция без аргументов, возвращающая awaitable (например,
+    lambda: asyncio.to_thread(sync_fundamentals, db_instance)).
+    """
+    today_utc = datetime.now(timezone.utc).date()
+
+    row = await asyncio.to_thread(
+        db_instance.execute_row,
+        f"SELECT last_started_at FROM public.cron_job_runs WHERE job_name = '{job_name}';"
+    )
+    last_started_raw = (row or {}).get("last_started_at")
+    if last_started_raw:
+        # СУБД-шлюз иногда отдаёт timestamp строкой, иногда готовым datetime -- приводим явно
+        last_started_dt = (
+            datetime.fromisoformat(last_started_raw) if isinstance(last_started_raw, str) else last_started_raw
+        )
+        if last_started_dt.date() == today_utc:
+            logging.info(f"⏭️ [Cron]: '{job_name}' уже выполнялась сегодня ({today_utc}), пропускаю повтор.")
+            return
+
+    await asyncio.to_thread(db_instance.execute_query, f"""
+        INSERT INTO public.cron_job_runs (job_name, last_started_at, last_status, last_error_message)
+        VALUES ('{job_name}', (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), 'RUNNING', NULL)
+        ON CONFLICT (job_name) DO UPDATE SET
+            last_started_at = EXCLUDED.last_started_at,
+            last_status = 'RUNNING',
+            last_finished_at = NULL,
+            last_error_message = NULL;
+    """)
+
+    try:
+        await coro_factory()
+    except Exception as e:
+        error_text = str(e).replace("'", "''")[:2000]
+        await asyncio.to_thread(db_instance.execute_query, f"""
+            UPDATE public.cron_job_runs
+            SET last_finished_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
+                last_status = 'FAILED',
+                last_error_message = '{error_text}'
+            WHERE job_name = '{job_name}';
+        """)
+        raise
+    else:
+        await asyncio.to_thread(db_instance.execute_query, f"""
+            UPDATE public.cron_job_runs
+            SET last_finished_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
+                last_status = 'SUCCESS',
+                last_error_message = NULL
+            WHERE job_name = '{job_name}';
+        """)
+
+
 # === ПЕТЛИ ВРЕМЕНИ (РЕЛЕ БОЕВЫХ ЦИКЛОВ) ===
 
 async def alerts_clock_loop(db_instance):
@@ -129,7 +191,10 @@ async def janitor_clock_loop(db_instance):
             current_hour = datetime.now(timezone.utc).hour
             if current_hour == JANITOR_TARGET_HOUR:
                 logging.info(f"🧹 [Cron]: На часах {JANITOR_TARGET_HOUR:02d}:00 утра. Запуск планового Дворника...")
-                await asyncio.to_thread(run_database_janitor, db_instance)
+                await run_daily_job_once(
+                    db_instance, "db_janitor",
+                    lambda: asyncio.to_thread(run_database_janitor, db_instance)
+                )
         except Exception as e:
             logging.error(f"❌ [Janitor Clock Error]: {e}")
             
@@ -155,7 +220,7 @@ async def rates_clock_loop(db_instance):
             logging.error(f"❌ [Cron Валют Error]: {e}")
         await asyncio.sleep(RATES_SYNC_INTERVAL)
 
-async def etf_lt_weekly_clock_loop():
+async def etf_lt_weekly_clock_loop(db_instance):
     """🔥 УМНЫЙ ВОСКРЕСНЫЙ БУДИЛЬНИК ETF: Просыпается раз в час, ждет воскресенья и целевого часа."""
     logging.info(f"⏱️ [Реле Времени]: Контур воскресного Look-Through ETF взведен (Цель: Воскресенье, {ETF_LT_TARGET_HOUR:02d}:00 утра UTC).")
     while True:
@@ -163,15 +228,18 @@ async def etf_lt_weekly_clock_loop():
             now_utc = datetime.now(timezone.utc)
             current_day = now_utc.weekday()  # 6 — это воскресенье в Python
             current_hour = now_utc.hour
-            
+
             if current_day == 6 and current_hour == ETF_LT_TARGET_HOUR:
                 logging.info(f"🧱 [Cron]: Воскресенье, на часах {ETF_LT_TARGET_HOUR:02d}:00 утра UTC. Запуск плановой массовой декомпозиции фондов...")
                 # Вызываем асинхронную функцию напрямую без параметров для массового обхода Universe
-                await run_etf_look_through_decomposition(target_ticker_id=None)
+                await run_daily_job_once(
+                    db_instance, "etf_look_through_weekly",
+                    lambda: run_etf_look_through_decomposition(target_ticker_id=None)
+                )
                 logging.info("✅ [Cron]: Воскресный профилактический обход ETF успешно завершен.")
         except Exception as e:
             logging.error(f"❌ [ETF LT Weekly Clock Error]: {e}")
-            
+
         await asyncio.sleep(ETF_LT_CHECK_INTERVAL)
 
 async def fundamentals_clock_loop(db_instance):
@@ -182,7 +250,10 @@ async def fundamentals_clock_loop(db_instance):
             current_hour = datetime.now(timezone.utc).hour
             if current_hour == FUNDAMENTALS_TARGET_HOUR:
                 logging.info(f"🌙 [Cron]: На часах {FUNDAMENTALS_TARGET_HOUR:02d}:00 ночи. Запуск планового анализа...")
-                await asyncio.to_thread(sync_fundamentals, db_instance)
+                await run_daily_job_once(
+                    db_instance, "fundamentals_sync",
+                    lambda: asyncio.to_thread(sync_fundamentals, db_instance)
+                )
         except Exception as e:
             logging.error(f"❌ [Cron Фундаментал Error]: {e}")
             
@@ -197,7 +268,10 @@ async def signals_clock_loop(db_instance):
             if current_hour == SIGNALS_TARGET_HOUR:
                 logging.info(f"🌅 [Cron]: На часах {SIGNALS_TARGET_HOUR:02d}:00 вечера UTC. Запуск пакетного конвейера сигналов...")
                 # Запускаем тяжелый синхронизатор в изолированном потоке, чтобы не блокировать асинхронный цикл
-                await asyncio.to_thread(sync_global_yahoo_signals, single_ticker_id=None)
+                await run_daily_job_once(
+                    db_instance, "signals_sync",
+                    lambda: asyncio.to_thread(sync_global_yahoo_signals, single_ticker_id=None)
+                )
                 logging.info("✅ [Cron]: Глобальный технический скоринг Yahoo успешно завершен.")
         except Exception as e:
             logging.error(f"❌ [Cron / Настройки Сигналов Error]: {e}")
@@ -228,5 +302,5 @@ async def start_clocks(db_instance):
         signals_clock_loop(db_instance),       # Новое ночное реле рыночных сигналов на 23:00 UTC
         alerts_clock_loop(db_instance),       # 5-минутный контур алертов Freedom Broker
         janitor_clock_loop(db_instance),      # Суточный контур Дворника СУБД на 02:00 ночи UTC
-        etf_lt_weekly_clock_loop()            # Новое воскресное реле декомпозиции ETF на 06:00 утра UTC
+        etf_lt_weekly_clock_loop(db_instance)  # Новое воскресное реле декомпозиции ETF на 06:00 утра UTC
     )
