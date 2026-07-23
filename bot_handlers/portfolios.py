@@ -15,6 +15,18 @@ from analytics.portfolio_inspector import PortfolioInspector
 # Инициализируем локальный роутер для модуля портфелей
 router = Router()
 
+# Короткие однословные подписи для кнопок списка стратегий -- полное название
+# (strategy_name, свободный текст, пользователь может его переименовать как угодно)
+# не помещалось на экране телефона и обрезалось. Ключ -- system_key (стабильный,
+# не зависит от переименования), а не текст strategy_name.
+SHORT_STRATEGY_LABELS = {
+    "REVOLVER": "Револьверная",
+    "CONSERVATIVE_ACCUMULATION": "Консервативная",
+    "TREND_FOLLOWING": "Трендовая",
+    "CASH_RESERVE": "Кэш/Резерв",
+    "UNALLOCATED": "Неопределённая",
+}
+
 # def get_superscript_badge(count: int) -> str:
 #     """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы для кошелька."""
 #     if count <= 0:
@@ -276,13 +288,31 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             total_capital = float(balances.get("total_capital_usd") or 0.0)
             strat_map = balances.get("strategies", {})
 
+            # Короткие подписи ищутся по system_key -- один запрос на весь список,
+            # не по одному на стратегию.
+            system_key_by_id = {}
+            if strat_map:
+                ids_str = ", ".join(str(int(sid)) for sid in strat_map.keys())
+                key_rows = await asyncio.to_thread(
+                    db_bot.execute_query,
+                    f"""
+                        SELECT s.id, st.system_key FROM public.strategies s
+                        JOIN public.strategy_templates st ON s.template_id = st.id
+                        WHERE s.id IN ({ids_str});
+                    """
+                )
+                key_rows = key_rows if isinstance(key_rows, list) else ([key_rows] if key_rows else [])
+                system_key_by_id = {int(r["id"]): r.get("system_key") for r in key_rows if r}
+
             if strat_map:
                 for s_id, s in strat_map.items():
                     target_pct = float(s["target_share_pct"])
                     current_usd = float(s["current_holdings_usd"])
                     actual_pct = (current_usd / total_capital * 100.0) if total_capital > 0 else 0.0
+                    system_key = system_key_by_id.get(int(s_id))
+                    short_name = SHORT_STRATEGY_LABELS.get(system_key, s['strategy_name'])
                     button_text = generate_strategy_button_text(
-                        name=s['strategy_name'],
+                        name=short_name,
                         target_pct=target_pct,
                         actual_pct=actual_pct
                     )

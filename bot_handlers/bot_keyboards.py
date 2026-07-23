@@ -324,15 +324,18 @@ def assemble_lego_line(json_blueprint: list) -> str:
 
 # 🏗️ ВЫСОКОУРОВНЕВЫЕ ВЫЗЫВАЕМЫЕ ГЕНЕРАТОРЫ СТРОК ДЛЯ ИНЛАЙН-КНОПОК
 
-def generate_strategy_button_text(name: str, target_pct: float, actual_pct: float) -> str:
+def generate_strategy_button_text(name: str, target_pct: float, actual_pct: float, name_width: int = 14) -> str:
     """
     Генерирует жесткую монолитную строку для инлайн-кнопок списка стратегий портфеля.
     Название стратегии -- произвольной длины (не тикер), поэтому идёт через build_name_block;
     план/факт доли всё равно выравниваются в колонки, как и в остальных экранах UPort.
+    name_width по умолчанию уменьшен под короткие однословные подписи (см.
+    bot_handlers/portfolios.py:SHORT_STRATEGY_LABELS) -- полное имя стратегии в кнопке
+    не помещалось на экране телефона и обрезалось Telegram-клиентом.
     """
     blueprint = [
         {"type": "badge", "icon": "🎯", "index": 0},
-        {"type": "name", "value": name},
+        {"type": "name", "value": name, "width": name_width},
         {"type": "percent", "value": target_pct, "show_sign": False},
         {"type": "separator", "value": "/"},
         {"type": "percent", "value": actual_pct, "show_sign": False},

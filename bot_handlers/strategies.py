@@ -9,8 +9,31 @@ from bot_handlers.common import MenuAction
 from bot_handlers.bot_screens import format_strategy_header
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text
 from analytics.portfolio_inspector import PortfolioInspector
+from analytics.analytics_utils import TickerEvaluator
 
 router = Router()
+
+# Человекочитаемые подписи для metrics из explain_map -- только для отображения
+# пользователю в "обосновании", сами условия отбора живут в analytics_utils.py.
+METRIC_LABELS = {
+    "idea_min_turnover_usd": "Мин. оборот в день ($)",
+    "idea_rsi_oversold_num": "RSI (перепроданность)",
+    "speculative_catalyst": "Катализатор (MACD / рекомендация)",
+    "idea_require_positive_fflow_bool": "Свободный денежный поток",
+    "idea_report_buffer_days": "Дней до/после отчёта",
+    "exchange_mic": "Биржа",
+    "return_on_equity": "ROE",
+    "debt_to_equity": "Долг/Капитал",
+    "revenue_cagr_3y": "Рост выручки (3 года)",
+    "revenue_growth": "Рост выручки (текущий)",
+    "pe_trailing": "P/E",
+    "signal_price_to_sma200_pct": "Отклонение от SMA200",
+    "signal_rsi": "RSI",
+    "moving_averages_fan": "Веер скользящих средних",
+    "signal_macd": "MACD",
+    "tactic_volume_surge_pct": "Всплеск объёма торгов",
+}
+STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "N/A": "➖", "WARNING": "⚠️"}
 
 
 @router.callback_query(MenuAction.filter(F.action == "view_strategy"))
@@ -139,15 +162,153 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
 
     text += "\n───────\n"
 
+    ideas_builder = InlineKeyboardBuilder()
+    if system_key in ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING"):
+        ideas_builder.row(types.InlineKeyboardButton(
+            text="💡 Предложения",
+            callback_data=MenuAction(action="strategy_ideas", portfolio_id=p_id, strategy_id=int(s_id)).pack()
+        ))
+
     nav_markup = generate_nav_back_keyboard(
         one_step_back_text="🔙 К стратегиям портфеля",
         full_back_callback=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies").pack()
     )
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(ideas_builder)
     final_builder.attach(InlineKeyboardBuilder.from_markup(nav_markup))
 
     logging.info(f"🎯 [СТРАТЕГИЯ]: Отправляю карточку стратегии #{s_id} в Telegram...")
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "strategy_ideas"))
+async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Список инвестидей (топ-10) для стратегии: быстрый скан через TickerEvaluator.screen_universe_for_strategy."""
+    s_id = callback_data.strategy_id
+    p_id = callback_data.portfolio_id
+
+    await callback.answer("Ищу кандидатов...")
+
+    key_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT st.system_key FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.id = {int(s_id)};
+        """
+    )
+    system_key = (key_row or {}).get("system_key")
+
+    back_to_strategy = generate_nav_back_keyboard(
+        one_step_back_text="🔙 К стратегии",
+        full_back_callback=MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id).pack()
+    )
+
+    if system_key not in ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING"):
+        try:
+            await callback.message.edit_text(
+                "💡 У этой стратегии нет правила входа (служебная стратегия).",
+                reply_markup=back_to_strategy
+            )
+        except TelegramBadRequest:
+            pass
+        return
+
+    broker_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT b.short_name FROM public.portfolios p
+            JOIN public.brokers b ON p.broker_id = b.id
+            WHERE p.id = {int(p_id)};
+        """
+    )
+    us_only = (broker_row or {}).get("short_name") == "FB"
+
+    held_rows = await asyncio.to_thread(
+        db_bot.execute_query,
+        f"""
+            SELECT DISTINCT lt.id AS ticker_id
+            FROM public.assets a
+            JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
+            WHERE a.portfolio_id = {int(p_id)} AND a.quantity > 0;
+        """
+    )
+    held_rows = held_rows if isinstance(held_rows, list) else ([held_rows] if held_rows else [])
+    held_ids = {int(r["ticker_id"]) for r in held_rows if r}
+
+    evaluator = TickerEvaluator(db_instance=db_bot)
+    results = await asyncio.to_thread(
+        evaluator.screen_universe_for_strategy, s_id, held_ids, us_only
+    )
+    top10 = results[:10]
+
+    builder = InlineKeyboardBuilder()
+    if top10:
+        text = f"💡 *Инвестидеи для стратегии* (топ-{len(top10)}):\n\nНажми на бумагу, чтобы увидеть обоснование."
+        for cand in top10:
+            builder.row(types.InlineKeyboardButton(
+                text=f"{cand['symbol']} (ranking={cand['ranking_value']})",
+                callback_data=MenuAction(
+                    action="view_idea_reason",
+                    portfolio_id=p_id,
+                    strategy_id=s_id,
+                    ticker_id=int(cand["ticker_id"])
+                ).pack()
+            ))
+    else:
+        text = "💡 Сейчас ни одна бумага не проходит экран этой стратегии."
+
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(back_to_strategy))
+
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "view_idea_reason"))
+async def process_view_idea_reason(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Обоснование конкретного кандидата: PASS/FAIL по каждому критерию из explain_map."""
+    s_id = callback_data.strategy_id
+    p_id = callback_data.portfolio_id
+    t_id = callback_data.ticker_id
+
+    await callback.answer()
+
+    evaluator = TickerEvaluator(db_instance=db_bot)
+    report = await asyncio.to_thread(evaluator.evaluate_ticker_strategy, t_id, p_id)
+
+    back_to_ideas = generate_nav_back_keyboard(
+        one_step_back_text="🔙 К списку идей",
+        full_back_callback=MenuAction(action="strategy_ideas", portfolio_id=p_id, strategy_id=s_id).pack()
+    )
+
+    info = report.get("explain_map", {}).get(s_id)
+    if not info:
+        try:
+            await callback.message.edit_text(
+                "⚠️ Не удалось пересчитать обоснование (возможно, бумага больше не подходит под стратегию).",
+                reply_markup=back_to_ideas
+            )
+        except TelegramBadRequest:
+            pass
+        return
+
+    symbol = report.get("symbol", f"ticker_id={t_id}")
+    text = f"🔍 *{symbol}* — {info['strategy_name']}\n\n"
+    for key, m in info["metrics"].items():
+        icon = STATUS_ICONS.get(m["status"], "•")
+        label = METRIC_LABELS.get(key, key)
+        text += f"{icon} {label}: факт `{m['fact']}`, порог `{m['limit']}`\n"
+
+    verdict = "✅ Проходит экран стратегии" if info["is_compatible_technically"] else "❌ Не проходит экран стратегии"
+    text += f"\n*{verdict}*"
+
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_to_ideas)
     except TelegramBadRequest:
         pass

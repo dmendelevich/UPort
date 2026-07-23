@@ -13,14 +13,6 @@ class CashDeploymentAdvisor:
 
     CONTENT_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING")
 
-    # Freedom Broker (short_name='FB') ограничен рынком США: LSE-тикеры (.L) несут
-    # системную путаницу пенсов/фунтов в синхронизации фундаментала (current_price и
-    # target_mean_price оказываются в разных единицах, ~100x друг от друга) -- сама
-    # ФБ путает то же самое в своих прогнозах. Пользователь решил не предлагать
-    # лондонские бумаги в портфели ФБ; для Trading 212 (short_name='T212') вопрос
-    # пенсы/фунты пока открыт и сознательно отложен.
-    US_EXCHANGE_CODES = ("XNYS", "XNAS", "ARCX", "XNMS", "EDGX", "OTCM")
-
     def __init__(self, db_instance):
         self.db = db_instance
         self.evaluator = TickerEvaluator(db_instance=db_instance)
@@ -55,16 +47,6 @@ class CashDeploymentAdvisor:
         clean_rows = rows if isinstance(rows, list) else [rows]
         return {int(r["ticker_id"]) for r in clean_rows if r}
 
-    def _get_all_ticker_ids(self, us_only: bool) -> list:
-        sql = "SELECT id FROM public.tickers"
-        if us_only:
-            codes = "', '".join(self.US_EXCHANGE_CODES)
-            sql += f" WHERE exchange_mic IN ('{codes}')"
-        sql += ";"
-        rows = self.db.execute_query(sql) or []
-        clean_rows = rows if isinstance(rows, list) else [rows]
-        return [int(r["id"]) for r in clean_rows if r]
-
     def _get_step1_tactic(self, strategy_id: int) -> dict:
         row = self.db.execute_row(
             f"SELECT budget_share_pct, trigger_conditions FROM public.strategy_tactics "
@@ -72,21 +54,14 @@ class CashDeploymentAdvisor:
         )
         return row or {}
 
-    def _find_best_candidate(self, portfolio_id: int, strategy_id: int, held_ids: set, all_ids: list):
-        best = None
-        best_rank = None
-        for tid in all_ids:
-            if tid in held_ids:
-                continue
-            report = self.evaluator.evaluate_ticker_strategy(ticker_id=tid, target_portfolio_id=portfolio_id)
-            info = report.get("explain_map", {}).get(strategy_id)
-            if not info or not info.get("is_compatible_technically"):
-                continue
-            rank = float(info.get("ranking_value") or 0.0)
-            if best is None or rank > best_rank:
-                best = {"ticker_id": tid, "symbol": report.get("symbol"), "ranking_value": rank}
-                best_rank = rank
-        return best
+    def _find_best_candidate(self, strategy_id: int, held_ids: set, us_only: bool):
+        # Переиспользует быстрый пакетный скан TickerEvaluator (analytics_utils.py) --
+        # тот же источник правды для условий отбора, что и evaluate_ticker_strategy,
+        # без N+1 запросов к БД. Результат уже отсортирован по ranking_value.
+        results = self.evaluator.screen_universe_for_strategy(
+            strategy_id, exclude_ticker_ids=held_ids, us_only=us_only
+        )
+        return results[0] if results else None
 
     def evaluate_deployment(self, portfolio_id: int) -> list:
         """
@@ -150,7 +125,6 @@ class CashDeploymentAdvisor:
         us_only = (broker_short_name == "FB")
 
         held_ids = self._get_held_ticker_ids(portfolio_id)
-        all_ids = self._get_all_ticker_ids(us_only=us_only)
 
         recommendations = []
         remaining_pool = deployable_pool
@@ -165,7 +139,7 @@ class CashDeploymentAdvisor:
                 continue
 
             pct_underfunded_pretty = round(cand["pct_underfunded"] * 100, 1)
-            best = self._find_best_candidate(portfolio_id, cand["strategy_id"], held_ids, all_ids)
+            best = self._find_best_candidate(cand["strategy_id"], held_ids, us_only)
 
             if not best:
                 recommendations.append({

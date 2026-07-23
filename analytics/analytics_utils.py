@@ -55,8 +55,19 @@ class TickerEvaluator:
     Анализирует соответствие любой акции трем семейным инвестиционным стратегиям.
     Поддерживает иерархию правил: личные настройки стратегии -> глобальный дефолт СУБД.
     Генерирует лог-карты "ПОЧЕМУ" для интерактивных кнопок Telegram-бота.
+
+    Условия отбора живут ровно в одном месте -- методах _score_revolver/
+    _score_conservative/_score_trend (чистые функции без обращения к БД). И
+    evaluate_ticker_strategy (один тикер), и screen_universe_for_strategy (весь
+    Universe одним запросом) вызывают одни и те же функции -- разница только в
+    том, как данные ДОСТАВЛЯЮТСЯ (по одному или пакетом), не в самих правилах.
     """
-    
+
+    # Freedom Broker (short_name='FB') ограничен рынком США -- см.
+    # analytics/cash_deployment_advisor.py и BACKLOG.md, Трек C, п.21 (путаница
+    # пенсов/фунтов на LSE). CashDeploymentAdvisor переиспользует эту константу.
+    US_EXCHANGE_CODES = ("XNYS", "XNAS", "ARCX", "XNMS", "EDGX", "OTCM")
+
     def __init__(self, db_instance):
         """
         Инициализация оценщика. Кэширует типы данных из словаря аналитических правил.
@@ -112,34 +123,152 @@ class TickerEvaluator:
             logging.warning(f"⚠️ [Evaluator Date Error]: Не удалось распарсить дату отчета {report_date_raw}: {err}")
         return 999
 
+    # -------------------------------------------------------------------------
+    # ЧИСТЫЕ ФУНКЦИИ ОТБОРА (без обращения к БД) -- ЕДИНСТВЕННЫЙ источник правды
+    # для условий каждой стратегии. Принимают факты ОДНОГО тикера (словарь,
+    # неважно, пришёл ли он из выборки на один тикер или пакетом на весь Universe)
+    # + rules_config стратегии + days_to_report. Возвращают metrics/is_compatible/
+    # ranking_value -- ровно то, что раньше строилось инлайн внутри
+    # evaluate_ticker_strategy.
+    # -------------------------------------------------------------------------
+
+    def _score_revolver(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
+        limit_turnover1 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 500000000.0)
+        limit_rsi1 = self._get_rule_value(rules_config, "idea_rsi_oversold_num", 45.0)
+        limit_buffer1 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
+        require_fcf1 = self._get_rule_value(rules_config, "idea_require_positive_fflow_bool", True)
+
+        turnover = float(f.get("daily_turnover_usd") or 0.0)
+        rsi = float(f.get("signal_rsi") or 0.0)
+        macd_val = str(f.get("signal_macd") or "").strip()
+        try:
+            macd_numeric = float(macd_val) if macd_val else 0.0
+        except ValueError:
+            macd_numeric = 0.0
+        rec_mean = float(f.get("recommendation_mean") or 0.0)
+        fcf = float(f.get("free_cash_flow") or 0.0)
+        curr_price = float(f.get("current_price") or 0.0)
+        tgt_price = float(f.get("target_mean_price") or 0.0)
+        upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+
+        m1 = {
+            "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover1 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover1},
+            "idea_rsi_oversold_num": {"status": "PASS" if rsi < limit_rsi1 else "FAIL", "fact": rsi, "limit": limit_rsi1},
+            "speculative_catalyst": {"status": "PASS" if (macd_numeric > 0 or (0 < rec_mean <= 2.0)) else "FAIL", "fact": f"MACD: {macd_val}, Rec: {rec_mean}", "limit": "MACD > 0 ИЛИ Rec <= 2.0"},
+            "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf1 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
+            "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
+        }
+        is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
+        return {"metrics": m1, "is_compatible": is_compat1, "ranking_value": round(upside_pct, 2)}
+
+    def _score_conservative(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
+        limit_turnover2 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 20000000.0)
+        limit_buffer2 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
+
+        turnover = float(f.get("daily_turnover_usd") or 0.0)
+        price_to_sma200 = float(f.get("signal_price_to_sma200_pct") or 0.0)
+        rsi = float(f.get("signal_rsi") or 0.0)
+
+        # NULL в фундаментальных полях = "неприменимо" (напр. commodity ETF без ROE/долга),
+        # а не "0" -- иначе такие бумаги ложно проходили бы отбор. Тот же анти-паттерн уже
+        # чинили в PositionExitEvaluator для выхода из позиции, здесь -- для входа
+        # (найдено при разборе живой рекомендации SYF, где debt_to_equity=NULL раньше
+        # тихо читался как 0.0 и автоматически проходил порог < 1.5).
+        def _na_or_check(raw_val, check_fn):
+            if raw_val is None:
+                return "N/A", None
+            val = float(raw_val)
+            return ("PASS" if check_fn(val) else "FAIL"), val
+
+        roe_status, roe_val = _na_or_check(f.get("return_on_equity"), lambda v: v > 0.15)
+        debt_status, debt_val = _na_or_check(f.get("debt_to_equity"), lambda v: v < 1.5)
+        cagr_status, cagr_val = _na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
+        growth_status, growth_val = _na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
+        pe_status, pe_val = _na_or_check(f.get("pe_trailing"), lambda v: v > 0)
+
+        m2 = {
+            "exchange_mic": {"status": "PASS" if str(f.get("exchange_mic")) in ["XNGS", "XNYS", "XNAS"] else "FAIL", "fact": f.get("exchange_mic"), "limit": "XNGS, XNYS, XNAS"},
+            "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover2 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover2},
+            "return_on_equity": {"status": roe_status, "fact": round(roe_val, 4) if roe_val is not None else None, "limit": "> 0.15"},
+            "debt_to_equity": {"status": debt_status, "fact": round(debt_val, 4) if debt_val is not None else None, "limit": "< 1.5"},
+            "revenue_cagr_3y": {"status": cagr_status, "fact": round(cagr_val, 4) if cagr_val is not None else None, "limit": "> 0.05"},
+            "revenue_growth": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": "> 0.00"},
+            "pe_trailing": {"status": pe_status, "fact": round(pe_val, 2) if pe_val is not None else None, "limit": "> 0"},
+            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 < 0.00 else "FAIL", "fact": price_to_sma200, "limit": "< 0.00"},
+            "signal_rsi": {"status": "PASS" if rsi > 35 else "FAIL", "fact": rsi, "limit": "> 35"},
+            "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer2 else "WARNING", "fact": days_to_report, "limit": limit_buffer2}
+        }
+        # N/A (показатель неприменим) не считается провалом, в отличие от FAIL
+        is_compat2 = all(x["status"] in ("PASS", "N/A") for k, x in m2.items() if k != "idea_report_buffer_days")
+        rank2 = (roe_val / debt_val) if (roe_val is not None and debt_val) else (roe_val or 0.0)
+        return {"metrics": m2, "is_compatible": is_compat2, "ranking_value": round(rank2, 4)}
+
+    def _score_trend(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
+        limit_turnover3 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 100000000.0)
+        limit_buffer3 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
+
+        turnover = float(f.get("daily_turnover_usd") or 0.0)
+        price_to_sma200 = float(f.get("signal_price_to_sma200_pct") or 0.0)
+        rsi = float(f.get("signal_rsi") or 0.0)
+        macd_val = str(f.get("signal_macd") or "").strip()
+        try:
+            macd_numeric = float(macd_val) if macd_val else 0.0
+        except ValueError:
+            macd_numeric = 0.0
+
+        ema20 = float(f.get("signal_ema_20") or 0.0)
+        sma50 = float(f.get("signal_sma_50") or 0.0)
+        sma100 = float(f.get("signal_sma_100") or 0.0)
+        sma200 = float(f.get("signal_sma_200") or 0.0)
+        fan_is_valid = (ema20 > sma50) and (sma50 > sma100) and (sma100 > sma200)
+
+        volume_confirmed = True if turnover > 100000000 else False
+
+        m3 = {
+            "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
+            "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100 > SMA200"},
+            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
+            "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
+            "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
+            "tactic_volume_surge_pct": {"status": "PASS" if volume_confirmed else "FAIL", "fact": "Объем подтвержден" if volume_confirmed else "Низкий оборот", "limit": "Всплеск объема торгов"},
+            "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
+        }
+        is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
+        return {"metrics": m3, "is_compatible": is_compat3, "ranking_value": price_to_sma200}
+
+    def _get_strategy_scorers(self) -> dict:
+        """Карта system_key -> (человекочитаемое имя, функция скоринга)."""
+        return {
+            "REVOLVER": ("Револьверная стратегия", self._score_revolver),
+            "CONSERVATIVE_ACCUMULATION": ("Консервативное накопление", self._score_conservative),
+            "TREND_FOLLOWING": ("Стратегия следования за трендом", self._score_trend),
+        }
+
+    TICKER_FACTS_SQL_COLUMNS = """
+        id, symbol, company_name, sector, industry, exchange_mic,
+        daily_turnover_usd, return_on_equity, debt_to_equity,
+        revenue_cagr_3y, revenue_growth, pe_trailing, dividend_yield, free_cash_flow,
+        current_price, target_mean_price, recommendation_mean, signal_next_report_date,
+        signal_rsi, signal_macd, signal_ema_20, signal_sma_50, signal_sma_100, signal_sma_200,
+        signal_price_to_sma200_pct
+    """
+
     def evaluate_ticker_strategy(self, ticker_id: int, target_portfolio_id: int = 2) -> dict:
         """
-        🌐 ГЛАВНАЯ СКВОЗНАЯ ТОЧКА ВХОДА ЭВАЛЮАТОРА UPORT
+        🌐 ГЛАВНАЯ СКВОЗНАЯ ТОЧКА ВХОДА ЭВАЛЮАТОРА UPORT (один тикер)
         Сводит воедино все расчеты по трем стратегиям и формирует паспорт актива.
         """
-        # 1. ЗАГРУЗКА И РАСПАКОВКА ФАКТОВ О ЦЕННОЙ БУМАГЕ (Железная защита от списков СУБД)
-        sql_ticker = f"""
-            SELECT 
-                id, symbol, company_name, sector, industry, exchange_mic,
-                daily_turnover_usd, return_on_equity, debt_to_equity, 
-                revenue_cagr_3y, revenue_growth, pe_trailing, dividend_yield, free_cash_flow,
-                current_price, target_mean_price, recommendation_mean, signal_next_report_date,
-                signal_rsi, signal_macd, signal_ema_20, signal_sma_50, signal_sma_100, signal_sma_200,
-                signal_price_to_sma200_pct
-            FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;
-        """
+        sql_ticker = f"SELECT {self.TICKER_FACTS_SQL_COLUMNS} FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
         ticker_res = self.db.execute_query(sql_ticker)
         if not ticker_res:
             return {"error": f"Тикер с ID={ticker_id} не найден в СУБД."}
-        
-        # Распаковываем чистый словарь из структуры ответа СУБД
+
         f = ticker_res[0] if isinstance(ticker_res, list) and len(ticker_res) > 0 else (ticker_res if isinstance(ticker_res, dict) else {})
         if not f or "id" not in f:
             return {"error": f"Ошибка распаковки структуры данных тикера ID={ticker_id}"}
 
-        # 2. ЗАГРУЗКА КОНФИГУРАЦИЙ СТРАТЕГИЙ ТЕКУЩЕГО ПОРТФЕЛЯ (классифицируем по system_key,
-        # т.к. strategies.id — сквозной автоинкремент по всей БД и не привязан к порядковому
-        # номеру стратегии внутри портфеля)
+        # Классифицируем по system_key, т.к. strategies.id — сквозной автоинкремент по
+        # всей БД и не привязан к порядковому номеру стратегии внутри портфеля.
         sql_strat = f"""
             SELECT s.id, s.rules_config, st.system_key
             FROM public.strategies s
@@ -149,15 +278,14 @@ class TickerEvaluator:
         strat_rows = self.db.execute_query(sql_strat) or []
         clean_strat_rows = strat_rows if isinstance(strat_rows, list) else [strat_rows]
 
-        strategy_configs = {}  # system_key -> rules_config
-        strategy_ids = {}      # system_key -> реальный strategies.id (нужен для адресации в отчете)
+        strategy_configs = {}
+        strategy_ids = {}
         for s in clean_strat_rows:
             if s and s.get("system_key"):
                 key = s["system_key"]
                 strategy_configs[key] = s["rules_config"] or {}
                 strategy_ids[key] = int(s["id"])
 
-        # Инициализируем итоговый универсальный Python-словарь паспорта
         evaluation_report = {
             "ticker_id": int(f["id"]),
             "symbol": f.get("symbol"),
@@ -167,132 +295,89 @@ class TickerEvaluator:
             "explain_map": {}
         }
 
-        # Вытаскиваем сырые технические и фундаментальные метрики
-        rsi = float(f.get("signal_rsi") or 0.0)
-        macd_val = str(f.get("signal_macd") or "").strip()
-        try:
-            macd_numeric = float(macd_val) if macd_val and macd_val != "" else 0.0
-        except ValueError:
-            macd_numeric = 0.0
-            
-        turnover = float(f.get("daily_turnover_usd") or 0.0)
-        fcf = float(f.get("free_cash_flow") or 0.0)
-        roe = float(f.get("return_on_equity") or 0.0)
-        debt_to_equity = float(f.get("debt_to_equity") or 0.0)
-        rev_cagr = float(f.get("revenue_cagr_3y") or 0.0)
-        rev_growth = float(f.get("revenue_growth") or 0.0)
-        pe = float(f.get("pe_trailing") or 0.0)
-        price_to_sma200 = float(f.get("signal_price_to_sma200_pct") or 0.0)
-        rec_mean = float(f.get("recommendation_mean") or 0.0)
-        curr_price = float(f.get("current_price") or 0.0)
-        tgt_price = float(f.get("target_mean_price") or 0.0)
-        div_yield_pct = float(f.get("dividend_yield") or 0.0) # В СУБД лежат чистые проценты
-        
+        div_yield_pct = float(f.get("dividend_yield") or 0.0)  # В СУБД лежат чистые проценты
         days_to_report = self._calculate_days_to_report(f.get("signal_next_report_date"))
 
-        # -------------------------------------------------------------------------
-        # СТРАТЕГИЯ 1: РЕВОЛЬВЕРНАЯ СТРАТЕГИЯ (Аудит и формирование лог-карты)
-        # -------------------------------------------------------------------------
-        if "REVOLVER" in strategy_configs:
-            sid1 = strategy_ids["REVOLVER"]
-            conf1 = strategy_configs["REVOLVER"]
-            limit_turnover1 = self._get_rule_value(conf1, "idea_min_turnover_usd", 500000000.0)
-            limit_rsi1 = self._get_rule_value(conf1, "idea_rsi_oversold_num", 45.0)
-            limit_buffer1 = self._get_rule_value(conf1, "idea_report_buffer_days", 5)
-            require_fcf1 = self._get_rule_value(conf1, "idea_require_positive_fflow_bool", True)
-            
-            upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+        for key, (strat_name, score_fn) in self._get_strategy_scorers().items():
+            if key not in strategy_configs:
+                continue
+            sid = strategy_ids[key]
+            conf = strategy_configs[key]
+            result = score_fn(f, conf, days_to_report)
 
-            m1 = {
-                "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover1 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover1},
-                "idea_rsi_oversold_num": {"status": "PASS" if rsi < limit_rsi1 else "FAIL", "fact": rsi, "limit": limit_rsi1},
-                "speculative_catalyst": {"status": "PASS" if (macd_numeric > 0 or (0 < rec_mean <= 2.0)) else "FAIL", "fact": f"MACD: {macd_val}, Rec: {rec_mean}", "limit": "MACD > 0 ИЛИ Rec <= 2.0"},
-                "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf1 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
-                "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
+            evaluation_report["explain_map"][sid] = {
+                "strategy_name": strat_name,
+                "is_compatible_technically": result["is_compatible"],
+                "metrics": result["metrics"],
+                "ranking_value": result["ranking_value"]
             }
-            
-            is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
-            
-            evaluation_report["explain_map"][sid1] = {
-                "strategy_name": "Револьверная стратегия",
-                "is_compatible_technically": is_compat1,
-                "metrics": m1,
-                "ranking_value": round(upside_pct, 2)
-            }
-            self._apply_tax_and_warning_filters(evaluation_report, sid1, is_compat1, config=conf1, div_yield_pct=div_yield_pct, m_report=m1)
-        # -------------------------------------------------------------------------
-        # СТРАТЕГИЯ 2: КОНСЕРВАТИВНОЕ НАКОПЛЕНИЕ (Аудит и формирование лог-карты)
-        # -------------------------------------------------------------------------
-        if "CONSERVATIVE_ACCUMULATION" in strategy_configs:
-            sid2 = strategy_ids["CONSERVATIVE_ACCUMULATION"]
-            conf2 = strategy_configs["CONSERVATIVE_ACCUMULATION"]
-            limit_turnover2 = self._get_rule_value(conf2, "idea_min_turnover_usd", 20000000.0)
-            limit_buffer2 = self._get_rule_value(conf2, "idea_report_buffer_days", 5)
-
-            m2 = {
-                "exchange_mic": {"status": "PASS" if str(f.get("exchange_mic")) in ["XNGS", "XNYS", "XNAS"] else "FAIL", "fact": f.get("exchange_mic"), "limit": "XNGS, XNYS, XNAS"},
-                "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover2 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover2},
-                "return_on_equity": {"status": "PASS" if roe > 0.15 else "FAIL", "fact": round(roe, 4), "limit": "> 0.15"},
-                "debt_to_equity": {"status": "PASS" if debt_to_equity < 1.5 else "FAIL", "fact": round(debt_to_equity, 4), "limit": "< 1.5"},
-                "revenue_cagr_3y": {"status": "PASS" if rev_cagr > 0.05 else "FAIL", "fact": round(rev_cagr, 4), "limit": "> 0.05"},
-                "revenue_growth": {"status": "PASS" if rev_growth > 0.00 else "FAIL", "fact": round(rev_growth, 4), "limit": "> 0.00"},
-                "pe_trailing": {"status": "PASS" if pe > 0 else "FAIL", "fact": round(pe, 2), "limit": "> 0"},
-                "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 < 0.00 else "FAIL", "fact": price_to_sma200, "limit": "< 0.00"},
-                "signal_rsi": {"status": "PASS" if rsi > 35 else "FAIL", "fact": rsi, "limit": "> 35"},
-                "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer2 else "WARNING", "fact": days_to_report, "limit": limit_buffer2}
-            }
-
-            is_compat2 = all(x["status"] == "PASS" for k, x in m2.items() if k != "idea_report_buffer_days")
-            rank2 = (roe / debt_to_equity) if debt_to_equity > 0 else roe
-
-            evaluation_report["explain_map"][sid2] = {
-                "strategy_name": "Консервативное накопление",
-                "is_compatible_technically": is_compat2,
-                "metrics": m2,
-                "ranking_value": round(rank2, 4)
-            }
-            self._apply_tax_and_warning_filters(evaluation_report, sid2, is_compat2, config=conf2, div_yield_pct=div_yield_pct, m_report=m2)
-
-        # -------------------------------------------------------------------------
-        # СТРАТЕГИЯ 3: СЛЕДОВАНИЕ ЗА ТРЕНДОМ («Поезда», Аудит и лог-карта)
-        # -------------------------------------------------------------------------
-        if "TREND_FOLLOWING" in strategy_configs:
-            sid3 = strategy_ids["TREND_FOLLOWING"]
-            conf3 = strategy_configs["TREND_FOLLOWING"]
-            limit_turnover3 = self._get_rule_value(conf3, "idea_min_turnover_usd", 100000000.0)
-            limit_buffer3 = self._get_rule_value(conf3, "idea_report_buffer_days", 5)
-
-            # Извлекаем скользящие средние для жесткого веера
-            ema20 = float(f.get("signal_ema_20") or 0.0)
-            sma50 = float(f.get("signal_sma_50") or 0.0)
-            sma100 = float(f.get("signal_sma_100") or 0.0)
-            sma200 = float(f.get("signal_sma_200") or 0.0)
-            fan_is_valid = (ema20 > sma50) and (sma50 > sma100) and (sma100 > sma200)
-
-            # Эмуляция трендового всплеска объемов торгов (по ликвидности > 100M)
-            volume_confirmed = True if turnover > 100000000 else False
-
-            m3 = {
-                "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
-                "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100 > SMA200"},
-                "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
-                "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
-                "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
-                "tactic_volume_surge_pct": {"status": "PASS" if volume_confirmed else "FAIL", "fact": "Объем подтвержден" if volume_confirmed else "Низкий оборот", "limit": "Всплеск объема торгов"},
-                "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
-            }
-
-            is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
-
-            evaluation_report["explain_map"][sid3] = {
-                "strategy_name": "Стратегия следования за трендом",
-                "is_compatible_technically": is_compat3,
-                "metrics": m3,
-                "ranking_value": price_to_sma200
-            }
-            self._apply_tax_and_warning_filters(evaluation_report, sid3, is_compat3, config=conf3, div_yield_pct=div_yield_pct, m_report=m3)
+            self._apply_tax_and_warning_filters(evaluation_report, sid, result["is_compatible"], config=conf, div_yield_pct=div_yield_pct, m_report=result["metrics"])
 
         return evaluation_report
+
+    def screen_universe_for_strategy(self, strategy_id: int, exclude_ticker_ids: set = None, us_only: bool = False) -> list:
+        """
+        🚀 БЫСТРЫЙ СКАН ВСЕГО UNIVERSE ПОД ОДНУ СТРАТЕГИЮ
+        Один SQL-запрос на ВСЕ тикеры (вместо N+1 отдельных вызовов
+        evaluate_ticker_strategy) + один запрос конфига стратегии, дальше --
+        та же самая функция скоринга (_score_revolver/_score_conservative/
+        _score_trend), но в цикле по уже загруженным в память строкам. Никаких
+        обращений к БД внутри цикла -- отсюда и ускорение с ~60-80 сек до долей
+        секунды на ~945 тикеров.
+
+        Возвращает список ТОЛЬКО совместимых тикеров, отсортированный по
+        ranking_value по убыванию: [{"ticker_id", "symbol", "ranking_value",
+        "metrics"}, ...].
+        """
+        strat_row = self.db.execute_row(f"""
+            SELECT s.rules_config, st.system_key
+            FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.id = {int(strategy_id)};
+        """)
+        if not strat_row or not strat_row.get("system_key"):
+            return []
+
+        scorers = self._get_strategy_scorers()
+        scorer_entry = scorers.get(strat_row["system_key"])
+        if not scorer_entry:
+            return []  # CASH_RESERVE/UNALLOCATED -- у них нет правила входа
+        _, score_fn = scorer_entry
+
+        rules_config = strat_row.get("rules_config") or {}
+        exclude_ticker_ids = exclude_ticker_ids or set()
+
+        sql = f"SELECT {self.TICKER_FACTS_SQL_COLUMNS} FROM public.tickers"
+        conditions = []
+        if us_only:
+            codes = "', '".join(self.US_EXCHANGE_CODES)
+            conditions.append(f"exchange_mic IN ('{codes}')")
+        if exclude_ticker_ids:
+            ids_str = ", ".join(str(int(t)) for t in exclude_ticker_ids)
+            conditions.append(f"id NOT IN ({ids_str})")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += ";"
+
+        rows = self.db.execute_query(sql) or []
+        rows = rows if isinstance(rows, list) else [rows]
+
+        results = []
+        for f in rows:
+            if not f or "id" not in f:
+                continue
+            days_to_report = self._calculate_days_to_report(f.get("signal_next_report_date"))
+            scored = score_fn(f, rules_config, days_to_report)
+            if scored["is_compatible"]:
+                results.append({
+                    "ticker_id": int(f["id"]),
+                    "symbol": f.get("symbol"),
+                    "ranking_value": scored["ranking_value"],
+                    "metrics": scored["metrics"],
+                })
+
+        results.sort(key=lambda r: r["ranking_value"], reverse=True)
+        return results
 
     def _apply_tax_and_warning_filters(self, evaluation_report: dict, strategy_id: int, is_compatible: bool, config: dict, div_yield_pct: float, m_report: dict):
         """
