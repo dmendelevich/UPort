@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 # Импортируем готовые объекты СУБД, фабрику и навигацию
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text, generate_main_menu_keyboard
 
 router = Router()
 
@@ -259,7 +259,7 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
     t_id = callback_data.ticker_id
 
     if not user_db_id or not t_id:
-        await callback.message.edit_text("❌ Критическая ошибка сессии. Пройдите /start.", reply_markup=get_back_to_menu_keyboard())
+        await callback.message.edit_text("❌ Критическая ошибка сессии. Пройдите /start.", reply_markup=generate_main_menu_keyboard())
         return
 
     sql_get_portfolios = f"""
@@ -267,11 +267,11 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
         WHERE owner_id = {int(user_db_id)} AND id NOT IN (0, 9999)
         ORDER BY id ASC;
     """
-    p_res = await execute_sql_async(sql_get_portfolios)
+    p_res = await asyncio.to_thread(db_bot.execute_query, sql_get_portfolios)
     user_portfolios = p_res if isinstance(p_res, list) else ([p_res] if p_res else [])
 
     if not user_portfolios:
-        await callback.message.edit_text("⚠️ У вас нет зарегистрированных торговых портфелей.", reply_markup=get_back_to_menu_keyboard())
+        await callback.message.edit_text("⚠️ У вас нет зарегистрированных торговых портфелей.", reply_markup=generate_main_menu_keyboard())
         return
 
     # 🔹 СЦЕНАРИЙ 1: У пользователя ровно ОДИН портфель — штампуем в один клик
@@ -324,7 +324,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
         t_row = t_data[0] if t_data and isinstance(t_data, list) else (t_data if isinstance(t_data, dict) else {})
         
         if not t_row:
-            await message.edit_text("❌ Ошибка: Ticker ID не найден в СУБД.", reply_markup=get_back_to_menu_keyboard())
+            await message.edit_text("❌ Ошибка: Ticker ID не найден в СУБД.", reply_markup=generate_main_menu_keyboard())
             return
             
         raw_symbol = t_row["symbol"]
@@ -369,4 +369,4 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
 
     except Exception as fix_err:
         logging.error(f"🚨 [WATCHLIST CRITICAL СБОЙ]: Ошибка фиксации инвест-идеи: {fix_err}")
-        await message.edit_text("❌ Сбой записи актива в списки наблюдения СУБД.", reply_markup=get_back_to_menu_keyboard())
+        await message.edit_text("❌ Сбой записи актива в списки наблюдения СУБД.", reply_markup=generate_main_menu_keyboard())

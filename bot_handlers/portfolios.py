@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text, generate_main_menu_keyboard
 
 # Импортируем независимый аналитический модуль аудитора портфеля
 from analytics.portfolio_auditor import generate_portfolio_passport
@@ -50,7 +50,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     passport = await asyncio.to_thread(generate_portfolio_passport, p_id, db_bot)
     if not passport:
         print(f"❌ [ПОРТФЕЛЬ ОШИБКА]: Не удалось сгенерировать паспорт для id = {p_id}")
-        await callback.message.edit_text("❌ Ошибка генерации паспорта портфеля.", reply_markup=get_back_to_menu_keyboard())
+        await callback.message.edit_text("❌ Ошибка генерации паспорта портфеля.", reply_markup=generate_main_menu_keyboard())
         return
 
     meta = passport["meta"]

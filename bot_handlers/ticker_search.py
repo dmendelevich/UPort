@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramBadRequest
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 #from bot_handlers.summary import get_back_to_menu_keyboard
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_main_menu_keyboard
 
 router = Router()
 
@@ -34,7 +34,7 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         await message.answer(
             "🛑 Доступ запрещен. Ваш Telegram ID не зарегистрирован в системе UPort.\n"
             "Пожалуйста, выполните команду /start для авторизации.",
-            reply_markup=get_back_to_menu_keyboard()
+            reply_markup=generate_main_menu_keyboard(is_admin=is_admin)
         )
         return
 
