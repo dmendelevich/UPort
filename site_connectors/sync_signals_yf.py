@@ -166,11 +166,14 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     macd_line = ema_12 - ema_26
                     macd_val = float(macd_line.iloc[-1])
 
-                    # Вычисление умной технической рекомендации UPort
+                    # Долгосрочный ценовой тренд (позиция цены относительно SMA100/SMA200) --
+                    # НЕ инвестиционная рекомендация конкретной стратегии (та считается отдельно
+                    # в analytics/analytics_utils.py). Значения намеренно не BUY/SELL, чтобы не
+                    # путать с реальными сигналами стратегий на этом же экране (см. BACKLOG.md).
                     if raw_yf_price > sma_200 and raw_yf_price > sma_100:
-                        recommendation = "STRONG_BUY"
+                        recommendation = "UPTREND"
                     elif raw_yf_price < sma_200 and raw_yf_price < sma_100:
-                        recommendation = "SELL"
+                        recommendation = "DOWNTREND"
                     else:
                         recommendation = "NEUTRAL"
 

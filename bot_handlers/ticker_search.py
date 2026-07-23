@@ -13,8 +13,21 @@ from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 #from bot_handlers.summary import get_back_to_menu_keyboard
 from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_main_menu_keyboard
+from analytics.analytics_utils import TickerEvaluator
 
 router = Router()
+
+# Отображение долгосрочного ценового тренда (signal_recommendation) -- намеренно
+# не BUY/SELL, чтобы не путать с реальными сигналами конкретных стратегий (см.
+# analytics/analytics_utils.py и BACKLOG.md). Fallback покрывает и старые значения
+# STRONG_BUY/SELL/NEUTRAL, ещё не перезаписанные ночной синхронизацией.
+TREND_LABELS = {
+    "UPTREND": ("📈", "РАСТЁТ"),
+    "DOWNTREND": ("📉", "ПАДАЕТ"),
+    "NEUTRAL": ("➡️", "БОКОВИК"),
+    "STRONG_BUY": ("📈", "РАСТЁТ"),
+    "SELL": ("📉", "ПАДАЕТ"),
+}
 
 @router.message(StateFilter(None), F.text)
 async def process_global_ticker_search(message: types.Message, state: FSMContext):
@@ -142,7 +155,8 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         logging.error(f"⚠️ Ошибка экспресс-анализа таблиц листингов и холдингов ETF: {e}")
 
     # 5. ШАГ 5: ФОРМИРОВАНИЕ ОБЛЕГЧЕННОЙ ПРЕМИАЛЬНОЙ ШАТОРКИ ПАСПОРТА
-    p_rec = str(t.get('signal_recommendation', 'NEUTRAL')).upper().replace('_', ' ')
+    raw_trend = str(t.get('signal_recommendation') or 'NEUTRAL').upper()
+    trend_icon, trend_label = TREND_LABELS.get(raw_trend, ("🔸", raw_trend.replace('_', ' ')))
     fb_ticker_name = ticker_name_map.get("FB", "UNSUPPORTED")
     fb_line = f"• Брокер FB: `{fb_ticker_name}`\n" if fb_ticker_name != "UNSUPPORTED" else ""
     asset_type = str(t.get('asset_type', 'UNDEFINED')).upper().strip()
@@ -162,7 +176,7 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         f"{type_badge}\n"
         f"───────\n"
         f"💵 Цена рынка: **{sign}{live_price:,.2f}**\n"
-        f"📢 Тренд (ИИ): **🔸 {p_rec}**\n"
+        f"📢 Долгосрочный тренд: **{trend_icon} {trend_label}**\n"
         f"{fb_line}"
         f"📊 **Техника:** RSI:{float(t.get('signal_rsi') or 0):.1f} | "
         f"100д:{float(t.get('signal_price_to_sma100_pct') or 0):+.1f}% | "
@@ -198,7 +212,30 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
             f"📐 **Состав ETF:** {lt_status}\n"
         )
 
-    report_text += "───────\nВключить инструмент в список наблюдения?"
+    # 5b. Совместимость с РЕАЛЬНЫМИ активными стратегиями портфелей (не "заводскими"
+    # шаблонами) -- TickerEvaluator оценивает все активные content-стратегии портфеля
+    # за один вызов (не по одной), поэтому на каждый портфель нужен ровно один вызов.
+    strategy_compat_lines = []
+    try:
+        portfolio_rows = await asyncio.to_thread(
+            db_bot.execute_query,
+            "SELECT id, name FROM public.portfolios WHERE id != 9999 ORDER BY id;"
+        )
+        portfolio_rows = portfolio_rows if isinstance(portfolio_rows, list) else ([portfolio_rows] if portfolio_rows else [])
+
+        evaluator = TickerEvaluator(db_instance=db_bot)
+        for p in portfolio_rows:
+            p_report = await asyncio.to_thread(evaluator.evaluate_ticker_strategy, int(ticker_id), int(p["id"]))
+            for info in p_report.get("explain_map", {}).values():
+                icon = "✅" if info["is_compatible_technically"] else "❌"
+                strategy_compat_lines.append(f" • {p['name']} → {info['strategy_name']}: {icon}")
+    except Exception as e:
+        logging.error(f"⚠️ Ошибка проверки совместимости со стратегиями для ticker_id={ticker_id}: {e}")
+
+    if strategy_compat_lines:
+        report_text += "🎯 **Совместимость со стратегиями:**\n" + "\n".join(strategy_compat_lines) + "\n───────\n"
+
+    report_text += "Включить инструмент в список наблюдения?"
 
 
     # 6. ШАГ 6: СБОРКА СМАРТ-ПУЛЬТА ИЗ ДВУХ КНОПОК
