@@ -5,7 +5,8 @@ import time
 import json
 from contextlib import contextmanager
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # Глобальный кэш суффиксов в оперативной памяти сервера UPort
 _EXCHANGE_SUFFIXES_CACHE = None
@@ -502,3 +503,27 @@ def manage_provenance(db_instance, ticker_id: int, source_key: str, action: str 
     except Exception as err:
         logging.error(f"🚨 [PROVENANCE CRITICAL СБОЙ СУБД]: Не удалось выполнить {action_clean} для {source_key_clean}: {err}")
         return False
+
+
+def was_us_market_open_yesterday() -> bool:
+    """
+    Проверяет, торговался ли рынок США в последний завершившийся календарный день
+    по нью-йоркскому времени -- через реальные исторические котировки SPY, а не
+    простую проверку "будни/выходные" (так корректно ловит и праздники США, а не
+    только субботу/воскресенье). Используется в cron_scheduler.py::digest_clock_loop,
+    чтобы не слать дайджест повторно на тех же данных, если рынок не торговал.
+    """
+    try:
+        ny_tz = ZoneInfo("America/New_York")
+        yesterday_ny = (datetime.now(ny_tz) - timedelta(days=1)).date()
+
+        history = yf.Ticker("SPY").history(period="5d")
+        if history.empty:
+            logging.warning("⚠️ [utils]: SPY не вернул историю котировок -- считаю, что торги были (безопасный дефолт).")
+            return True
+
+        last_trading_date = history.index[-1].date()
+        return last_trading_date == yesterday_ny
+    except Exception as e:
+        logging.error(f"❌ [utils]: Ошибка проверки торгового дня через SPY: {e} -- считаю, что торги были (безопасный дефолт).")
+        return True

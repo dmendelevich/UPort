@@ -54,7 +54,7 @@ async def start_uport_system():
     # 2. ЗАПУСКАЕМ НАШЕ РЕЛЕ ВРЕМЕНИ ФОНОВЫХ ЗАДАЧ (CRON)
     print("➕ [Оркестратор]: Регистрация реле времени фоновых задач cron_scheduler...")
     async_tasks.append(
-        asyncio.create_task(cron_scheduler.start_clocks(db_sys))
+        asyncio.create_task(cron_scheduler.start_clocks(db_sys, bot))
     )
 
     # 3. Динамически собираем потоки сокетов Freedom Broker на основе префиксов

@@ -15,6 +15,8 @@ from brokers_connectors.sync_quotes_t212 import sync_quotes_t212_branch
 from brokers_connectors.sync_alerts_fb import sync_all_broker_alerts
 from site_connectors.trigger_etf_look_through import run_etf_look_through_decomposition
 from site_connectors.sync_signals_yf import sync_global_yahoo_signals
+from utils import was_us_market_open_yesterday
+from analytics.daily_digest import assemble_portfolio_digest
 
 
 
@@ -28,6 +30,7 @@ FUNDAMENTALS_CHECK_INTERVAL = 3600  # 1 час для проверки ночн�
 ETF_LT_CHECK_INTERVAL = 3600        # 1 час для проверки воскресного будильника ETF
 ALERTS_SYNC_INTERVAL = 300          # 5 минут для планового сбора алертов Freedom Broker
 JANITOR_CHECK_INTERVAL = 3600       # 1 час для проверки будильника дворника СУБД
+DIGEST_CHECK_INTERVAL = 3600        # 1 час для проверки будильника утреннего дайджеста
 
 # 🔥 СТАНДАРТ v3.0: ДИНАМИЧЕСКИЙ ТАЙМЛАЙН СИНХРОНИЗАЦИИ С РЫНКОМ США (UTC)
 # Биржи NYSE/NASDAQ закрываются в 16:00 по Нью-Йорку (летом это 20:00 UTC, зимой - 21:00 UTC).
@@ -37,8 +40,9 @@ USA_MARKET_CLOSE_HOUR_UTC = 21
 # Переводим целевые часы из абсолютных в ОТНОСИТЕЛЬНЫЕ с защитным оператором % 24
 FUNDAMENTALS_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 3) % 24        
 JANITOR_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 5) % 24 
-ETF_LT_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 9) % 24 
+ETF_LT_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 9) % 24
 SIGNALS_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 2) % 24
+DIGEST_TARGET_HOUR = (USA_MARKET_CLOSE_HOUR_UTC + 8) % 24  # 21+8=29%24=5 -> 05:00 UTC = 08:00 Москва
 
 
 # === НАПРЯМЫЕ ФУНКЦИИ ОБНОВЛЕНИЯ И ОЧИСТКИ ===
@@ -107,6 +111,37 @@ def run_database_janitor(db_instance):
         logging.info("🧹 [ДВОРНИК УСПЕХ]: Стерилизация завершена. Протухшие алерты (>1д) и закрытые вотчлисты (>30д) стёрты.")
     except Exception as janitor_err:
         logging.error(f"❌ [ДВОРНИК КРИТИЧЕСКИЙ СБОЙ]: Ошибка очистки СУБД: {janitor_err}")
+
+async def send_daily_digests(db_instance, bot):
+    """
+    v0: собирает дайджест по каждому реальному портфелю (кроме служебного 9999)
+    и шлёт ВСЕ сообщения админу, независимо от реального владельца портфеля --
+    сознательное решение на период отладки (см. BACKLOG.md). Переключение на
+    реального владельца портфеля -- будущая доработка настроек.
+    """
+    admin_row = await asyncio.to_thread(
+        db_instance.execute_row,
+        "SELECT telegram_id FROM public.users WHERE is_admin = true LIMIT 1;"
+    )
+    admin_telegram_id = (admin_row or {}).get("telegram_id")
+    if not admin_telegram_id:
+        logging.error("❌ [Digest]: Не найден telegram_id администратора -- дайджест некому отправить.")
+        return
+
+    portfolios = await asyncio.to_thread(
+        db_instance.execute_query,
+        "SELECT id, name FROM public.portfolios WHERE id != 9999 ORDER BY id;"
+    )
+    portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
+
+    for p in portfolios:
+        p_id = int(p["id"])
+        try:
+            text = await asyncio.to_thread(assemble_portfolio_digest, db_instance, p_id)
+            await bot.send_message(chat_id=admin_telegram_id, text=text, parse_mode="Markdown")
+            logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен.")
+        except Exception as e:
+            logging.error(f"❌ [Digest]: Не удалось собрать/отправить дайджест по портфелю {p['name']} (ID: {p_id}): {e}")
 
 # === ПЕРСИСТЕНТНАЯ ЗАЩИТА "УМНЫХ БУДИЛЬНИКОВ" ОТ ПОВТОРНОГО СРАБАТЫВАНИЯ ===
 
@@ -278,14 +313,34 @@ async def signals_clock_loop(db_instance):
             
         await asyncio.sleep(SIGNALS_CHECK_INTERVAL)
 
+async def digest_clock_loop(db_instance, bot):
+    """🔥 УМНЫЙ УТРЕННИЙ БУДИЛЬНИК ДАЙДЖЕСТА: Просыпается раз в час и ждёт целевого часа."""
+    logging.info(f"⏱️ [Реле Времени]: Контур утреннего дайджеста взведен на дежурство (Цель: {DIGEST_TARGET_HOUR:02d}:00 UTC).")
+    while True:
+        try:
+            current_hour = datetime.now(timezone.utc).hour
+            if current_hour == DIGEST_TARGET_HOUR:
+                if not await asyncio.to_thread(was_us_market_open_yesterday):
+                    logging.info("⏭️ [Digest]: Вчера рынок США не торговал -- пропускаю дайджест (нечего нового сообщить).")
+                else:
+                    logging.info(f"🌅 [Cron]: На часах {DIGEST_TARGET_HOUR:02d}:00 UTC. Сборка утреннего дайджеста...")
+                    await run_daily_job_once(
+                        db_instance, "daily_digest",
+                        lambda: send_daily_digests(db_instance, bot)
+                    )
+        except Exception as e:
+            logging.error(f"❌ [Digest Clock Error]: {e}")
+
+        await asyncio.sleep(DIGEST_CHECK_INTERVAL)
+
 
 # ─────────────────────────────────────────────────────────
 # === ГЛАВНАЯ ТОЧКА СБОРКИ ВСЕХ ПЕТЕЛЬ ВРЕМЕНИ CRON ===
 # ─────────────────────────────────────────────────────────
-async def start_clocks(db_instance):
+async def start_clocks(db_instance, bot):
     """Оркестратор планировщика UPort: собирает все циклы в единую асинхронную группу."""
     logging.info("🚀 [Планировщик UPort]: Запуск всех контуров реле времени фоновых задач...")
-    
+
     # Первичный принудительный синхрон котировок, курсов и алертов при старте ОС сервера
     try:
         await asyncio.to_thread(run_quotes_update, db_instance)
@@ -302,5 +357,6 @@ async def start_clocks(db_instance):
         signals_clock_loop(db_instance),       # Новое ночное реле рыночных сигналов на 23:00 UTC
         alerts_clock_loop(db_instance),       # 5-минутный контур алертов Freedom Broker
         janitor_clock_loop(db_instance),      # Суточный контур Дворника СУБД на 02:00 ночи UTC
-        etf_lt_weekly_clock_loop(db_instance)  # Новое воскресное реле декомпозиции ETF на 06:00 утра UTC
+        etf_lt_weekly_clock_loop(db_instance),  # Новое воскресное реле декомпозиции ETF на 06:00 утра UTC
+        digest_clock_loop(db_instance, bot)    # Утренний дайджест на 05:00 UTC (08:00 Москва)
     )
