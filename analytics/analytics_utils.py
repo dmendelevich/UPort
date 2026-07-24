@@ -3,6 +3,20 @@ import logging
 import datetime
 
 
+def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:
+    """
+    Ожидаемый объём (в штуках, со знаком) текущего шага лесенки order_pipelines:
+    доля от итоговой цели плана, знак -- как у самого плана (>0 вход, <0 выход).
+    Не может быть меньше 1 целой акции по модулю. Общая для sync_strategy_asset_fb.py
+    (сверка факта) и digest-наблюдателя следующего шага (analytics/ladder_step_watcher.py) --
+    держим в одном месте, чтобы не разъезжались.
+    """
+    target_qty = float(target_qty)
+    sign = 1 if target_qty > 0 else -1
+    raw_step_qty = target_qty * (float(budget_share_pct) / 100.0)
+    return sign * max(1, round(abs(raw_step_qty)))
+
+
 def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_currency: str = "USD") -> float:
     """
     💸 УНИВЕРСАЛЬНЫЙ СКВОЗНОЙ КОНВЕРТЕР АНАЛИТИКИ

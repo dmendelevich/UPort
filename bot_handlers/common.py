@@ -12,3 +12,4 @@ class MenuAction(CallbackData, prefix="uport"):
     user_id: int = 0         # ID пользователя (владельца) из public.users
     broker_id: int = 0       # ID брокера из public.brokers
     strategy_id: int = 0     # ID стратегии из public.strategies
+    order_id: int = 0        # ID приказа из public.orders (привязка к шагу order_pipelines)

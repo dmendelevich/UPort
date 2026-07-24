@@ -392,6 +392,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                         text += f"  • {emoji} {label} (По рынку) ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
             else:
                 text += "   *Активных приказов по данной бумаге на бирже нет.*\n"
+
+            builder.row(types.InlineKeyboardButton(
+                text="🔗 Привязать ордер к плану",
+                callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            ))
         else:
             # Для Интегральной или Исследовательской карточки группируем СТРОГО по портфелям владельцев
             text += "⏳ **Совокупные активные приказы семьи:**\n"

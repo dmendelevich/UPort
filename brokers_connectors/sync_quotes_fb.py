@@ -10,6 +10,8 @@ sys.path.append(str(Path(__file__).parent.parent.resolve()))
 
 from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
+from analytics.stale_order_watcher import check_stale_pending_orders
+from analytics.ladder_step_watcher import check_ladder_step_triggers
 
 def sync_quotes_fb_autonomous():
     """
@@ -101,6 +103,20 @@ def sync_quotes_fb_autonomous():
 
     except Exception as e:
         logging.error(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")
+
+    # После обновления котировок -- проверяем, не протухли ли уже привязанные ордера
+    # order_pipelines, и не пора ли на следующий шаг лесенки (оба -- рыночно-зависимые
+    # проверки, поэтому на цикле котировок, а не в дайджесте; см. Claude/09_pipeline_reconciliation.md).
+    # Сбой не должен ронять сам синк котировок.
+    try:
+        check_stale_pending_orders(db_sys)
+    except Exception as stale_err:
+        logging.error(f"⚠️ [REST FB]: Сбой проверки протухания привязанных ордеров: {stale_err}")
+
+    try:
+        check_ladder_step_triggers(db_sys)
+    except Exception as ladder_err:
+        logging.error(f"⚠️ [REST FB]: Сбой проверки готовности следующего шага лесенки: {ladder_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла
