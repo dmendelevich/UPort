@@ -163,9 +163,9 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
 
     # Динамически формируем ультра-компактный маркер типа актива для самого верха шапки
     if asset_type == 'EQUITY':
-        type_badge = "🏷️ **АКЦИЯ**"
+        type_badge = "🏷️ **Акция**"
     elif asset_type == 'ETF':
-        type_badge = "🧱 **БИРЖЕВОЙ ФОНД (ETF)**"
+        type_badge = "🧱 **Фонд (ETF)**"
     else:
         type_badge = "⚙️ **ИНСТРУМЕНТ**"
 
@@ -258,6 +258,6 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
 
 
     try:
-        await status_msg.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        await status_msg.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
