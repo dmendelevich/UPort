@@ -7,8 +7,12 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_screens import format_premium_header
-from bot_handlers.bot_keyboards import generate_tab_switch_keyboard, generate_nav_back_keyboard
+from bot_handlers.bot_screens import (
+    format_premium_header, format_position_financials, format_market_signals, format_ticker_behavior,
+    format_cross_holdings, format_broker_link_summary, format_order_line,
+    format_alert_condition_line, classify_order, ORDER_CATEGORIES, SEPARATOR_LINE,
+)
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard
 #from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
@@ -144,53 +148,28 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         
         # Вытаскиваем все алерты тикера через наше новое реляционное ядро
         alerts_list = db_bot.get_ticker_alerts_context(l_id)
-        
+
         # Единый header карточки UPort
         report_text = header_text
-        report_text += f"\n🎯 **СПИСОК АЛЕРТОВ И ТРИГГЕРОВ:**\n"
-        
+        report_text += f"🔔 **АЛЕРТЫ:**\n"
+
         if alerts_list:
-            for idx, al in enumerate(alerts_list, 1):
-                # 1. Определяем контур и владельца стратегии счета
-                c_icon = "📡 [FB]" if al['source_type'] == 'broker' else "🧠 [UP]"
-                p_name = al['portfolio_name'] or f"П{p_id}"
-                u_owner = al['portfolio_owner_name'] or "Инвестор"
-                
-                report_text += f"\n**{idx}. {c_icon} • Портфель {p_name} ({u_owner})**\n"
-                
-                # 2. Форматируем условие цены на основе нашей новой 3NF-структуры колонок
-                if al['trigger_price_min'] is not None and al['trigger_price_max'] is not None:
-                    report_text += f" • Канал цен: **${float(al['trigger_price_min']):,.2f} - ${float(al['trigger_price_max']):,.2f}**\n"
-                elif al['trigger_pct'] is not None:
-                    report_text += f" • Динамический триггер: **{al['condition_type']}{float(al['trigger_pct'])}%**\n"
-                else:
-                    report_text += f" • Цена: **{al['condition_type']} ${float(al['trigger_price'] or 0):,.2f}**\n"
-                
-                # 3. Выводим статус и честное время срабатывания UPort
-                if al['is_active']:
-                    report_text += f" • ⏳ Ожидание триггера\n"
-                else:
-                    t_time = ""
-                    if al['triggered_at']:
-                        # Красиво форматируем timestamp в читаемую дату/время
-                        if isinstance(al['triggered_at'], str):
-                            t_time = " " + al['triggered_at'].split('.')[0].replace('T', ' ')
-                        else:
-                            t_time = " " + al['triggered_at'].strftime('%Y-%m-%d %H:%M:%S')
-                    report_text += f" • 🔥 **СРАБОТАЛ**{t_time}\n"
-                    
-                # 4. Выводим создателя (Инициатора) алерта
-                if al['ai_strategy_id'] is not None:
-                    report_text += f" • Установил: 🤖 ИИ (Стратегия #{al['ai_strategy_id']})\n"
-                else:
-                    creator = al['creator_name'] or u_owner
-                    report_text += f" • Установил: 👤 {creator}\n"
-                    
-                # 5. Выводим ручную текстовую заметку инвестора
-                if al['note']:
-                    report_text += f" • Заметка: *{al['note']}*\n"
+            # Группировка по портфелю (Блок 5 стандарта body, см. Claude/05_...):
+            # заголовок портфеля один раз, условия под ним -- по одной строке на алерт
+            grouped, order_of_portfolios = {}, []
+            for al in alerts_list:
+                p_key = al['portfolio_name'] or f"П{al.get('portfolio_id') or p_id}"
+                if p_key not in grouped:
+                    grouped[p_key] = []
+                    order_of_portfolios.append(p_key)
+                grouped[p_key].append(al)
+
+            for p_key in order_of_portfolios:
+                report_text += f" • 💼 {p_key}\n"
+                for al in grouped[p_key]:
+                    report_text += format_alert_condition_line(al, last_price, currency_sign=sign)
         else:
-            report_text += "   *Активные и сработавшие алерты по данной бумаге в СУБД отсутствуют.*\n"
+            report_text += "   *Алертов нет.*\n"
 
         # Footer по стандарту (см. Claude/05_strategy_screen_and_kubiki.md): без явной фразы --
         # переход к тексту кнопок сразу очевиден, разделитель без фразы не нужен
@@ -207,148 +186,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         return # 🚨 ПРЕДОХРАНИТЕЛЬ: Выходим из метода, полностью блокируя выполнение старого кода кошелька!
     # =========================================================================
 
-    # 3. ФОРМИРОВАНИЕ УЛЬТИМАТИВНЫХ ШАПОК СТУДИИ ДИЗАЙНА UPORT
-    if is_owner_view:
-        # Вариант 1: В портфеле конкретного счета
-        owner_row = next((h for h in all_holders if h['portfolio_id'] == p_id), None)
-        p_name = owner_row['portfolio_name'] if owner_row else f"П{p_id}"
-        u_name = owner_row['owner_name'] if owner_row else "User"
-        
-        text = header_text
-        text += f"В ПОРТФЕЛЕ {p_name} ({u_name})\n"
+    # =========================================================================
+    # 🔥 ШТОРКА "СПИСОК ОРДЕРОВ" (Блок 5 стандарта body, симметрично шторке алертов выше)
+    # =========================================================================
+    if view == "orders":
+        print(f"🎯 [ТИКЕР ОРДЕРА]: Сборка изолированной шторки ордеров для ticker_id = {t_id}")
+        await callback.answer("Загрузка активных приказов...")
 
-        if owner_row:
-            qty = float(owner_row['quantity'])
-            avg_price = float(owner_row['avg_price'] or 0)
-            cost_basis = qty * avg_price
-            market_val = qty * last_price
-            profit = market_val - cost_basis
-            profit_pct = (profit / cost_basis * 100) if cost_basis > 0 else 0.0
-            p_sign = "+" if profit >= 0 else ""
-            clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
-            
-            text += f"📊 Позиция: **{clean_qty} шт.** • Средняя: **{sign}{avg_price:,.2f}**\n"
-            text += f"📈 Результат: **{p_sign}{sign}{profit:,.2f} ({p_sign}{profit_pct:.1f}%)**\n"
-            text += f"⏱️ Владение: **{owner_row['holding_days']} дней**\n"
-
-    elif is_family_view:
-        # Вариант 2: В Сводном семейном капитале
-        text = header_text
-        text += f"В ОБЩЕМ КАПИТАЛЕ СЕМЬИ\n\n"
-        text += f"👥 **Распределение по счетам семьи:**\n"
-        
-        total_family_qty = 0.0
-        total_family_cost = 0.0
-        total_family_market = 0.0
-        
-        if all_holders:
-            for h in all_holders:
-                h_qty = float(h['quantity'])
-                h_avg = float(h['avg_price'] or 0)
-                h_basis = h_qty * h_avg
-                h_market = h_qty * last_price
-                h_profit = h_market - h_basis
-                h_profit_pct = (h_profit / h_basis * 100) if h_basis > 0 else 0.0
-                h_sign = "+" if h_profit >= 0 else ""
-                h_clean_qty = int(h_qty) if h_qty.is_integer() else f"{h_qty:.2f}"
-                
-                text += f" • {h['owner_name']} ({h['portfolio_name']}) — **{h_clean_qty} шт.** • Результат: {h_sign}{sign}{h_profit:,.2f} ({h_sign}{h_profit_pct:.1f}%)\n"
-                
-                total_family_qty += h_qty
-                total_family_cost += h_basis
-                total_family_market += h_market
-            
-            tf_profit = total_family_market - total_family_cost
-            tf_profit_pct = (tf_profit / total_family_cost * 100) if total_family_cost > 0 else 0.0
-            tf_sign = "+" if tf_profit >= 0 else ""
-            tf_clean_qty = int(total_family_qty) if total_family_qty.is_integer() else f"{total_family_qty:.2f}"
-            
-            text += f"───────\n"
-            text += f"📊 **СОВОКУПНЫЙ КАПИТАЛ КЛАНА:**\n"
-            text += f"• Всего в удержании: **{tf_clean_qty} шт.**\n"
-            text += f"• Общая оценка: **{sign}{total_family_market:,.2f}**\n"
-            text += f"• Чистая прибыль клана: **{tf_sign}{sign}{tf_profit:,.2f} ({tf_sign}{tf_profit_pct:.1f}%)**\n"
-        else:
-            text += "   *Ни один член семьи пока не владеет данным активом.*\n"
-
-    elif is_research_portfolio:
-        # Вариант 4: Исследование В ПОРТФЕЛЕ (Фокус конкретной стратегии)
-        text = header_text
-        text += f"ИССЛЕДОВАНИЕ ПО СТРАТЕГИИ\n"
-        text += f"🎯 Статус: Наблюдение по декларации счета\n"
-    else:
-        # Вариант 3: Исследование ВООБЩЕ (Глобальная песочница 9999)
-        text = header_text
-        text += f"ГЛОБАЛЬНОЕ ИССЛЕДОВАНИЕ СИСТЕМЫ\n"
-        text += f"🎯 Статус: В списке глобального наблюдения (Watchlist)\n\n"
-        
-        if all_holders:
-            text += f"👥 **Семейный кросс-радар:**\n"
-            for h in all_holders:
-                h_clean_qty = int(h['quantity']) if float(h['quantity']).is_integer() else f"{h['quantity']:.2f}"
-                text += f" • Актив куплен у: **{h['owner_name']}** ({h_clean_qty} шт. в портфеле {h['portfolio_name']})\n"
-
-    # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
-    if is_owner_view or is_research_portfolio:
-        audit_id = p_id if is_owner_view else 1
-        # 🔥 РЕФАКТОРИНГ: Заменяем на чистый execute_row
-        p_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
-        p_title = p_row.get('name', f"Счет #{audit_id}")
-
-        warnings_list = audit_ticker_for_portfolio(broker_symbol if l_id > 0 else pure_symbol, audit_id, db_bot)
-        text += f"───────\n🛡️ **Риск-аудит IPS {p_title}:**\n"
-        if warnings_list:
-            for w in warnings_list:
-                text += f" {w}\n"
-        else:
-            text += " ✅ Риск-декларация: лимиты веса и налоговой нагрузки соблюдены.\n"
-
-    text += f"───────\n"
-
-    # Footer, ряд 2 -- информационные кнопки (переключатель вкладок), текущая скрывается
-    # (см. Claude/05_strategy_screen_and_kubiki.md)
-    tab_markup = generate_tab_switch_keyboard(
-        tabs=[
-            ("💼 Владение и Ордера", MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id)),
-            ("📊 Метрики Yahoo", MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo", strategy_id=strategy_id)),
-        ],
-        current_sub_view=view
-    )
-    builder = InlineKeyboardBuilder.from_markup(tab_markup)
-
-    # 5. ЛОГИКА РАЗВОДКИ ВНУТРЕННОСТЕЙ ШТОРОК
-    if view == "yahoo":
-        print("📊 [ТИКЕР]: Выгружаю фундаментальные коэффициенты из public.tickers...")
-        # 🔥 РЕФАКТОРИНГ: Точечно переводим на безопасное чтение одной строки
-        t = await asyncio.to_thread(db_bot.execute_row, f"SELECT * FROM public.tickers WHERE id = {t_id};")
-
-        if t and (t.get('pe_trailing') is not None or t.get('debt_to_equity') is not None):
-            fcf_val = float(t['free_cash_flow'] or 0) / 1_000_000
-            text += (
-                f"📊 **Аналитические мультипликаторы бизнеса:**\n"
-                f" • Окупаемость P/E: **{float(t.get('pe_trailing') or 0):.1f}** | Прогноз P/E: **{float(t.get('pe_forward') or 0):.1f}**\n"
-                f" • Коэффициент PEG: **{float(t.get('peg_ratio') or 0):.2f}**\n"
-                f" • Цена к выручке P/S: **{float(t.get('price_to_sales') or 0):.1f}** | К балансу P/B: **{float(t.get('price_to_book') or 0):.1f}**\n"
-                f" • Стоимость бизнеса EV/EBITDA: **{float(t.get('ev_to_ebitda') or 0):.1f}**\n"
-                f" ───────\n"
-                f" • Долг к капиталу D/E: **{float(t.get('debt_to_equity') or 0):.1f}%**\n"
-                f" • Ликвидность (Current Ratio): **{float(t.get('current_ratio') or 0):.2f}**\n"
-                f" • Чистая маржинальность: **{float(t.get('profit_margin') or 0):.1f}%**\n"
-                f" • Рентабельность ROE: **{float(t.get('return_on_equity') or 0):.1f}%**\n"
-                f" ───────\n"
-                f" • Див. доходность: **{float(t.get('dividend_yield') or 0):.2f}%** | Выплаты (Payout): **{float(t.get('payout_ratio') or 0):.1f}%**\n"
-                f" • Свободный кэш (FCF): **${fcf_val:,.1f}M**\n"
-                f" ───────\n"
-                f" • Комиссия ETF (Expense Ratio): **{float(t.get('expense_ratio') or 0)*100:.2f}%**\n"
-                f" • Сектор: **{t.get('sector', 'N/A')}** | Индустрия: **{t.get('industry', 'N/A')}**\n"
-            )
-        else:
-            text += "📊 **Фундаментальные показатели бизнеса:**\n   *Для данного типа актива экономические мультипликаторы стоимости отсутствуют.*"
-    else:
-        # Вкладка Владение и Ордера (По умолчанию)
-        print("⏳ [ТИКЕР]: Выгружаю активные биржевые приказы из академической public.orders...")
-        
-        # Человеческий джойн пользователей СУБД и расчет возраста ордеров в днях
         sql_live_orders = f"""
             SELECT u.name as owner_name, p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, cur.sign,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - o.created_at))::int AS order_age_days
@@ -364,104 +208,187 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         if not isinstance(live_orders_res, list):
             live_orders_res = [live_orders_res] if live_orders_res else []
 
-        if is_owner_view:
-            text += "⏳ **Активные приказы этого портфеля:**\n"
-            current_orders = [o for o in live_orders_res if o['portfolio_name'] == p_name]
-            if current_orders:
-                # Наше ТЗ: разделяем открытые заявки на изменение позы и защитные стоп-механизмы
-                market_orders = [o for o in current_orders if int(o['type']) not in (5, 6)]
-                trigger_orders = [o for o in current_orders if int(o['type']) in (5, 6)]
-                
-                if market_orders:
-                    text += " 🛒 **ОТКРЫТЫЕ ЗАЯВКИ (Лимитные/Рыночные):**\n"
-                    for o in market_orders:
-                        op_label = "ПОКУПКА" if int(o['oper']) in (1, 2) else "ПРОДАЖА"
-                        text += f"  • 🔹 ЛИМИТНАЯ {op_label} ➡️ {float(o['q']):.0f} шт. по цене {o['sign']}{float(o['p'] or 0):,.2f} ({o['order_age_days']} дн. назад)\n"
-                
-                if trigger_orders:
-                    text += " 🛡️ **ЗАЩИТА И ЦЕЛИ (Стоп-ордера):**\n"
-                    for o in trigger_orders:
-                        label = "СТОП-ЛОСС" if int(o['type']) == 5 else "ТЕЙК-ПРОФИТ"
-                        emoji = "🛑" if int(o['type']) == 5 else "🎯"
-                        text += f"  • {emoji} {label} (По рынку) ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
-            else:
-                text += "   *Активных приказов по данной бумаге на бирже нет.*\n"
+        report_text = header_text + "📃 **АКТИВНЫЕ ПРИКАЗЫ:**\n"
 
-            builder.row(types.InlineKeyboardButton(
-                text="🔗 Привязать ордер к плану",
-                callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
-            ))
+        # 4 категории (Блок 5 стандарта body, см. Claude/05_...): Покупка/Продажа --
+        # обычные лимитные заявки, Stop Loss/Take Profit -- защитные триггеры.
+        # Уточнено пользователем 2026-07-26: раньше делили только рыночные/триггерные,
+        # теряя разницу купить/продать внутри каждого вида.
+        category_order = ["buy", "sell", "stop_loss", "take_profit"]
+
+        if is_owner_view:
+            owner_row_shade = next((h for h in all_holders if h['portfolio_id'] == p_id), None)
+            p_name_shade = owner_row_shade['portfolio_name'] if owner_row_shade else f"П{p_id}"
+            current_orders = [o for o in live_orders_res if o['portfolio_name'] == p_name_shade]
+
+            if current_orders:
+                blocks = []
+                for cat_key in category_order:
+                    icon, label, _ = ORDER_CATEGORIES[cat_key]
+                    cat_orders = [o for o in current_orders if classify_order(o) == cat_key]
+                    if cat_orders:
+                        block = f"{icon} **{label}:**\n"
+                        for o in cat_orders:
+                            block += format_order_line(o, last_price)
+                        blocks.append(block)
+                report_text += "\n".join(blocks)
+            else:
+                report_text += "   *Приказов нет.*\n"
         else:
-            # Для Интегральной или Исследовательской карточки группируем СТРОГО по портфелям владельцев
-            text += "⏳ **Совокупные активные приказы семьи:**\n"
             if live_orders_res:
-                distinct_owners = sorted(list(set(o['owner_name'] for o in live_orders_res)))
+                distinct_owners = sorted(set(o['owner_name'] for o in live_orders_res))
+                owner_blocks = []
                 for owner in distinct_owners:
                     owner_orders = [o for o in live_orders_res if o['owner_name'] == owner]
                     p_title_str = owner_orders[0]['portfolio_name'] if owner_orders else ""
-                    text += f" 👤 **{owner} ({p_title_str}):**\n"
-                    for o in owner_orders:
-                        if int(o['type']) == 5:
-                            text += f"  • 🛑 СТОП-ЛОСС ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
-                        elif int(o['type']) == 6:
-                            text += f"  • 🎯 ТЕЙК-ПРОФИТ ➡️ {float(o['q']):.0f} шт. • Активация: {o['sign']}{float(o['stop_price'] or o['p']):,.2f} ({o['order_age_days']} дн. назад)\n"
-                        else:
-                            op_lbl = "ПОКУПКА" if int(o['oper']) in (1, 2) else "ПРОДАЖА"
-                            text += f"  • 🔹 ЛИМИТНАЯ {op_lbl} ➡️ {float(o['q']):.0f} шт. по цене {o['sign']}{float(o['p'] or 0):,.2f} ({o['order_age_days']} дн. назад)\n"
+                    owner_block = f"👤 **{owner} ({p_title_str}):**\n"
+                    cat_blocks = []
+                    for cat_key in category_order:
+                        icon, label, _ = ORDER_CATEGORIES[cat_key]
+                        cat_orders = [o for o in owner_orders if classify_order(o) == cat_key]
+                        if cat_orders:
+                            cat_block = f" {icon} {label}:\n"
+                            for o in cat_orders:
+                                cat_block += format_order_line(o, last_price)
+                            cat_blocks.append(cat_block)
+                    owner_block += "\n".join(cat_blocks)
+                    owner_blocks.append(owner_block)
+                report_text += "\n".join(owner_blocks)
             else:
-                text += "   *Активных приказов у членов семьи на бирже нет.*\n"
+                report_text += "   *Приказов нет.*\n"
 
-        # =========================================================================
-        # 🔥 ВНЕДРЕНИЕ КОНТУРА АЛЕРТОВ НА ГЛАВНУЮ СТРАНИЦУ КАРТОЧКИ ТИКЕРА (ДЛЯ КОШЕЛЬКА)
-        # =========================================================================
-        text += "\n🎯 **Взведенные алерты и триггеры по бумаге:**\n"
-        
-        # Вытаскиваем алерты из нашего нового реляционного метода в database.py
-        alerts_list = db_bot.get_ticker_alerts_context(l_id)
-        
-        if alerts_list:
-            for idx, al in enumerate(alerts_list, 1):
-                c_icon = "📡 [FB]" if al['source_type'] == 'broker' else "🧠 [UP]"
-                
-                # Фильтруем алерты для вывода: 
-                # На личном экране (p_id > 0) показываем только алерты этого портфеля.
-                # На сводном экране (p_id == 0) — выводим алерты вообще всей семьи.
-                if p_id != 0 and al.get('portfolio_id') != p_id:
-                    continue
-                    
-                p_name = al['portfolio_name'] or f"П{p_id}"
-                
-                if al['trigger_price_min'] is not None and al['trigger_price_max'] is not None:
-                    c_condition = f"Канал цен: ${float(al['trigger_price_min']):,.2f} - ${float(al['trigger_price_max']):,.2f}"
-                elif al['trigger_pct'] is not None:
-                    c_condition = f"Динамический триггер: {al['condition_type']}{float(al['trigger_pct'])}%"
-                else:
-                    c_condition = f"Цена {al['condition_type']} ${float(al['trigger_price'] or 0):,.2f}"
-                
-                if al['is_active']:
-                    c_status = "⏳ Ожидание"
-                else:
-                    t_time = ""
-                    if al['triggered_at']:
-                        if isinstance(al['triggered_at'], str):
-                            t_time = " " + al['triggered_at'].split('.').replace('T', ' ')
-                        else:
-                            t_time = " " + al['triggered_at'].strftime('%Y-%m-%d %H:%M:%S')
-                    c_status = f"🔥 **СРАБОТАЛ**{t_time}"
-                    
-                if al['ai_strategy_id'] is not None:
-                    creator = f"🤖 ИИ (Стратегия #{al['ai_strategy_id']})"
-                else:
-                    creator = f"👤 {al['creator_name'] or al['portfolio_owner_name'] or 'Инвестор'}"
-                    
-                text += f" {idx}. {c_icon} ({p_name}) • {c_condition} • {c_status} • Установил: {creator}\n"
-                
-                if al['note']:
-                    text += f"     └ *Заметка: {al['note']}*\n"
+        nav_markup = generate_nav_back_keyboard(
+            one_step_back_text="🔙 К карточке бумаги",
+            full_back_callback=MenuAction(
+                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
+            ).pack()
+        )
+
+        print("🖥️ [ТИКЕР ОРДЕРА]: Отправляю изолированную шторку в Telegram...")
+        try:
+            await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
+        except TelegramBadRequest:
+            pass
+        return
+    # =========================================================================
+
+    # 3. ФОРМИРОВАНИЕ УЛЬТИМАТИВНЫХ ШАПОК СТУДИИ ДИЗАЙНА UPORT
+    if is_owner_view:
+        # Вариант 1: В портфеле конкретного счета -- Блок 1 стандарта body
+        # (см. Claude/05_strategy_screen_and_kubiki.md): финансовая характеристика,
+        # несёт собственную подпись портфеля/стратегии вместо убранной строки-контекста.
+        # p_name нужен ниже (раздел ордеров) для фильтрации по названию портфеля.
+        owner_row = next((h for h in all_holders if h['portfolio_id'] == p_id), None)
+        p_name = owner_row['portfolio_name'] if owner_row else f"П{p_id}"
+
+        text = header_text
+        text += await format_position_financials(
+            portfolio_id=p_id, listing_id=l_id, last_price=last_price, sign=sign, strategy_id=strategy_id
+        )
+        # Блок 6 стандарта body: где ещё в семье есть/запланировано, за вычетом
+        # текущего портфеля/стратегии (уже показан Блоком 1 выше)
+        text += f"{SEPARATOR_LINE}\n"
+        text += await format_cross_holdings(t_id, l_id, portfolio_id=p_id, strategy_id=strategy_id)
+
+    elif is_family_view:
+        # Вариант 2: В Сводном семейном капитале -- целиком Блок 6 (портфельный разрез,
+        # без исключения -- показываем всю семью)
+        text = header_text
+        text += await format_cross_holdings(t_id, l_id, portfolio_id=0, strategy_id=0)
+
+    elif is_research_portfolio:
+        # Вариант 4: Исследование В ПОРТФЕЛЕ (Фокус конкретной стратегии) -- вне темы,
+        # завязано на устаревший портфель 9999 (см. Claude/BACKLOG.md №11), не трогаем
+        text = header_text
+        text += f"ИССЛЕДОВАНИЕ ПО СТРАТЕГИИ\n"
+        text += f"🎯 Статус: Наблюдение по декларации счета\n"
+    else:
+        # Вариант 3: Исследование ВООБЩЕ (Глобальная песочница 9999) -- Блок 6
+        # (портфельный разрез, 9999 не держит реальных активов -- исключение инертно)
+        text = header_text
+        text += await format_cross_holdings(t_id, l_id, portfolio_id=p_id, strategy_id=0)
+
+    # Блок 2 ("Поведение") и Блок 4 ("Рыночные сигналы") стандарта body (см.
+    # Claude/05_strategy_screen_and_kubiki.md) -- оба свойство самого тикера, общее
+    # для всех 4 контекстов владения выше, поэтому один общий разделитель на пару
+    text += f"{SEPARATOR_LINE}\n"
+    text += await format_ticker_behavior(t_id)
+    text += await format_market_signals(t_id)
+
+    # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
+    if is_owner_view or is_research_portfolio:
+        audit_id = p_id if is_owner_view else 1
+        # 🔥 РЕФАКТОРИНГ: Заменяем на чистый execute_row
+        p_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
+        p_title = p_row.get('name', f"Счет #{audit_id}")
+
+        warnings_list = audit_ticker_for_portfolio(broker_symbol if l_id > 0 else pure_symbol, audit_id, db_bot)
+        text += f"{SEPARATOR_LINE}\n🛡️ **Риск-аудит IPS {p_title}:**\n"
+        if warnings_list:
+            for w in warnings_list:
+                text += f" {w}\n"
         else:
-            text += "   *Активные или сработавшие алерты в СУБД отсутствуют.*\n"
-        # =========================================================================
+            text += " ✅ Риск-декларация: лимиты веса и налоговой нагрузки соблюдены.\n"
 
+    text += f"{SEPARATOR_LINE}\n"
+
+    # Вкладка "Метрики Yahoo" убрана (Блок 4 стандарта body заменил её содержимое --
+    # см. format_market_signals выше; фундаментал в старом виде больше не нужен как
+    # отдельный экран). Единственная оставшаяся вкладка была бы всегда одна и та же
+    # (current_sub_view всегда совпадает) -- переключатель вкладок (footer, ряд 2)
+    # больше не нужен вообще для этого экрана.
+    builder = InlineKeyboardBuilder()
+
+    # Блок 5 стандарта body (см. Claude/05_strategy_screen_and_kubiki.md): компактная
+    # сводка алертов/ордеров + кнопки "подробнее" в отдельные шторки (sub_view=alerts/orders).
+    sql_live_orders = f"""
+        SELECT u.name as owner_name, p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, cur.sign,
+               EXTRACT(DAY FROM (CURRENT_TIMESTAMP - o.created_at))::int AS order_age_days
+        FROM public.orders o
+        JOIN public.listings l ON o.listing_id = l.id
+        JOIN public.portfolios p ON o.portfolio_id = p.id
+        JOIN public.users u ON p.owner_id = u.id
+        JOIN public.currencies cur ON l.currency_id = cur.id
+        WHERE l.ticker_id = {t_id}
+          AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
+    """
+    live_orders_res = db_bot.execute_query(sql_live_orders)
+    if not isinstance(live_orders_res, list):
+        live_orders_res = [live_orders_res] if live_orders_res else []
+
+    if is_owner_view:
+        orders_count = len([o for o in live_orders_res if o['portfolio_name'] == p_name])
+    else:
+        orders_count = len(live_orders_res)
+
+    alerts_list = db_bot.get_ticker_alerts_context(l_id)
+    alerts_count = len([al for al in alerts_list if not (p_id != 0 and al.get('portfolio_id') != p_id)])
+
+    text += format_broker_link_summary(alerts_count, orders_count)
+
+    builder.row(
+        types.InlineKeyboardButton(
+            text=f"🔔 Алерты ({alerts_count})",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                ticker_name=pure_symbol, sub_view="alerts", strategy_id=strategy_id
+            ).pack()
+        ),
+        types.InlineKeyboardButton(
+            text=f"📃 Приказы ({orders_count})",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                ticker_name=pure_symbol, sub_view="orders", strategy_id=strategy_id
+            ).pack()
+        )
+    )
+
+    if is_owner_view:
+        builder.row(types.InlineKeyboardButton(
+            text="🔗 Привязать ордер к плану",
+            callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+        ))
 
     # Footer, ряд 4 -- навигация (см. Claude/05_strategy_screen_and_kubiki.md): один общий кубик
     # вместо ручной сборки "назад" + "главное меню" по отдельности

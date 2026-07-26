@@ -12,22 +12,10 @@ from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 #from bot_handlers.summary import get_back_to_menu_keyboard
 from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_main_menu_keyboard
-from bot_handlers.bot_screens import format_premium_header
+from bot_handlers.bot_screens import format_premium_header, TREND_LABELS
 from analytics.analytics_utils import TickerEvaluator
 
 router = Router()
-
-# Отображение долгосрочного ценового тренда (signal_recommendation) -- намеренно
-# не BUY/SELL, чтобы не путать с реальными сигналами конкретных стратегий (см.
-# analytics/analytics_utils.py и BACKLOG.md). Fallback покрывает и старые значения
-# STRONG_BUY/SELL/NEUTRAL, ещё не перезаписанные ночной синхронизацией.
-TREND_LABELS = {
-    "UPTREND": ("📈", "РАСТЁТ"),
-    "DOWNTREND": ("📉", "ПАДАЕТ"),
-    "NEUTRAL": ("➡️", "БОКОВИК"),
-    "STRONG_BUY": ("📈", "РАСТЁТ"),
-    "SELL": ("📉", "ПАДАЕТ"),
-}
 
 @router.message(StateFilter(None), F.text)
 async def process_global_ticker_search(message: types.Message, state: FSMContext):

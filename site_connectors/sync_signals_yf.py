@@ -144,7 +144,18 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     sma_50 = float(history_series.tail(50).mean())
                     sma_100 = float(history_series.tail(100).mean())
                     sma_200 = float(history_series.tail(200).mean())
-                    
+
+                    # Блок 2 "Поведение" body-стандарта карточки тикера (см.
+                    # Claude/05_strategy_screen_and_kubiki.md, Claude/07_glossary.md): простое
+                    # % изменение цены закрытия за 1д/1нед/1мес/1год -- из той же истории, что
+                    # и SMA/RSI/MACD выше, а не отдельным сетевым запросом. Индексы -- назад от
+                    # последней точки (iloc[-1] == raw_yf_price): 1 торговый день/неделя/месяц;
+                    # "1 год" -- от самой старой точки скачанного окна (iloc[0]), не строго 365 дней.
+                    pct_1d = ((raw_yf_price / float(history_series.iloc[-2])) - 1) * 100 if total_days >= 2 else 0.0
+                    pct_1w = ((raw_yf_price / float(history_series.iloc[-6])) - 1) * 100 if total_days >= 6 else 0.0
+                    pct_1m = ((raw_yf_price / float(history_series.iloc[-22])) - 1) * 100 if total_days >= 22 else 0.0
+                    pct_1y = ((raw_yf_price / float(history_series.iloc[0])) - 1) * 100
+
                     # Расчет процентов отклонения
                     price_to_sma100_pct = ((raw_yf_price / sma_100) - 1) * 100
                     price_to_sma200_pct = ((raw_yf_price / sma_200) - 1) * 100
@@ -186,6 +197,12 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     pct200_sql = f"{price_to_sma200_pct:.2f}"
                     rsi_sql = f"{rsi_14:.2f}"
                     macd_sql = f"{macd_val * y_multiplier:.4f}"
+                    # Проценты изменения цены -- отношение, множитель валюты сокращается
+                    # (числитель и знаменатель в одних и тех же единицах), не применяем
+                    pct1d_sql = f"{pct_1d:.2f}"
+                    pct1w_sql = f"{pct_1w:.2f}"
+                    pct1m_sql = f"{pct_1m:.2f}"
+                    pct1y_sql = f"{pct_1y:.2f}"
 
                     # 🔥 АТОМАРНЫЙ UPDATE СТРОКИ В СУБД (БЕЗ ЗАТИРАНИЯ ДАТЫ ОТЧЕТОВ)
                     sql_update_yhoo = f"""
@@ -202,7 +219,11 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                             signal_price_to_sma200_pct = {pct200_sql}, 
                             signal_rsi = {rsi_sql},
                             signal_macd = {macd_sql},
-                            signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), 
+                            signal_pct_1d = {pct1d_sql},
+                            signal_pct_1w = {pct1w_sql},
+                            signal_pct_1m = {pct1m_sql},
+                            signal_pct_1y = {pct1y_sql},
+                            signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
                             fb_market = 'YAHOO_GLOBAL', 
                             fb_exchange = 'YAHOO_GLOBAL'
                         WHERE id = {db_id};
