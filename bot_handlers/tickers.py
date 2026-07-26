@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
@@ -17,13 +18,15 @@ from bot_handlers.bot_keyboards import generate_nav_back_keyboard
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
 from analytics.portfolio_auditor import audit_ticker_for_portfolio
+# Мультивалютность (BACKLOG.md #30) -- плоская FX-конвертация для сумм брокерского слоя
+from analytics.analytics_utils import convert_currency_amount
 
 # Инициализируем локальный роутер для модуля карточек акций
 router = Router()
 
 
 @router.callback_query(MenuAction.filter(F.action == "view_ticker"))
-async def process_view_ticker(callback: types.CallbackQuery, callback_data: MenuAction):
+async def process_view_ticker(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """Экран Уровня 3: Детализация конкретной бумаги с глубоким дебагом."""
     
     # 🧪 КРИТИЧЕСКИЙ ДЕБАГ №1: Смотрим, что физически прилетело из кнопки Telegram
@@ -123,14 +126,27 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     print(f"\n📈 [ТИКЕР ТРИГГЕР]: Рендеринг карточки `{pure_symbol}` (ID: {t_id}) | Портфель: {p_id} | Вкладка: {view}")
     await callback.answer(f"Анализ {pure_symbol}...")
 
-    # Вытаскиваем знак валюты листинга
-    sql_base_cur = f"SELECT sign FROM public.currencies WHERE id = '{currency_id}';"
-    cur_row = db_bot.execute_row(sql_base_cur)
-    sign = cur_row.get('sign', '$')
+    # Мультивалютность (BACKLOG.md #30): вся денежная информация выводится в
+    # base_currency СМОТРЯЩЕГО пользователя, не в валюте листинга/брокера. user_db_id
+    # уже определён при /start (см. bot_handlers/summary.py::cmd_start) и лежит в FSM --
+    # здесь просто читаем, не определяем личность заново. Курс считаем ОДИН РАЗ за
+    # рендер и передаём дальше во все блоки, вместо того чтобы каждый блок лез в БД сам.
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    target_currency = "USD"
+    if user_db_id:
+        user_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT base_currency FROM public.users WHERE id = {int(user_db_id)};")
+        if user_row and user_row.get("base_currency"):
+            target_currency = user_row["base_currency"]
+
+    target_cur_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT sign FROM public.currencies WHERE id = '{target_currency}';")
+    target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
+    fx_rate = await asyncio.to_thread(convert_currency_amount, db_bot, 1.0, currency_id, target_currency)
+    last_price_display = last_price * fx_rate
 
     # Единый header по стандарту UPort (см. Claude/05_strategy_screen_and_kubiki.md, BACKLOG.md #19) --
     # один на все варианты этого экрана, включая шторку алертов ниже
-    header_text = await format_premium_header(t_id, p_id)
+    header_text = await format_premium_header(t_id, p_id, target_currency=target_currency, target_sign=target_sign)
 
     # Динамически вычисляем типы отображения (Владение, Общий капитал, Исследование)
     is_owner_view = (p_id > 0 and p_id != 9999)
@@ -178,7 +194,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             for p_key in order_of_portfolios:
                 report_text += f" • 💼 {p_key}\n"
                 for al in grouped[p_key]:
-                    report_text += format_alert_condition_line(al, last_price, currency_sign=sign)
+                    report_text += format_alert_condition_line(al, last_price_display, currency_sign=target_sign, fx_rate=fx_rate)
         else:
             report_text += "   *Алертов нет.*\n"
 
@@ -250,7 +266,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                     if cat_orders:
                         block = f"{icon} **{label}:**\n"
                         for o in cat_orders:
-                            block += format_order_line(o, last_price)
+                            block += format_order_line(o, last_price_display, fx_rate=fx_rate, target_sign=target_sign)
                         blocks.append(block)
                 report_text += "\n".join(blocks)
             else:
@@ -270,7 +286,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                         if cat_orders:
                             cat_block = f" {icon} {label}:\n"
                             for o in cat_orders:
-                                cat_block += format_order_line(o, last_price)
+                                cat_block += format_order_line(o, last_price_display, fx_rate=fx_rate, target_sign=target_sign)
                             cat_blocks.append(cat_block)
                     owner_block += "\n".join(cat_blocks)
                     owner_blocks.append(owner_block)
@@ -305,7 +321,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
         text = header_text
         text += await format_position_financials(
-            portfolio_id=p_id, listing_id=l_id, last_price=last_price, sign=sign, strategy_id=strategy_id
+            portfolio_id=p_id, listing_id=l_id, last_price=last_price_display, sign=target_sign,
+            strategy_id=strategy_id, fx_rate=fx_rate
         )
         # Блок 6 стандарта body: где ещё в семье есть/запланировано, за вычетом
         # текущего портфеля/стратегии (уже показан Блоком 1 выше)

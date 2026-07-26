@@ -17,45 +17,83 @@ def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:
     return sign * max(1, round(abs(raw_step_qty)))
 
 
-def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_currency: str = "USD") -> float:
+def _get_fx_rate(db_instance, from_currency: str, to_currency: str) -> float:
     """
-    💸 УНИВЕРСАЛЬНЫЙ СКВОЗНОЙ КОНВЕРТЕР АНАЛИТИКИ
-    Переводит любую сумму из исходной валюты в базовую (по умолчанию USD).
-    Учитывает лондонские мультипликаторы пенсов и актуальные Форекс-курсы СУБД.
+    Курс FX БЕЗ учёта currencies.multiplier -- чистое отношение валют. `currency_rates`
+    хранит курсы только К USD (USD -- хаб, см. Claude/07_glossary.md), поэтому для
+    произвольной целевой валюты считаем в два шага: X -> USD -> Y. Возвращает 1.0
+    (с предупреждением в лог), если нужный курс не нашёлся -- не бросает исключение,
+    чтобы не ронять экран из-за отсутствующего курса.
+    """
+    curr_from = str(from_currency).strip().upper()
+    curr_to = str(to_currency).strip().upper()
+    if curr_from == curr_to:
+        return 1.0
+
+    if curr_to == "USD":
+        row = db_instance.execute_row(
+            f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_from}' AND to_currency = 'USD' LIMIT 1;"
+        )
+        if row and row.get("rate"):
+            return float(row["rate"])
+        logging.warning(f"⚠️ [FX]: Курс {curr_from} -> USD не найден! Используем 1.0")
+        return 1.0
+
+    # Хаб через USD: rate(X->USD) / rate(Y->USD)
+    row_from = db_instance.execute_row(
+        f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_from}' AND to_currency = 'USD' LIMIT 1;"
+    )
+    row_to = db_instance.execute_row(
+        f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_to}' AND to_currency = 'USD' LIMIT 1;"
+    )
+    if row_from and row_from.get("rate") and row_to and row_to.get("rate"):
+        return float(row_from["rate"]) / float(row_to["rate"])
+
+    logging.warning(f"⚠️ [FX]: Курс {curr_from} -> {curr_to} (через USD-хаб) не найден! Используем 1.0")
+    return 1.0
+
+
+def convert_currency_amount(db_instance, amount: float, from_currency: str, to_currency: str = "USD") -> float:
+    """
+    Плоская FX-конвертация БЕЗ multiplier -- для сумм БРОКЕРСКОГО слоя (`listings`,
+    `assets`, `orders`, `alerts`): они уже в "настоящих" единицах валюты (см. принцип
+    в Claude/07_glossary.md -- multiplier нужен только для канонического слоя `tickers`).
+    Используется телом карточки тикера (bot_screens.py) для показа сумм в валюте
+    СМОТРЯЩЕГО пользователя, а не валюте листинга/брокера.
     """
     if not amount:
         return 0.0
-        
+    rate = _get_fx_rate(db_instance, from_currency, to_currency)
+    return float(amount) * rate
+
+
+def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_currency: str = "USD") -> float:
+    """
+    💸 УНИВЕРСАЛЬНЫЙ СКВОЗНОЙ КОНВЕРТЕР АНАЛИТИКИ
+    Переводит любую сумму из исходной валюты в целевую (по умолчанию USD).
+    Учитывает лондонские мультипликаторы пенсов (`currencies.multiplier`) -- только
+    для сумм КАНОНИЧЕСКОГО слоя `tickers`/Yahoo (нативные единицы биржи, см.
+    Claude/07_glossary.md); для брокерского слоя (`listings`/`assets`/`orders`) —
+    см. convert_currency_amount() выше, там мультипликатор не нужен.
+    """
+    if not amount:
+        return 0.0
+
     curr_from = str(from_currency).strip().upper()
     curr_to = str(to_currency).strip().upper()
-    
-    # Если валюты совпадают, конвертация не требуется
+
     if curr_from == curr_to:
         return float(amount)
-        
+
     try:
-        # 1. Запрашиваем мультипликатор из справочника валют (напр. 0.0100 для GBP/пенсов)
         sql_mult = f"SELECT multiplier FROM public.currencies WHERE id = '{curr_from}' LIMIT 1;"
         res_mult = db_instance.execute_query(sql_mult)
         multiplier = float(res_mult[0]["multiplier"]) if res_mult and res_mult[0].get("multiplier") else 1.0
-        
-        # 2. Запрашиваем актуальный макрокурс Форекс из таблицы currency_rates
-        sql_rate = f"""
-            SELECT rate FROM public.currency_rates 
-            WHERE from_currency = '{curr_from}' AND to_currency = '{curr_to}' 
-            LIMIT 1;
-        """
-        res_rate = db_instance.execute_query(sql_rate)
-        
-        if not res_rate:
-            logging.warning(f"⚠️ [Analytics Converter]: Курс для пары {curr_from} -> {curr_to} не найден! Используем 1.0")
-            rate = 1.0
-        else:
-            rate = float(res_rate[0]["rate"])
-            
+
+        rate = _get_fx_rate(db_instance, curr_from, curr_to)
+
         # 🔥 ФИНАНСОВАЯ МАТЕМАТИКА UPORT: применяем мультипликатор, затем умножаем на курс
-        clean_usd_value = (float(amount) * multiplier) * rate
-        return clean_usd_value
+        return (float(amount) * multiplier) * rate
 
     except Exception as err:
         logging.error(f"❌ [Analytics Converter Error]: Сбой конвертации {curr_from} в {curr_to}: {err}")

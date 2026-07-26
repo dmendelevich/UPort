@@ -2,6 +2,7 @@ import logging
 import asyncio
 import yfinance as yf
 from database import db_bot
+from analytics.analytics_utils import convert_currency_amount, convert_to_base_currency
 
 # ─── СТАНДАРТ ШИРИНЫ ЭКРАНОВ (header/body/footer) -- см. Claude/05_strategy_screen_and_kubiki.md,
 # BACKLOG.md #19. Используется, чтобы решить, влезает ли строка целиком, или её нужно красиво
@@ -100,10 +101,10 @@ def wrap_param_line(prefix: str, params: list, separator: str = " — ", width: 
     return "\n".join(lines)
 
 
-async def format_premium_header(ticker_id: int, portfolio_id: int = 0) -> str:
+async def format_premium_header(ticker_id: int, portfolio_id: int = 0, target_currency: str = "USD", target_sign: str = "$") -> str:
     """
     Универсальный сборщик премиальной шапки тикера UPort (общий header/body/footer
-    стандарт -- см. Claude/05_strategy_screen_and_kubiki.md, BACKLOG.md #19).
+    стандарт -- см. Claude/05_strategy_screen_and_kubiki.md, BACKLOG.md #19, #30).
 
     Цена берётся из public.listings, если бумага уже легализована у какого-то брокера
     (предпочтительно -- у брокера portfolio_id, если он есть; иначе любой существующий
@@ -112,6 +113,15 @@ async def format_premium_header(ticker_id: int, portfolio_id: int = 0) -> str:
     Finance. Источник цены (короткое имя брокера или "YF") подписан явно, чтобы не
     путать слои (см. BACKLOG.md #21 -- смешение канонической цены tickers и брокерской
     цены listings уже давало реальный баг).
+
+    Мультивалютность (BACKLOG.md #30): итоговая цена выводится в target_currency
+    (валюта СМОТРЯЩЕГО пользователя, считается один раз за рендер вызывающим кодом --
+    см. tickers.py). Заодно починен живой баг: currencies.multiplier раньше применялся
+    НАОБОРОТ -- к цене из listings (брокерский слой, уже в настоящих единицах, см.
+    Claude/07_glossary.md), а не к цене из Yahoo (канонический слой tickers, нативные
+    единицы биржи -- например, пенсы для LSE). target_currency="USD" по умолчанию --
+    старое поведение для вызывающего кода, который ещё не прокидывает валюту смотрящего
+    (ticker_search.py, strategies.py, strategy_resolver.py -- вне текущего ретрофита).
     """
     try:
         # 1. Запрашиваем паспорт инструмента
@@ -144,29 +154,26 @@ async def format_premium_header(ticker_id: int, portfolio_id: int = 0) -> str:
         l_row = await asyncio.to_thread(db_bot.execute_row, sql_l)
 
         if l_row:
-            # Цена из брокерского листинга -- своя валюта/единицы, применяем multiplier слоя listings
+            # Цена из брокерского листинга -- брокерский слой, уже в НАСТОЯЩИХ единицах
+            # (см. Claude/07_glossary.md) -- multiplier тут не нужен, только курс FX
             raw_price = float(l_row.get("last_price") or 0.0)
             curr_id = l_row.get("currency_id", "USD")
-            c_row = await asyncio.to_thread(
-                db_bot.execute_row, f"SELECT sign, multiplier FROM public.currencies WHERE id = '{curr_id}' LIMIT 1;"
-            )
-            sign = c_row.get("sign", f"{curr_id} ")
-            multiplier = float(c_row.get("multiplier") or 1.0)
-            live_price = raw_price * multiplier
+            live_price = await asyncio.to_thread(convert_currency_amount, db_bot, raw_price, curr_id, target_currency)
             price_source = l_row.get("broker_short_name") or "брокер"
         else:
             # Листинга ещё нет нигде -- берём цену напрямую с Yahoo Finance, канонический
-            # тикер/валюта -- из public.tickers (без multiplier листингов, слои не смешиваем)
+            # тикер/валюта -- из public.tickers, нативные единицы биржи (см.
+            # Claude/07_glossary.md) -- ЗДЕСЬ multiplier нужен, раньше не применялся вообще
             ticker_name_map = t.get("ticker_name_map") or {}
             yahoo_symbol = ticker_name_map.get("YAHOO", display_symbol)
             try:
                 fast_info = await asyncio.to_thread(lambda: yf.Ticker(yahoo_symbol).fast_info)
-                live_price = float(fast_info.get("last_price") or fast_info.get("open") or 0.0)
+                raw_price = float(fast_info.get("last_price") or fast_info.get("open") or 0.0)
             except Exception as yf_err:
                 logging.warning(f"⚠️ [BOT SCREENS]: Не удалось получить живую цену Yahoo для {yahoo_symbol}: {yf_err}")
-                live_price = 0.0
+                raw_price = 0.0
             curr_id = t.get("currency_id") or "USD"
-            sign = "$" if curr_id == "USD" else ("£" if curr_id == "GBP" else f"{curr_id} ")
+            live_price = await asyncio.to_thread(convert_to_base_currency, db_bot, raw_price, curr_id, target_currency)
             price_source = "YF"
 
         # 3. Формируем остальные текстовые маркеры дизайна
@@ -179,7 +186,7 @@ async def format_premium_header(ticker_id: int, portfolio_id: int = 0) -> str:
         badge_line = wrap_screen_line("🏷️ ", f"{type_badge}, {exch_code}")
         symbol_price_line = justify_line(
             f"🌟 **{display_symbol}**",
-            f"💵 {price_source}: **{sign}{live_price:,.2f}**"
+            f"💵 {price_source}: **{target_sign}{live_price:,.2f}**"
         )
 
         header = (
@@ -208,7 +215,7 @@ STRATEGY_MICRO_LABELS = {
 }
 
 
-async def format_position_financials(portfolio_id: int, listing_id: int, last_price: float, sign: str, strategy_id: int = 0) -> str:
+async def format_position_financials(portfolio_id: int, listing_id: int, last_price: float, sign: str, strategy_id: int = 0, fx_rate: float = 1.0) -> str:
     """
     Блок 1 стандарта body тикера (см. Claude/05_strategy_screen_and_kubiki.md): финансовая
     характеристика позиции -- количество, цена входа vs баланс, вложено vs сейчас,
@@ -221,6 +228,11 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     -> по доле, закреплённой за стратегией (v_strategy_assets_full.allocated_quantity).
     Цена входа (avg_price) в обоих случаях ОДНА И ТА ЖЕ портфельная -- у strategy_assets
     нет собственной цены входа, это осознанное упрощение модели данных, не баг.
+
+    Мультивалютность (BACKLOG.md #30): last_price/sign вызывающий код (tickers.py) уже
+    передаёт в валюте СМОТРЯЩЕГО пользователя; fx_rate -- тот же курс (нативная валюта
+    листинга -> валюта смотрящего), посчитанный один раз за рендер, применяется здесь
+    только к avg_price (единственная сумма, которую эта функция достаёт из БД сама).
     """
     if strategy_id > 0:
         sql = f"""
@@ -246,7 +258,7 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
         return "❌ Позиция по этой бумаге не найдена.\n"
 
     qty = float(row["quantity"] or 0)
-    avg_price = float(row["avg_price"] or 0)
+    avg_price = float(row["avg_price"] or 0) * fx_rate
     holding_days = int(row.get("holding_days") or 0)
 
     cost_basis = qty * avg_price
@@ -332,23 +344,29 @@ def classify_order(order: dict) -> str:
     return "buy" if int(order["oper"]) in (1, 2) else "sell"
 
 
-def format_order_line(order: dict, current_price: float, show_owner: bool = False) -> str:
+def format_order_line(order: dict, current_price: float, fx_rate: float = 1.0, target_sign: str = None, show_owner: bool = False) -> str:
     """
     Блок 5 стандарта body: одна строка одного активного ордера + строка "до цели" --
     общий формат для владельческого и семейного контекста. Раньше эта логика была
     продублирована почти дословно в трёх местах tickers.py (заявки/стопы владельца,
     семейная группировка), и не показывала расстояние до цены исполнения.
+
+    Мультивалютность (BACKLOG.md #30): order["p"]/order["stop_price"] -- нативная
+    валюта листинга (брокерский слой), fx_rate переводит их в валюту смотрящего
+    (current_price вызывающий код уже передаёт готовым в этой же валюте). target_sign
+    по умолчанию None -> используем order["sign"] (нативный) для обратной совместимости,
+    если вызывающий код ещё не прокидывает валюту смотрящего.
     """
     qty = float(order["q"])
-    sign = order["sign"]
+    sign = target_sign if target_sign is not None else order["sign"]
     age = order["order_age_days"]
     category = classify_order(order)
     _, _, direction = ORDER_CATEGORIES[category]
 
     if category in ("stop_loss", "take_profit"):
-        target_price = float(order["stop_price"] or order["p"])
+        target_price = float(order["stop_price"] or order["p"]) * fx_rate
     else:
-        target_price = float(order["p"] or 0)
+        target_price = float(order["p"] or 0) * fx_rate
 
     main_line = f"  • {qty:.0f} шт. по {sign}{target_price:,.2f} ({age} дн. назад)"
     if show_owner:
@@ -358,26 +376,31 @@ def format_order_line(order: dict, current_price: float, show_owner: bool = Fals
     return f"{main_line}\n{distance_line}\n"
 
 
-def format_alert_condition_line(alert: dict, current_price: float, currency_sign: str = "$") -> str:
+def format_alert_condition_line(alert: dict, current_price: float, currency_sign: str = "$", fx_rate: float = 1.0) -> str:
     """
     Блок 5 стандарта body: одна строка условия алерта -- статус + условие + (где
     применимо) расстояние до цели. Группировка по портфелям -- на стороне вызывающего
     кода (см. tickers.py), эта функция отвечает только за содержимое одной строки.
     Раньше алерт занимал развёрнутый блок в 4-5 строк (создатель/заметка/время) --
     пользователь сознательно урезал до одной строки для беглого просмотра (2026-07-26).
-    currency_sign -- знак валюты листинга (не всегда "$"), берётся у вызывающего кода.
+    currency_sign -- знак ЦЕЛЕВОЙ валюты смотрящего (BACKLOG.md #30), fx_rate --
+    курс нативная валюта листинга -> валюта смотрящего, применяется к ценовым полям
+    алерта (`trigger_price`/`trigger_price_min/max`, брокерский слой) -- current_price
+    вызывающий код уже передаёт готовым в этой же валюте.
     """
     status_icon = "⏳" if alert["is_active"] else "🔥"
     condition_type = alert.get("condition_type")
 
     if alert.get("trigger_price_min") is not None and alert.get("trigger_price_max") is not None:
-        condition = f"{currency_sign}{float(alert['trigger_price_min']):,.2f}-{currency_sign}{float(alert['trigger_price_max']):,.2f}"
+        p_min = float(alert['trigger_price_min']) * fx_rate
+        p_max = float(alert['trigger_price_max']) * fx_rate
+        condition = f"{currency_sign}{p_min:,.2f}-{currency_sign}{p_max:,.2f}"
         distance = ""
     elif alert.get("trigger_pct") is not None:
         condition = f"{condition_type}{float(alert['trigger_pct'])}%"
         distance = ""
     else:
-        target_price = float(alert.get("trigger_price") or 0)
+        target_price = float(alert.get("trigger_price") or 0) * fx_rate
         condition = f"{condition_type} {currency_sign}{target_price:,.2f}"
         direction = "up" if condition_type == ">" else "down"
         distance = " " + format_distance_to_target(current_price, target_price, direction, currency_sign=currency_sign)
