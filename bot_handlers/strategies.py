@@ -6,7 +6,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from database import db_bot
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_screens import format_strategy_header
+from bot_handlers.bot_screens import format_strategy_header, format_premium_header
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text
 from analytics.portfolio_inspector import PortfolioInspector
 from analytics.analytics_utils import TickerEvaluator
@@ -298,8 +298,9 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
             pass
         return
 
-    symbol = report.get("symbol", f"ticker_id={t_id}")
-    text = f"🔍 *{symbol}* — {info['strategy_name']}\n\n"
+    header_text = await format_premium_header(t_id, p_id)
+    text = header_text
+    text += f"🎯 Обоснование для «{info['strategy_name']}»:\n\n"
     for key, m in info["metrics"].items():
         icon = STATUS_ICONS.get(m["status"], "•")
         label = METRIC_LABELS.get(key, key)

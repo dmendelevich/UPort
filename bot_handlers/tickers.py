@@ -7,6 +7,8 @@ from aiogram.exceptions import TelegramBadRequest
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
+from bot_handlers.bot_screens import format_premium_header
+from bot_handlers.bot_keyboards import generate_tab_switch_keyboard, generate_nav_back_keyboard
 #from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
@@ -111,6 +113,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     cur_row = db_bot.execute_row(sql_base_cur)
     sign = cur_row.get('sign', '$')
 
+    # Единый header по стандарту UPort (см. Claude/05_strategy_screen_and_kubiki.md, BACKLOG.md #19) --
+    # один на все варианты этого экрана, включая шторку алертов ниже
+    header_text = await format_premium_header(t_id, p_id)
+
     # Динамически вычисляем типы отображения (Владение, Общий капитал, Исследование)
     is_owner_view = (p_id > 0 and p_id != 9999)
     is_family_view = (p_id == 0)
@@ -139,11 +145,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # Вытаскиваем все алерты тикера через наше новое реляционное ядро
         alerts_list = db_bot.get_ticker_alerts_context(l_id)
         
-        # Формируем стерильную шапку карточки UPort
-        report_text = f"🌟 ***  {pure_symbol}  ***\n"
-        report_text += f"{l_row['company_name'] if l_row else 'Инструмент UPort'}\n"
-        report_text += f"💵 Текущая цена рынка: **${last_price:,.2f}**\n\n"
-        report_text += f"🎯 **СПИСОК АЛЕРТОВ И ТРИГГЕРОВ:**\n"
+        # Единый header карточки UPort
+        report_text = header_text
+        report_text += f"\n🎯 **СПИСОК АЛЕРТОВ И ТРИГГЕРОВ:**\n"
         
         if alerts_list:
             for idx, al in enumerate(alerts_list, 1):
@@ -187,20 +191,17 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                     report_text += f" • Заметка: *{al['note']}*\n"
         else:
             report_text += "   *Активные и сработавшие алерты по данной бумаге в СУБД отсутствуют.*\n"
-            
-        report_text += f"───────\n"
-        
-        # Строим пульт смарт-навигации для возврата строго в радары исследования
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(
-            text="🔙 Назад к радарам слежения", 
-            callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
-        ))
-        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-        
+
+        # Footer по стандарту (см. Claude/05_strategy_screen_and_kubiki.md): без явной фразы --
+        # переход к тексту кнопок сразу очевиден, разделитель без фразы не нужен
+        nav_markup = generate_nav_back_keyboard(
+            one_step_back_text="🔙 Назад к радарам слежения",
+            full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+        )
+
         print("🖥️ [ТИКЕР АЛЕРТЫ]: Отправляю изолированную шторку в Telegram...")
         try:
-            await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
+            await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
         except TelegramBadRequest:
             pass
         return # 🚨 ПРЕДОХРАНИТЕЛЬ: Выходим из метода, полностью блокируя выполнение старого кода кошелька!
@@ -213,12 +214,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         p_name = owner_row['portfolio_name'] if owner_row else f"П{p_id}"
         u_name = owner_row['owner_name'] if owner_row else "User"
         
-        text = f"🌟 ***  {pure_symbol}  ***\n"
-        text += f"{l_row['company_name']}\n"
+        text = header_text
         text += f"В ПОРТФЕЛЕ {p_name} ({u_name})\n"
-        text += f"───────\n"
-        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
-        
+
         if owner_row:
             qty = float(owner_row['quantity'])
             avg_price = float(owner_row['avg_price'] or 0)
@@ -235,11 +233,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     elif is_family_view:
         # Вариант 2: В Сводном семейном капитале
-        text = f"🌟 ***  {pure_symbol}  ***\n"
-        text += f"{l_row['company_name']}\n"
-        text += f"В ОБЩЕМ КАПИТАЛЕ СЕМЬИ\n"
-        text += f"───────\n"
-        text += f"💵 Текущая цена рынка: **{sign}{last_price:,.2f}**\n\n"
+        text = header_text
+        text += f"В ОБЩЕМ КАПИТАЛЕ СЕМЬИ\n\n"
         text += f"👥 **Распределение по счетам семьи:**\n"
         
         total_family_qty = 0.0
@@ -278,19 +273,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     elif is_research_portfolio:
         # Вариант 4: Исследование В ПОРТФЕЛЕ (Фокус конкретной стратегии)
-        text = f"🌟 ***  {pure_symbol}  ***\n"
-        text += f"{l_row['company_name']}\n"
+        text = header_text
         text += f"ИССЛЕДОВАНИЕ ПО СТРАТЕГИИ\n"
-        text += f"───────\n"
-        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
         text += f"🎯 Статус: Наблюдение по декларации счета\n"
     else:
         # Вариант 3: Исследование ВООБЩЕ (Глобальная песочница 9999)
-        text = f"🌟 ***  {pure_symbol}  ***\n"
-        text += f"{l_row['company_name'] if 'company_name' in l_row else 'Unknown'}\n"
+        text = header_text
         text += f"ГЛОБАЛЬНОЕ ИССЛЕДОВАНИЕ СИСТЕМЫ\n"
-        text += f"───────\n"
-        text += f"💵 Текущая цена: **{sign}{last_price:,.2f}**\n"
         text += f"🎯 Статус: В списке глобального наблюдения (Watchlist)\n\n"
         
         if all_holders:
@@ -316,11 +305,16 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     text += f"───────\n"
 
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="💼 Владение и Ордера", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id).pack()),
-        types.InlineKeyboardButton(text="📊 Метрики Yahoo", callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo", strategy_id=strategy_id).pack())
+    # Footer, ряд 2 -- информационные кнопки (переключатель вкладок), текущая скрывается
+    # (см. Claude/05_strategy_screen_and_kubiki.md)
+    tab_markup = generate_tab_switch_keyboard(
+        tabs=[
+            ("💼 Владение и Ордера", MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id)),
+            ("📊 Метрики Yahoo", MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="yahoo", strategy_id=strategy_id)),
+        ],
+        current_sub_view=view
     )
+    builder = InlineKeyboardBuilder.from_markup(tab_markup)
 
     # 5. ЛОГИКА РАЗВОДКИ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "yahoo":
@@ -469,18 +463,23 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # =========================================================================
 
 
-    # Смарт-навигация назад в зависимости от точки входа инвестора
+    # Footer, ряд 4 -- навигация (см. Claude/05_strategy_screen_and_kubiki.md): один общий кубик
+    # вместо ручной сборки "назад" + "главное меню" по отдельности
     if strategy_id > 0:
-        builder.row(types.InlineKeyboardButton(text="🔙 К стратегии", callback_data=MenuAction(action="view_strategy", strategy_id=strategy_id, portfolio_id=p_id).pack()))
+        back_text = "🔙 К стратегии"
+        back_callback = MenuAction(action="view_strategy", strategy_id=strategy_id, portfolio_id=p_id).pack()
     elif is_owner_view:
-        builder.row(types.InlineKeyboardButton(text="🔙 К списку активов", callback_data=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()))
+        back_text = "🔙 К списку активов"
+        back_callback = MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()
     elif is_family_view:
-        builder.row(types.InlineKeyboardButton(text="🔙 К сводке капитала", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="assets").pack()))
+        back_text = "🔙 К сводке капитала"
+        back_callback = MenuAction(action="view_portfolio", portfolio_id=0, sub_view="assets").pack()
     else:
-        builder.row(types.InlineKeyboardButton(text="🔙 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-        
-    # Системная кнопка безусловного сброса в корень UPort
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        back_text = "🔙 В главное меню"
+        back_callback = MenuAction(action="main_menu").pack()
+
+    nav_markup = generate_nav_back_keyboard(one_step_back_text=back_text, full_back_callback=back_callback)
+    builder.attach(InlineKeyboardBuilder.from_markup(nav_markup))
 
     print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")
 

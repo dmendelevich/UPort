@@ -1,7 +1,6 @@
 import re
 import logging
 import asyncio
-import yfinance as yf
 from aiogram import Router, types, F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -13,6 +12,7 @@ from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 #from bot_handlers.summary import get_back_to_menu_keyboard
 from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_main_menu_keyboard
+from bot_handlers.bot_screens import format_premium_header
 from analytics.analytics_utils import TickerEvaluator
 
 router = Router()
@@ -115,19 +115,10 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
             return
 
         ticker_name_map = t.get("ticker_name_map") or {}
-        yahoo_symbol = ticker_name_map.get("YAHOO", raw_text)
-
-        # Сетевой перехват живой цены из Yahoo
-        ticker_obj = yf.Ticker(yahoo_symbol)
-        fast_info = ticker_obj.fast_info
-        live_price = float(fast_info.get("last_price") or fast_info.get("open") or t.get("current_price") or 0)
-        
-        currency_id = t.get("currency_id", "USD")
-        sign = "$" if currency_id == "USD" else ("£" if currency_id == "GBP" else f"{currency_id} ")
 
     except Exception as data_err:
-        logging.error(f"🚨 [SEARCH ERROR]: Сбой сбора котировок для id={ticker_id}: {data_err}")
-        await status_msg.edit_text("❌ Сбой экспресс-анализа сети Yahoo Finance.")
+        logging.error(f"🚨 [SEARCH ERROR]: Сбой сбора паспортных данных для id={ticker_id}: {data_err}")
+        await status_msg.edit_text("❌ Сбой экспресс-анализа паспорта бумаги.")
         return
 
     # 🧮 БЫСТРЫЙ И СВЕРХЛЕГКИЙ ЗАПРОС КОМПОНЕНТОВ ДЛЯ ДЕКОМПОЗИЦИИ ETF
@@ -154,41 +145,29 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
     except Exception as e:
         logging.error(f"⚠️ Ошибка экспресс-анализа таблиц листингов и холдингов ETF: {e}")
 
-    # 5. ШАГ 5: ФОРМИРОВАНИЕ ОБЛЕГЧЕННОЙ ПРЕМИАЛЬНОЙ ШАТОРКИ ПАСПОРТА
+    # 5. ШАГ 5: Единый header UPort (см. Claude/05_strategy_screen_and_kubiki.md, BACKLOG.md #19)
+    # + техническая сводка, специфичная для этого экрана (тренд/брокер FB/RSI)
+    header_text = await format_premium_header(ticker_id=ticker_id, portfolio_id=0)
+
     raw_trend = str(t.get('signal_recommendation') or 'NEUTRAL').upper()
     trend_icon, trend_label = TREND_LABELS.get(raw_trend, ("🔸", raw_trend.replace('_', ' ')))
     fb_ticker_name = ticker_name_map.get("FB", "UNSUPPORTED")
     fb_line = f"• Брокер FB: `{fb_ticker_name}`\n" if fb_ticker_name != "UNSUPPORTED" else ""
     asset_type = str(t.get('asset_type', 'UNDEFINED')).upper().strip()
 
-    # Динамически формируем ультра-компактный маркер типа актива для самого верха шапки
-    if asset_type == 'EQUITY':
-        type_badge = "🏷️ **Акция**"
-    elif asset_type == 'ETF':
-        type_badge = "🧱 **Фонд (ETF)**"
-    else:
-        type_badge = "⚙️ **ИНСТРУМЕНТ**"
-
-    # == НОВАЯ ПЛОТНАЯ СМАРТ-ШАПКА И ОБЩИЙ ТЕХНИЧЕСКИЙ ТОНУС ==
     report_text = (
-        f"🔬 **{t.get('symbol', raw_text)}**\n"
-        f"🏢 {t.get('company_name', 'Unknown Corporation')[:35]}\n"
-        f"{type_badge}\n"
-        f"───────\n"
-        f"💵 Цена рынка: **{sign}{live_price:,.2f}**\n"
+        f"{header_text}"
         f"📢 Долгосрочный тренд: **{trend_icon} {trend_label}**\n"
         f"{fb_line}"
         f"📊 **Техника:** RSI:{float(t.get('signal_rsi') or 0):.1f} | "
         f"100д:{float(t.get('signal_price_to_sma100_pct') or 0):+.1f}% | "
         f"200д:{float(t.get('signal_price_to_sma200_pct') or 0):+.1f}%\n"
-        f"───────\n"
     )
 
     # == УЛЬТРА-КОРОТКИЙ ВЫВОД ДЛЯ АКЦИЙ ==
     if asset_type == 'EQUITY' or asset_type == 'UNDEFINED':
         fcf_val = float(t.get('free_cash_flow') or 0) / 1_000_000
         report_text += (
-            f"📦 Сектор: {t.get('sector', 'N/A')}\n"
             f"🧬 **Фундаментал:**\n"
             f" • Див. доходность: **{float(t.get('dividend_yield') or 0):.2f}%**\n"
             f" • Свободный кэш (FCF): **${fcf_val:,.1f}M**\n"
