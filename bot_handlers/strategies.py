@@ -160,8 +160,8 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
         else:
             text += "\n   *Бумаг в этой стратегии пока нет.*"
 
-    text += "\n───────\n"
-
+    # Разделителя без фразы после него не ставим (см. Claude/05_strategy_screen_and_kubiki.md) --
+    # дальше сразу идут кнопки, без явного текста-мостика
     ideas_builder = InlineKeyboardBuilder()
     if system_key in ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING"):
         ideas_builder.row(types.InlineKeyboardButton(
