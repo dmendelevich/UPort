@@ -250,7 +250,7 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
         text = f"💡 *Инвестидеи для стратегии* (топ-{len(top10)}):\n\nНажми на бумагу, чтобы увидеть обоснование."
         for cand in top10:
             builder.row(types.InlineKeyboardButton(
-                text=f"{cand['symbol']} (ranking={cand['ranking_value']})",
+                text=f"{cand['symbol']} (Ранжир: {float(cand['ranking_value']):.2f})",
                 callback_data=MenuAction(
                     action="view_idea_reason",
                     portfolio_id=p_id,
