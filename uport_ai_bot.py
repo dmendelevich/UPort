@@ -23,12 +23,11 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 # ИМПОРТ НАШИХ СЛЕДУЮЩИХ РОУТЕРОВ (Будем раскомментировать по мере сборки)
-from bot_handlers import backlog, summary, portfolios, tickers, settings, watchlist, ticker_search, portfolio_admin, strategies, order_pipelines
+from bot_handlers import summary, portfolios, tickers, settings, watchlist, ticker_search, portfolio_admin, strategies, order_pipelines
 
 # РЕГИСТРАЦИЯ ГИРЛЯНДЫ МОДУЛЕЙ
 # Диспетчер спускает сигналы сверху вниз по этой цепочке
 dp.include_routers(
-    backlog.router,
     summary.router,
     portfolios.router,
     tickers.router,
