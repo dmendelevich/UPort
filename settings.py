@@ -16,3 +16,13 @@ TV_FALLEN_ANGEL_RSI_MAX = 45.0
 # ─── ГЕОГРАФИЯ И ПЛОЩАДКИ ТОРГОВЛИ TRADINGVIEW ───
 TV_DEFAULT_SCREENER = "america"
 TV_PREFERRED_EXCHANGES = ["NASDAQ", "NYSE"]
+
+# ─── PRICE MOVE WATCHER (индикатор резкого движения цены, Блок 2 карточки тикера) ───
+# см. Claude/05_strategy_screen_and_kubiki.md. Окно задаётся в МИНУТАХ, а не в числе
+# отсчётов -- устойчиво к изменению частоты синка котировок (QUOTES_SYNC_INTERVAL,
+# cron_scheduler.py): расчёт ищет ближайшую по времени котировку не позже "N минут
+# назад" по recorded_at, а не N-ю по счёту запись.
+PRICE_MOVE_WATCHER_WINDOW_MINUTES = 45      # окно для расчёта % движения цены
+PRICE_MOVE_WATCHER_BUFFER_SIZE = 20         # запас отсчётов в кольцевом буфере (не привязан жёстко к окну выше)
+PRICE_MOVE_WATCHER_THRESHOLD_PCT = 5.0      # % движения, начиная с которого это тревога
+PRICE_MOVE_WATCHER_PERIODIC_SEC = 3600      # повтор уведомления, пока условие не снято (см. alerts.periodic у ФБ)

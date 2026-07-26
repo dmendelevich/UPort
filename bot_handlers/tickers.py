@@ -313,7 +313,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # Claude/05_strategy_screen_and_kubiki.md) -- оба свойство самого тикера, общее
     # для всех 4 контекстов владения выше, поэтому один общий разделитель на пару
     text += f"{SEPARATOR_LINE}\n"
-    text += await format_ticker_behavior(t_id)
+    text += await format_ticker_behavior(t_id, listing_id=l_id, portfolio_id=p_id)
     text += await format_market_signals(t_id)
 
     # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
@@ -414,4 +414,22 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
     except TelegramBadRequest as e:
         print(f"⚠️ Ошибка редактирования шторки тикера: {e}")
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "stop_price_alert"))
+async def process_stop_price_alert(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Кнопка "🛑 Остановить" у уведомления PriceMoveWatcher (см. Claude/05_...): помечает
+    алерт неактивным -- вотчер больше не будет повторять уведомление по нему (см.
+    analytics/price_move_watcher.py, поле periodic).
+    """
+    alert_id = callback_data.alert_id
+    db_sys.execute_query(
+        f"UPDATE public.alerts SET is_active = false, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) WHERE id = {int(alert_id)};"
+    )
+    await callback.answer("Остановлено.")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
         pass

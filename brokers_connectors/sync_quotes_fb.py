@@ -12,6 +12,7 @@ from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
 from analytics.stale_order_watcher import check_stale_pending_orders
 from analytics.ladder_step_watcher import check_ladder_step_triggers
+from analytics.price_move_watcher import check_price_moves
 
 def sync_quotes_fb_autonomous():
     """
@@ -117,6 +118,13 @@ def sync_quotes_fb_autonomous():
         check_ladder_step_triggers(db_sys)
     except Exception as ladder_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки готовности следующего шага лесенки: {ladder_err}")
+
+    # PriceMoveWatcher (см. Claude/05_strategy_screen_and_kubiki.md): резкое движение цены
+    # за окно времени -- та же причина вызова здесь, а не в дайджесте (рыночно-зависимо)
+    try:
+        check_price_moves(db_sys)
+    except Exception as price_move_err:
+        logging.error(f"⚠️ [REST FB]: Сбой проверки резких движений цены (PriceMoveWatcher): {price_move_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла

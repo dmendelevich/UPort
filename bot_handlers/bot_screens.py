@@ -524,15 +524,22 @@ async def format_market_signals(ticker_id: int) -> str:
     )
 
 
-async def format_ticker_behavior(ticker_id: int) -> str:
+async def format_ticker_behavior(ticker_id: int, listing_id: int = 0, portfolio_id: int = 0) -> str:
     """
     Блок 2 стандарта body тикера (см. Claude/05_strategy_screen_and_kubiki.md,
     Claude/07_glossary.md): "Поведение" -- простое % изменение цены за 1д/1нед/1мес/1год
     (`tickers.signal_pct_1d/1w/1m/1y`, считаются в site_connectors/sync_signals_yf.py из
     того же годового ряда Yahoo, что и SMA/RSI в Блоке 4 -- но это ДРУГОЕ число: не
     отклонение от сглаженной средней, а буквальное "на сколько изменилась цена", проще
-    читать новичку). Индикатор обвала -- заглушка, механизм (буфер последних котировок)
-    сознательно отложен (решение 2026-07-26).
+    читать новичку).
+
+    Индикатор резкого движения -- больше не заглушка: PriceMoveWatcher
+    (analytics/price_move_watcher.py) взводит алерт (source_type='uport') в той же
+    таблице public.alerts, что и брокерские; здесь просто читаем, есть ли активный.
+    portfolio_id>0 -- фильтруем на алерт ИМЕННО ЭТОГО портфеля (нашли живой баг: без
+    фильтра карточка П10 показывала алерт П136, просто как "последний по времени" --
+    у разных портфелей, держащих одну бумагу, алерты отдельные записи, см.
+    price_move_watcher.py). portfolio_id==0 (семейный свод) -- без фильтра, любой.
     """
     t = await asyncio.to_thread(
         db_bot.execute_row,
@@ -549,6 +556,20 @@ async def format_ticker_behavior(ticker_id: int) -> str:
     pct_1m = float(t.get('signal_pct_1m') or 0)
     pct_1y = float(t.get('signal_pct_1y') or 0)
 
+    move_alert = None
+    if listing_id:
+        portfolio_filter = f"AND portfolio_id = {int(portfolio_id)}" if portfolio_id else ""
+        move_alert = await asyncio.to_thread(
+            db_bot.execute_row,
+            f"""
+                SELECT note FROM public.alerts
+                WHERE listing_id = {int(listing_id)} AND source_type = 'uport' AND is_active = true
+                {portfolio_filter}
+                ORDER BY triggered_at DESC LIMIT 1;
+            """
+        )
+    move_line = f"📢 {move_alert['note']}\n" if move_alert else "✅ Резких движений нет\n"
+
     # Моноширинный code-спан только для этой колонки чисел -- обычный пропорциональный
     # шрифт сообщений даёт "кривой" правый край на нескольких строках подряд (посимвольное
     # выравнивание тут недостаточно, в отличие от одной строки шапки), а backtick-код
@@ -559,7 +580,7 @@ async def format_ticker_behavior(ticker_id: int) -> str:
         f"`{justify_line('Неделя', f'{pct_1w:+.1f}%')}`\n"
         f"`{justify_line('Месяц', f'{pct_1m:+.1f}%')}`\n"
         f"`{justify_line('Год', f'{pct_1y:+.1f}%')}`\n"
-        f"🚧 Индикатор обвала: в разработке\n"
+        f"{move_line}"
     )
 
 
