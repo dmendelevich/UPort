@@ -44,7 +44,18 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     t_name = getattr(callback_data, 'ticker_name', '') or ''
     view = callback_data.sub_view or "owner"
     strategy_id = getattr(callback_data, 'strategy_id', 0) or 0  # Контекст "пришли из карточки стратегии" для кнопки "назад"
-    
+
+    # Контекст "откуда пришли в шторку алертов" (BACKLOG.md №31): по умолчанию watchlist
+    # (единственный путь входа исторически, watchlist.py его не меняет), но если пришли
+    # из самой карточки тикера (Блок 5), sub_view приходит как "alerts/from_ticker" --
+    # тот же приём составного sub_view, что и в strategy_resolver.py ("transfer/N/N").
+    alerts_origin = "watchlist"
+    if view.startswith("alerts"):
+        parts = view.split("/", 1)
+        view = parts[0]
+        if len(parts) > 1:
+            alerts_origin = parts[1]
+
     print(f"   • Итоговые переменные после парсинга: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
 
     # 1. РЕЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ТИКЕРА И ПЛОЩАДКИ БРОКЕРА
@@ -172,11 +183,21 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             report_text += "   *Алертов нет.*\n"
 
         # Footer по стандарту (см. Claude/05_strategy_screen_and_kubiki.md): без явной фразы --
-        # переход к тексту кнопок сразу очевиден, разделитель без фразы не нужен
-        nav_markup = generate_nav_back_keyboard(
-            one_step_back_text="🔙 Назад к радарам слежения",
-            full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
-        )
+        # переход к тексту кнопок сразу очевиден, разделитель без фразы не нужен.
+        # "Назад" зависит от того, откуда реально пришли (BACKLOG.md №31, alerts_origin выше)
+        if alerts_origin == "from_ticker":
+            nav_markup = generate_nav_back_keyboard(
+                one_step_back_text="🔙 К карточке бумаги",
+                full_back_callback=MenuAction(
+                    action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                    ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
+                ).pack()
+            )
+        else:
+            nav_markup = generate_nav_back_keyboard(
+                one_step_back_text="🔙 Назад к радарам слежения",
+                full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+            )
 
         print("🖥️ [ТИКЕР АЛЕРТЫ]: Отправляю изолированную шторку в Telegram...")
         try:
@@ -372,7 +393,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             text=f"🔔 Алерты ({alerts_count})",
             callback_data=MenuAction(
                 action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                ticker_name=pure_symbol, sub_view="alerts", strategy_id=strategy_id
+                ticker_name=pure_symbol, sub_view="alerts/from_ticker", strategy_id=strategy_id
             ).pack()
         ),
         types.InlineKeyboardButton(
