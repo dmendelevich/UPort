@@ -569,8 +569,8 @@ class Database:
         user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res else 1.0
 
         accounts_sql = """
-            SELECT 
-                acc.user_id, acc.portfolio_id, acc.cash_available, acc.assets_value,
+            SELECT
+                acc.user_id, acc.portfolio_id, acc.broker_id, acc.cash_available, acc.assets_value,
                 p.name as portfolio_name, COALESCE(r.rate, 1.0) as to_usd_rate
             FROM public.accounts acc
             LEFT JOIN public.portfolios p ON acc.portfolio_id = p.id
@@ -594,7 +594,9 @@ class Database:
                 portfolios_dict[p_id] = {
                     "id": p_id,
                     "name": acc['portfolio_name'] or f"Портфель #{p_id}",
-                    "is_owner": (acc['user_id'] == user_id)
+                    "is_owner": (acc['user_id'] == user_id),
+                    "owner_id": acc['user_id'],
+                    "broker_id": acc['broker_id']
                 }
 
         final_assets = total_assets_usd / user_to_usd_rate

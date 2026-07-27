@@ -129,16 +129,30 @@ async def process_summary_callback(callback: types.CallbackQuery):
     )
 
     builder = InlineKeyboardBuilder()
-    
+
+    # Группируем портфели по (владелец, брокер) -- одна строка на пару, рядом с кнопками
+    # портфелей группы отдельная кнопка "Счета" (накопительный счёт принадлежит владельцу
+    # и брокеру, а не одному портфелю -- см. обсуждение 2026-07-27). Если у владельца
+    # несколько портфелей у одного брокера, в строке будет несколько кнопок портфелей + одна "Счета".
+    groups = {}
     for p in summary["portfolios"]:
-        icon = "👤" if p["is_owner"] else "💼"
-        builder.row(types.InlineKeyboardButton(
-            text=f"{icon} {p['name']}", 
-            callback_data=MenuAction(action="view_portfolio", portfolio_id=p['id'], sub_view="").pack()
+        key = (p["owner_id"], p["broker_id"])
+        groups.setdefault(key, []).append(p)
+
+    for (owner_id, broker_id), group_portfolios in groups.items():
+        row_buttons = []
+        for p in group_portfolios:
+            icon = "👤" if p["is_owner"] else "💼"
+            row_buttons.append(types.InlineKeyboardButton(
+                text=f"{icon} {p['name']}",
+                callback_data=MenuAction(action="view_portfolio", portfolio_id=p['id'], sub_view="").pack()
+            ))
+        row_buttons.append(types.InlineKeyboardButton(
+            text="🏦 Счета",
+            callback_data=MenuAction(action="view_accounts", user_id=owner_id, broker_id=broker_id).pack()
         ))
-    
-    builder.row(types.InlineKeyboardButton(text="📦 Сводный портфель семьи", callback_data=MenuAction(action="view_portfolio", portfolio_id=0, sub_view="").pack()))
-    
+        builder.row(*row_buttons)
+
     # Вытаскиваем накопленные в цикле кнопки срезов портфелей
     portfolios_markup = builder.as_markup()
     
@@ -153,3 +167,80 @@ async def process_summary_callback(callback: types.CallbackQuery):
     final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
     
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+
+
+@router.callback_query(MenuAction.filter(F.action == "view_accounts"))
+async def process_view_accounts(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Экран "Счета": полная раскладка по счетам ОДНОГО владельца у ОДНОГО брокера --
+    торговые счета всех его портфелей у этого брокера + накопительный счёт (см. обсуждение
+    2026-07-27 -- накопительный счёт принадлежит владельцу+брокеру, а не одному портфелю,
+    поэтому вынесен из карточки портфеля сюда)."""
+    owner_id = callback_data.user_id
+    broker_id = callback_data.broker_id
+
+    await callback.answer("Собираю счета...")
+
+    header_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT u.name AS owner_name, b.name AS broker_name
+            FROM public.users u, public.brokers b
+            WHERE u.id = {int(owner_id)} AND b.id = {int(broker_id)};
+        """
+    )
+    owner_name = header_row.get("owner_name", "Unknown") if header_row else "Unknown"
+    broker_name = header_row.get("broker_name", "Unknown") if header_row else "Unknown"
+
+    accounts_rows = await asyncio.to_thread(
+        db_bot.execute_query,
+        f"""
+            SELECT a.account_type, a.portfolio_id, p.name AS portfolio_name,
+                   a.currency_id, cur.sign, a.cash_available, a.cash_reserved
+            FROM public.accounts a
+            JOIN public.currencies cur ON a.currency_id = cur.id
+            LEFT JOIN public.portfolios p ON a.portfolio_id = p.id
+            WHERE a.user_id = {int(owner_id)} AND a.broker_id = {int(broker_id)}
+            ORDER BY a.account_type DESC, a.portfolio_id, a.currency_id;
+        """
+    )
+    accounts_rows = accounts_rows if isinstance(accounts_rows, list) else ([accounts_rows] if accounts_rows else [])
+
+    text = f"🏦 **Счета — {owner_name} ({broker_name})**\n───────\n"
+
+    trade_by_portfolio = {}
+    deposit_lines = []
+    for a in accounts_rows:
+        available = float(a['cash_available'])
+        reserved = float(a['cash_reserved'])
+        if available == 0 and reserved == 0:
+            continue
+        free = available - reserved
+        sign = a['sign'] or a['currency_id'] or "$"
+        line = f"• {a['currency_id']}: **{sign}{available:,.2f}** (🕊️ {sign}{free:,.2f} / 🔒 {sign}{reserved:,.2f})"
+        if a['account_type'] == 'trade':
+            p_name = a.get('portfolio_name') or f"Портфель #{a['portfolio_id']}"
+            trade_by_portfolio.setdefault(p_name, []).append(line)
+        else:
+            deposit_lines.append(line)
+
+    if trade_by_portfolio:
+        text += "💵 **Торговые счета:**\n"
+        for p_name, lines in trade_by_portfolio.items():
+            text += f"📦 {p_name}:\n" + "\n".join(lines) + "\n"
+        text += "\n"
+
+    if deposit_lines:
+        text += "💰 **Накопительный счёт:**\n" + "\n".join(deposit_lines) + "\n"
+
+    if not trade_by_portfolio and not deposit_lines:
+        text += "Счетов не найдено.\n"
+
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="🔙 К общей сводке",
+        full_back_callback=MenuAction(action="show_summary").pack()
+    )
+
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    except TelegramBadRequest:
+        pass

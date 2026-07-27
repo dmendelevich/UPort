@@ -44,7 +44,7 @@ SHORT_STRATEGY_LABELS = {
 async def process_view_portfolio(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """Экран Уровня 2: Детализация конкретного счета семьи (Интерфейс шторок Состав / Паспорт)."""
     p_id = callback_data.portfolio_id
-    view = callback_data.sub_view  # 'assets', 'passport' или "" (разводка по умолчанию)
+    view = callback_data.sub_view or "assets"  # по умолчанию -- "Состав портфеля" (см. фидбек 2026-07-27)
     
     print(f"\n💼 [ПОРТФЕЛЬ ТРИГГЕР]: Сборка аналитического паспорта для portfolio_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка аналитического паспорта...")
@@ -96,52 +96,28 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         content_strategies_count = count_row.get("cnt", 0) if count_row else 0
 
     # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (С ЧЕСТНЫМ ПОДСЧЕТОМ АЛЕРТОВ 3NF)
-    if p_id == 0:
-        # Сценарий Б: Сводный портфель семьи — суммируем вообще все активные алерты клана
-        assets_query = """
-            SELECT l.broker_symbol AS full_ticker, SUM(a.quantity) as quantity,
-                   MIN(a.listing_id) as listing_id, l.currency_id,
-                   AVG(a.avg_price) as avg_price, AVG(l.last_price) as last_price,
-                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(MAX(a.position_opened_at), CURRENT_TIMESTAMP)))::int AS holding_days,
-                   COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
-            FROM public.assets a
-            JOIN public.listings l ON a.listing_id = l.id
-            LEFT JOIN public.alerts al ON al.listing_id = l.id AND al.is_active = true
-            WHERE a.quantity > 0
-            GROUP BY l.broker_symbol, l.currency_id
-            ORDER BY l.broker_symbol ASC;
-        """
-        cash_query = """
-            SELECT p.name AS portfolio_name, u.name AS owner_name, acc.account_type, 
-                   acc.currency_id, cur.sign, acc.cash_available, acc.cash_reserved
-            FROM public.accounts acc
-            JOIN public.users u ON acc.user_id = u.id
-            JOIN public.currencies cur ON acc.currency_id = cur.id
-            LEFT JOIN public.portfolios p ON acc.portfolio_id = p.id
-            ORDER BY acc.account_type ASC, u.id ASC;
-        """
-    else:
-        # Сценарий А: Частный счет — считаем алерты строго этого портфеля
-        assets_query = f"""
-            SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id,
-                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days,
-                   COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
-            FROM public.assets a
-            JOIN public.listings l ON a.listing_id = l.id
-            LEFT JOIN public.alerts al ON al.listing_id = a.listing_id
-                                      AND al.portfolio_id = a.portfolio_id
-                                      AND al.is_active = true
-            WHERE a.portfolio_id = {p_id} AND a.quantity > 0
-            GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id, a.position_opened_at
-            ORDER BY l.broker_symbol ASC;
-        """
-        cash_query = f"""
-            SELECT a.account_number, a.account_type, a.currency_id, a.cash_available, a.cash_reserved, cur.sign
-            FROM public.accounts a
-            JOIN public.currencies cur ON a.currency_id = cur.id
-            WHERE a.portfolio_id = {p_id}
-               OR (a.account_type = 'deposit' AND a.user_id = (SELECT owner_id FROM public.portfolios WHERE id = {p_id}));
-        """
+    assets_query = f"""
+        SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id,
+               EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days,
+               COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
+        FROM public.assets a
+        JOIN public.listings l ON a.listing_id = l.id
+        LEFT JOIN public.alerts al ON al.listing_id = a.listing_id
+                                  AND al.portfolio_id = a.portfolio_id
+                                  AND al.is_active = true
+        WHERE a.portfolio_id = {p_id} AND a.quantity > 0
+        GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id, a.position_opened_at
+        ORDER BY l.broker_symbol ASC;
+    """
+    # Только торговый счёт ЭТОГО портфеля -- накопительный принадлежит владельцу, а не
+    # портфелю (один накопительный на нескольких портфелях одного брокера был бы задвоен),
+    # полная раскладка по всем счетам переехала в отдельный экран "🏦 Счета" (см. summary.py)
+    cash_query = f"""
+        SELECT a.currency_id, a.cash_available, a.cash_reserved, cur.sign
+        FROM public.accounts a
+        JOIN public.currencies cur ON a.currency_id = cur.id
+        WHERE a.portfolio_id = {p_id} AND a.account_type = 'trade';
+    """
 
     # Делаем вызовы через права бота db_bot
     assets_res_raw = db_bot.execute_query(assets_query)
@@ -170,12 +146,9 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     profit_sign = "+" if total_assets_profit >= 0 else "-"
 
     # 3. ФОРМИРОВАНИЕ СТЕРИЛЬНОЙ И ДОРОГОЙ ШАПКИ
-    if p_id == 0:
-        report_text = "📦 **Портфель сводный**\n"
-    else:
-        report_text = f"📦 **ПОРТФЕЛЬ {meta.get('name', '')}**\n"
-        report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
-        report_text += f"🎯 Стратегии: **{content_strategies_count}**\n"
+    report_text = f"📦 **ПОРТФЕЛЬ {meta.get('name', '')}**\n"
+    report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
+    report_text += f"🎯 Стратегии: **{content_strategies_count}**\n"
 
     report_text += f"───────\n"
     report_text += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
@@ -187,52 +160,18 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     cash_res = cash_res_raw if isinstance(cash_res_raw, list) else ([cash_res_raw] if cash_res_raw else [])
     
     trade_cash_lines = []
-    aggregated_deposits = {}
-    
     for c in cash_res:
         available = float(c['cash_available'])
         reserved = float(c['cash_reserved'])
+        if available == 0 and reserved == 0:
+            continue
         free = available - reserved
         o_sign = c['sign'] or c['currency_id'] or "$"
-        
-        if c['account_type'] == 'trade' and (available != 0 or reserved != 0):
-            if p_id == 0:
-                p_title = c.get('portfolio_name', 'Неизвестный')
-                trade_cash_lines.append(f"• {p_title}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
-            else:
-                trade_cash_lines.append(f"• {c['currency_id']}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
-                
-        elif c['account_type'] in ('deposit', 'D') and available != 0:
-            if p_id == 0:
-                owner = c.get('owner_name', 'Неизвестный')
-                key = (owner, o_sign)
-                aggregated_deposits[key] = aggregated_deposits.get(key, 0.0) + available
-            else:
-                key = (meta.get('owner', 'Unknown'), o_sign)
-                aggregated_deposits[key] = aggregated_deposits.get(key, 0.0) + available
+        trade_cash_lines.append(f"• {c['currency_id']}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
 
-    if p_id == 0:
-        if trade_cash_lines:
-            report_text += "💵 **КЭШ НА ТОРГОВЫХ СЧЕТАХ:**\n"
-            report_text += "\n".join(trade_cash_lines) + "\n\n"
-        if aggregated_deposits:
-            report_text += "💰 **НАКОПИТЕЛЬНЫЕ D-СЧЕТА:**\n"
-            for (owner, sign), total_dep_val in aggregated_deposits.items():
-                report_text += f"• {owner}: **{sign}{total_dep_val:,.2f}**\n"
-            report_text += "\n"
-    else:
-        if trade_cash_lines or aggregated_deposits:
-            report_text += "💵 **КЭШ НА ТОРГОВЫХ СЧЕТАХ:**\n"
-            if trade_cash_lines:
-                report_text += "\n".join(trade_cash_lines) + "\n\n"
-            if aggregated_deposits:
-                report_text += "💰 **НАКОПИТЕЛЬНЫЕ D-СЧЕТА:**\n"
-                for (owner, sign), total_dep_val in aggregated_deposits.items():
-                    report_text += f"• {sign}{total_dep_val:,.2f}\n"
-
-    if view == "passport" and p_id > 0:
-        report_text += f"───────\n"
-        report_text += await format_portfolio_risk_audit_rollup(p_id)
+    if trade_cash_lines:
+        report_text += "💵 **Кэш на торговом счёте:**\n"
+        report_text += "\n".join(trade_cash_lines) + "\n\n"
 
     report_text += f"───────\n"
 
@@ -296,29 +235,19 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             report_text += "\n   *Ценные бумаги в данном портфеле отсутствуют.*"
 
     elif view == "passport":
-        print("📊 [ПОРТФЕЛЬ]: Рендеринг усредненного фундаментального паспорта Yahoo...")
-        avg = passport["averages"]
+        report_text += "📊 **Паспорт качества:**\n"
+        if p_id > 0:
+            report_text += await format_portfolio_risk_audit_rollup(p_id)
         report_text += (
-            f"📊 **Паспорт качества портфеля (Yahoo):**\n"
-            f" • Ср. окупаемость P/E: **{avg['pe_trailing']:.1f}** | Прогноз: **{avg['pe_forward']:.1f}**\n"
-            f" • Коэффициент PEG: **{avg['peg_ratio']:.2f}**\n"
-            f" • Цена к выручке P/S: **{avg['price_to_sales']:.1f}** | К балансу P/B: **{avg['price_to_book']:.1f}**\n"
-            f" • Стоимость бизнеса EV/EBITDA: **{avg['ev_to_ebitda']:.1f}**\n"
-            f" ───────────────────\n"
-            f" • Долг к капиталу D/E: **{avg['debt_to_equity']:.1f}%**\n"
-            f" • Ликвидность (Current Ratio): **{avg['current_ratio']:.2f}**\n"
-            f" • Чистая маржинальность: **{avg['profit_margin']:.1f}%**\n"
-            f" • Рентабельность ROE: **{avg['return_on_equity']:.1f}%**\n"
-            f" ───────────────────\n"
-            f" • Совокупные дивиденды: **{avg['dividend_yield']:.2f}%**\n"
-            f" • Общий свободный кэш компаний: **${avg['free_cash_flow_m']:,.1f}M**\n"
+            "🚧 Остальные аспекты качества (риск от каждой стратегии, от их\n"
+            "совокупности и от набора бумаг вне стратегий) — отдельная тема позже.\n"
         )
 
     elif view == "strategies":
         print("🎯 [ПОРТФЕЛЬ]: Рендеринг списка активных стратегий...")
         report_text += "🎯 **Активные стратегии портфеля:**"
 
-        if p_id <= 0 or p_id == 9999:
+        if p_id == 9999:
             report_text += "\n   *Стратегии применимы только к персональному портфелю конкретного брокера.*"
         else:
             inspector = await asyncio.to_thread(PortfolioInspector, db_bot, p_id)
@@ -366,7 +295,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets")),
         ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport")),
     ]
-    if p_id > 0 and p_id != 9999:
+    if p_id != 9999:
         tabs.append(("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies")))
 
     tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)

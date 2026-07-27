@@ -4,40 +4,28 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     """
     Рассчитывает средневзвешенные фундаментальные показатели портфеля.
     Сверяет фактические метрики со стратегическими и налоговыми лимитами (IPS).
-    Если portfolio_id == 0 — анализирует Сводный портфель всей семьи.
     """
     # 1. ЗАГРУЖАЕМ ЦЕЛЕВЫЕ ЛИМИТЫ (IPS) ИЗ БАЗЫ ДАННЫХ
-    if portfolio_id == 0:
-        limits = {
-            "name": "Сводный портфель семьи",
-            "strategy_type": "Family Consolidated Core",
-            "risk_profile": "Moderate",
-            "min_cash_reserve_pct": 10.00,
-            "max_ticker_weight_pct": 15.00,
-            "max_portfolio_div_yield_pct": 2.00,
-            "target_return_pct": 12.00
-        }
-    else:
-        p_sql = f"""
-            SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type, p.risk_profile, 
-                   p.min_cash_reserve_pct, p.max_ticker_weight_pct, p.max_portfolio_div_yield_pct, p.target_return_pct
-            FROM public.portfolios p
-            JOIN public.users u ON p.owner_id = u.id
-            WHERE p.id = {portfolio_id};
-        """
+    p_sql = f"""
+        SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type, p.risk_profile,
+               p.min_cash_reserve_pct, p.max_ticker_weight_pct, p.max_portfolio_div_yield_pct, p.target_return_pct
+        FROM public.portfolios p
+        JOIN public.users u ON p.owner_id = u.id
+        WHERE p.id = {portfolio_id};
+    """
 
-        p_res = db_instance.execute_query(p_sql)
-        if not p_res:
-            logging.error(f"❌ Портфель с ID {portfolio_id} не найден при аудите.")
-            return {}
-            
-        # Безопасное извлечение одиночной строки из ответа шлюза
-        if isinstance(p_res, list) and len(p_res) > 0:
-            limits = p_res[0]
-        elif isinstance(p_res, dict):
-            limits = p_res
-        else:
-            limits = {}
+    p_res = db_instance.execute_query(p_sql)
+    if not p_res:
+        logging.error(f"❌ Портфель с ID {portfolio_id} не найден при аудите.")
+        return {}
+
+    # Безопасное извлечение одиночной строки из ответа шлюза
+    if isinstance(p_res, list) and len(p_res) > 0:
+        limits = p_res[0]
+    elif isinstance(p_res, dict):
+        limits = p_res
+    else:
+        limits = {}
 
     # 🔥 ФИКС ИНИЦИАЛИЗАЦИИ: Объявляем лимиты НАВЕРХУ для защиты от UnboundLocalError
     min_cash_limit = float(limits.get("min_cash_reserve_pct", 10.0))
@@ -45,12 +33,11 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     max_div_limit = float(limits.get("max_portfolio_div_yield_pct", 2.0))
 
     # 2. СБОР ФАКТИЧЕСКИХ ОСТАТКОВ КЭША К ДОЛЛАРУ США
-    cash_filter = "" if portfolio_id == 0 else f"WHERE acc.portfolio_id = {portfolio_id}"
     cash_sql = f"""
         SELECT acc.cash_available, COALESCE(r.rate, 1.0) as to_usd_rate
         FROM public.accounts acc
         LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
-        {cash_filter};
+        WHERE acc.portfolio_id = {portfolio_id};
     """
     cash_res = db_instance.execute_query(cash_sql)
     if not isinstance(cash_res, list):
@@ -61,9 +48,8 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
         total_cash_usd += float(c['cash_available'] or 0) * float(c['to_usd_rate'])
 
     # 3. СБОР ФАКТИЧЕСКИХ ЦЕННЫХ БУМАГ (ЧЕРЕЗ LISTINGS)
-    assets_filter = "" if portfolio_id == 0 else f"WHERE a.portfolio_id = {portfolio_id}"
     assets_sql = f"""
-        SELECT 
+        SELECT
             l.broker_symbol AS full_ticker, t.company_name, a.quantity, l.last_price,
             t.pe_trailing, t.pe_forward, t.peg_ratio, t.price_to_sales, t.price_to_book, t.ev_to_ebitda,
             t.debt_to_equity, t.current_ratio, t.quick_ratio,
@@ -74,7 +60,7 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
         JOIN public.listings l ON a.listing_id = l.id
         JOIN public.tickers t ON l.ticker_id = t.id
         LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-        {assets_filter} AND a.quantity > 0;
+        WHERE a.portfolio_id = {portfolio_id} AND a.quantity > 0;
     """
     assets_res = db_instance.execute_query(assets_sql)
     if not isinstance(assets_res, list):

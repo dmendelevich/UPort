@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_screens import format_strategy_header, format_premium_header, format_strategy_capital_block, format_strategy_risk_audit_block
-from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard
 from analytics.analytics_utils import TickerEvaluator, convert_currency_amount, CONTENT_STRATEGY_SYSTEM_KEYS
 
 router = Router()
@@ -38,9 +38,10 @@ STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "N/A": "➖", "WARNING": "⚠️"}
 
 @router.callback_query(MenuAction.filter(F.action == "view_strategy"))
 async def process_view_strategy(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
-    """Карточка стратегии: план/факт капитала, риск-аудит лимитов, список бумаг внутри стратегии."""
+    """Карточка стратегии: план/факт капитала виден всегда, вкладки Состав/Паспорт качества (см. фидбек 2026-07-27 -- та же структура, что у портфеля)."""
     s_id = callback_data.strategy_id
     p_id = callback_data.portfolio_id
+    view = callback_data.sub_view or "assets"  # дефолт -- "Состав", как и у портфеля
 
     await callback.answer("Собираю карточку стратегии...")
 
@@ -87,66 +88,82 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
     target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
     fx_rate = await asyncio.to_thread(convert_currency_amount, db_bot, 1.0, "USD", target_currency)
 
-    # 1. План/факт капитала + 2. Риск-аудит лимитов -- общие кубики body (bot_screens.py),
-    # переиспользуемые в будущем карточкой портфеля (агрегированно по стратегиям)
+    # 1. План/факт капитала -- ВСЕГДА виден, не зависит от вкладки (тот же принцип "пульса",
+    # что у "Активы в бумагах" портфеля) -- общий кубик body (bot_screens.py)
     text += await format_strategy_capital_block(p_id, s_id, target_sign=target_sign, fx_rate=fx_rate)
-    text += await format_strategy_risk_audit_block(p_id, s_id)
-
-    # 3. Список позиций внутри стратегии -- через универсальный слоистый view (см. Claude/02_universal_views.md)
-    sql_positions = f"""
-        SELECT listing_id, allocated_quantity, symbol, avg_price, listing_last_price
-        FROM public.v_strategy_assets_full
-        WHERE strategy_id = {int(s_id)} AND allocated_quantity > 0
-        ORDER BY symbol ASC;
-    """
-    positions = await asyncio.to_thread(db_bot.execute_query, sql_positions)
-    positions = positions if isinstance(positions, list) else []
-
-    text += "📦 **Бумаги в этой стратегии:**"
 
     builder = InlineKeyboardBuilder()
-    if positions:
-        for pos in positions:
-            qty = float(pos["allocated_quantity"])
-            avg_p = float(pos["avg_price"] or 0)
-            last_p = float(pos["listing_last_price"] or 0)
 
-            position_cost = qty * avg_p
-            position_market = qty * last_p
-            position_profit = position_market - position_cost
-            position_profit_pct = (position_profit / position_cost * 100) if position_cost > 0 else 0.0
-
-            if position_profit > 0.01:
-                crystal = "🟢"
-            elif position_profit < -0.01:
-                crystal = "🔴"
-            else:
-                crystal = "🔹"
-
-            button_text = generate_portfolio_button_text(
-                crystal=crystal,
-                ticker=pos["symbol"],
-                quantity=int(qty),
-                profit=position_profit,
-                profit_pct=position_profit_pct
-            )
-
-            builder.row(types.InlineKeyboardButton(
-                text=button_text,
-                callback_data=MenuAction(
-                    action="view_ticker",
-                    portfolio_id=p_id,
-                    listing_id=int(pos["listing_id"]),
-                    ticker_name=pos["symbol"],
-                    sub_view="owner",
-                    strategy_id=int(s_id)
-                ).pack()
-            ))
+    if view == "passport":
+        # 2. Паспорт качества -- пока только риск-аудит лимитов (готовый кубик), остальные
+        # аспекты качества стратегии -- отдельная тема позже (тот же принцип, что у портфеля)
+        text += "📊 **Паспорт качества:**\n"
+        text += await format_strategy_risk_audit_block(p_id, s_id)
+        text += "🚧 Остальные аспекты качества стратегии — отдельная тема позже.\n"
     else:
-        if system_key == "CASH_RESERVE":
-            text += "\n   *Бумаг в этой стратегии нет — это нормально для Кэш/Резерва.*"
+        # 3. Список позиций внутри стратегии -- через универсальный слоистый view (см. Claude/02_universal_views.md)
+        sql_positions = f"""
+            SELECT listing_id, allocated_quantity, symbol, avg_price, listing_last_price
+            FROM public.v_strategy_assets_full
+            WHERE strategy_id = {int(s_id)} AND allocated_quantity > 0
+            ORDER BY symbol ASC;
+        """
+        positions = await asyncio.to_thread(db_bot.execute_query, sql_positions)
+        positions = positions if isinstance(positions, list) else []
+
+        text += "📦 **Бумаги в этой стратегии:**"
+
+        if positions:
+            for pos in positions:
+                qty = float(pos["allocated_quantity"])
+                avg_p = float(pos["avg_price"] or 0)
+                last_p = float(pos["listing_last_price"] or 0)
+
+                position_cost = qty * avg_p
+                position_market = qty * last_p
+                position_profit = position_market - position_cost
+                position_profit_pct = (position_profit / position_cost * 100) if position_cost > 0 else 0.0
+
+                if position_profit > 0.01:
+                    crystal = "🟢"
+                elif position_profit < -0.01:
+                    crystal = "🔴"
+                else:
+                    crystal = "🔹"
+
+                button_text = generate_portfolio_button_text(
+                    crystal=crystal,
+                    ticker=pos["symbol"],
+                    quantity=int(qty),
+                    profit=position_profit,
+                    profit_pct=position_profit_pct
+                )
+
+                builder.row(types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=MenuAction(
+                        action="view_ticker",
+                        portfolio_id=p_id,
+                        listing_id=int(pos["listing_id"]),
+                        ticker_name=pos["symbol"],
+                        sub_view="owner",
+                        strategy_id=int(s_id)
+                    ).pack()
+                ))
         else:
-            text += "\n   *Бумаг в этой стратегии пока нет.*"
+            if system_key == "CASH_RESERVE":
+                text += "\n   *Бумаг в этой стратегии нет — это нормально для Кэш/Резерва.*"
+            else:
+                text += "\n   *Бумаг в этой стратегии пока нет.*"
+
+    # Переключатель вкладок Состав/Паспорт качества -- тот же общий кубик, что у портфеля
+    tabs = [
+        ("📦 Состав", MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id, sub_view="assets")),
+        ("📊 Паспорт качества", MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id, sub_view="passport")),
+    ]
+    tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)
+    for tab_row in tab_switch_markup.inline_keyboard:
+        builder.row(*tab_row)
 
     # Разделителя без фразы после него не ставим (см. Claude/05_strategy_screen_and_kubiki.md) --
     # дальше сразу идут кнопки, без явного текста-мостика
