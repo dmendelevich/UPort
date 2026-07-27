@@ -266,7 +266,7 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     market_val = qty * last_price
     profit = market_val - cost_basis
     profit_pct = (profit / cost_basis * 100) if cost_basis > 0 else 0.0
-    p_sign = "+" if profit >= 0 else ""
+    p_sign = "+" if profit >= 0 else "-"
     clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
 
     if strategy_id > 0:
@@ -278,7 +278,7 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     label_line = justify_line(left_label, f"📦 {clean_qty} шт.")
     entry_line = f"💵 Вход:\nпо {sign}{avg_price:,.2f} на {sign}{cost_basis:,.2f}"
     current_line = f"💰 Сейчас:\nпо {sign}{last_price:,.2f} на {sign}{market_val:,.2f}"
-    profit_line = wrap_screen_line("📈 ", f"{p_sign}{sign}{profit:,.2f} ({p_sign}{profit_pct:.1f}%)")
+    profit_line = wrap_screen_line("📈 ", f"{p_sign}{sign}{abs(profit):,.2f} ({p_sign}{abs(profit_pct):.1f}%)")
 
     if holding_days > 0:
         annualized_pct = profit_pct * 365.0 / holding_days
