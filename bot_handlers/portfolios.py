@@ -2,15 +2,18 @@ import asyncio
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
 
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text, generate_main_menu_keyboard
+from bot_handlers.bot_screens import format_portfolio_risk_audit_rollup
 
 # Импортируем независимый аналитический модуль аудитора портфеля
 from analytics.portfolio_auditor import generate_portfolio_passport
 from analytics.portfolio_inspector import PortfolioInspector
+from analytics.analytics_utils import convert_currency_amount, CONTENT_STRATEGY_SYSTEM_KEYS
 
 # Инициализируем локальный роутер для модуля портфелей
 router = Router()
@@ -38,13 +41,35 @@ SHORT_STRATEGY_LABELS = {
 #     return "🔔" + "".join(superscripts.get(char, char) for char in str(count))
 
 @router.callback_query(MenuAction.filter(F.action == "view_portfolio"))
-async def process_view_portfolio(callback: types.CallbackQuery, callback_data: MenuAction):
+async def process_view_portfolio(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """Экран Уровня 2: Детализация конкретного счета семьи (Интерфейс шторок Состав / Паспорт)."""
     p_id = callback_data.portfolio_id
     view = callback_data.sub_view  # 'assets', 'passport' или "" (разводка по умолчанию)
     
     print(f"\n💼 [ПОРТФЕЛЬ ТРИГГЕР]: Сборка аналитического паспорта для portfolio_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка аналитического паспорта...")
+
+    # Мультивалютность: та же схема, что у карточек тикера/стратегии -- всё выводим в
+    # base_currency СМОТРЯЩЕГО пользователя, не в родной валюте листинга. Здесь источников
+    # валют может быть НЕСКОЛЬКО РАЗНЫХ (у каждой бумаги своя) в одном рендере, поэтому курс
+    # кэшируем по коду валюты (fx_by_currency), а не считаем один общий rate, как у тикера.
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    target_currency = "USD"
+    if user_db_id:
+        user_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT base_currency FROM public.users WHERE id = {int(user_db_id)};")
+        if user_row and user_row.get("base_currency"):
+            target_currency = user_row["base_currency"]
+
+    target_cur_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT sign FROM public.currencies WHERE id = '{target_currency}';")
+    target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
+    fx_by_currency = {}
+
+    def get_fx(from_currency: str) -> float:
+        cur = from_currency or "USD"
+        if cur not in fx_by_currency:
+            fx_by_currency[cur] = convert_currency_amount(db_bot, 1.0, cur, target_currency)
+        return fx_by_currency[cur]
 
     # 1. Вызываем модуль аудитора для расчета рисков и соответствия стратегии
     passport = await asyncio.to_thread(generate_portfolio_passport, p_id, db_bot)
@@ -54,21 +79,36 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         return
 
     meta = passport["meta"]
-    
+
+    # Счётчик стратегий для шапки -- только СОДЕРЖАТЕЛЬНЫЕ (Кэш/Резерв и Неопределённая
+    # не считаются, у портфеля нет единой "стратегии", legacy-поле strategy_type изживаем)
+    content_strategies_count = 0
+    if p_id > 0:
+        keys_str = ", ".join(f"'{k}'" for k in CONTENT_STRATEGY_SYSTEM_KEYS)
+        count_row = await asyncio.to_thread(
+            db_bot.execute_row,
+            f"""
+                SELECT COUNT(*)::int AS cnt FROM public.strategies s
+                JOIN public.strategy_templates st ON s.template_id = st.id
+                WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true AND st.system_key IN ({keys_str});
+            """
+        )
+        content_strategies_count = count_row.get("cnt", 0) if count_row else 0
+
     # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (С ЧЕСТНЫМ ПОДСЧЕТОМ АЛЕРТОВ 3NF)
     if p_id == 0:
         # Сценарий Б: Сводный портфель семьи — суммируем вообще все активные алерты клана
         assets_query = """
             SELECT l.broker_symbol AS full_ticker, SUM(a.quantity) as quantity,
-                   MIN(a.listing_id) as listing_id,
+                   MIN(a.listing_id) as listing_id, l.currency_id,
                    AVG(a.avg_price) as avg_price, AVG(l.last_price) as last_price,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(MAX(a.position_opened_at), CURRENT_TIMESTAMP)))::int AS holding_days,
                    COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
-            FROM public.assets a 
+            FROM public.assets a
             JOIN public.listings l ON a.listing_id = l.id
             LEFT JOIN public.alerts al ON al.listing_id = l.id AND al.is_active = true
-            WHERE a.quantity > 0 
-            GROUP BY l.broker_symbol 
+            WHERE a.quantity > 0
+            GROUP BY l.broker_symbol, l.currency_id
             ORDER BY l.broker_symbol ASC;
         """
         cash_query = """
@@ -83,16 +123,16 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     else:
         # Сценарий А: Частный счет — считаем алерты строго этого портфеля
         assets_query = f"""
-            SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id,
+            SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days,
                    COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
-            FROM public.assets a 
+            FROM public.assets a
             JOIN public.listings l ON a.listing_id = l.id
-            LEFT JOIN public.alerts al ON al.listing_id = a.listing_id 
-                                      AND al.portfolio_id = a.portfolio_id 
+            LEFT JOIN public.alerts al ON al.listing_id = a.listing_id
+                                      AND al.portfolio_id = a.portfolio_id
                                       AND al.is_active = true
-            WHERE a.portfolio_id = {p_id} AND a.quantity > 0 
-            GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, a.position_opened_at
+            WHERE a.portfolio_id = {p_id} AND a.quantity > 0
+            GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id, a.position_opened_at
             ORDER BY l.broker_symbol ASC;
         """
         cash_query = f"""
@@ -107,24 +147,27 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     assets_res_raw = db_bot.execute_query(assets_query)
     assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])
 
-    # Считаем совокупные финансовые показатели акций
-    total_assets_cost_usd = 0.0
-    total_assets_profit_usd = 0.0
-    
+    # Считаем совокупные финансовые показатели акций -- каждая позиция сначала конвертируется
+    # из СВОЕЙ родной валюты (l.currency_id) в валюту смотрящего, и только потом суммируется
+    # (раньше складывались сырые цифры разных валют как будто это одна и та же валюта).
+    total_assets_cost = 0.0
+    total_assets_profit = 0.0
+
     for asset in assets_res:
         qty = float(asset['quantity'] or 0)
         avg_p = float(asset['avg_price'] or 0)
         last_p = float(asset['last_price'] or 0)
-        
-        cost_basis = qty * avg_p
-        market_val = qty * last_p
-        profit = market_val - cost_basis
-        
-        total_assets_cost_usd += market_val
-        total_assets_profit_usd += profit
+        fx_rate = get_fx(asset.get('currency_id'))
 
-    total_profit_pct = (total_assets_profit_usd / (total_assets_cost_usd - total_assets_profit_usd) * 100) if (total_assets_cost_usd - total_assets_profit_usd) > 0 else 0.0
-    profit_sign = "+" if total_assets_profit_usd >= 0 else ""
+        cost_basis = qty * avg_p * fx_rate
+        market_val = qty * last_p * fx_rate
+        profit = market_val - cost_basis
+
+        total_assets_cost += market_val
+        total_assets_profit += profit
+
+    total_profit_pct = (total_assets_profit / (total_assets_cost - total_assets_profit) * 100) if (total_assets_cost - total_assets_profit) > 0 else 0.0
+    profit_sign = "+" if total_assets_profit >= 0 else "-"
 
     # 3. ФОРМИРОВАНИЕ СТЕРИЛЬНОЙ И ДОРОГОЙ ШАПКИ
     if p_id == 0:
@@ -132,12 +175,12 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     else:
         report_text = f"📦 **ПОРТФЕЛЬ {meta.get('name', '')}**\n"
         report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
-        report_text += f"💼 `{meta.get('strategy', 'Not Set')}`\n"
+        report_text += f"🎯 Стратегии: **{content_strategies_count}**\n"
 
     report_text += f"───────\n"
     report_text += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
-    report_text += f"• Общая стоимость: **${total_assets_cost_usd:,.2f}**\n"
-    report_text += f"• Чистая прибыль: **{profit_sign}${total_assets_profit_usd:,.2f} ({profit_sign}{total_profit_pct:.1f}%)**\n\n"
+    report_text += f"• Общая стоимость: **{target_sign}{total_assets_cost:,.2f}**\n"
+    report_text += f"• Чистая прибыль: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n\n"
 
     # Сборка мультивалютного кэша семьи
     cash_res_raw = db_bot.execute_query(cash_query)
@@ -187,14 +230,9 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
                 for (owner, sign), total_dep_val in aggregated_deposits.items():
                     report_text += f"• {sign}{total_dep_val:,.2f}\n"
 
-    if view == "passport":
+    if view == "passport" and p_id > 0:
         report_text += f"───────\n"
-        report_text += f"🛡️ **Соответствие стратегии {meta['name']}:**\n"
-        if passport["violations"]:
-            for v in passport["violations"]:
-                report_text += f" {v}\n"
-        else:
-            report_text += " ✅ Все лимиты и налоговые риски портфеля соответствуют стратегии.\n"
+        report_text += await format_portfolio_risk_audit_rollup(p_id)
 
     report_text += f"───────\n"
 

@@ -57,10 +57,13 @@ class PortfolioInspector:
         self.raw_accounts = self.db.execute_query(sql_accounts) or []
         
         # 2. ЗАПРОС К ПРАВИЛАМ СТРАТЕГИЙ (🔥 ТЕПЕРЬ ТАЩИМ СКОРРЕКТИРОВАННУЮ КОЛОНКУ С ДОЛЯМИ СУБД)
+        # system_key нужен audit_limits_and_rules -- отличить служебную Неопределённую
+        # стратегию от содержательных (см. Claude/BACKLOG.md, обсуждение 2026-07-27).
         sql_strategies = f"""
-            SELECT id, strategy_name, strategy_share_pct, rules_config, human_philosophy 
-            FROM public.strategies 
-            WHERE portfolio_id = {self.portfolio_id} AND is_active = true;
+            SELECT s.id, s.strategy_name, s.strategy_share_pct, s.rules_config, s.human_philosophy, st.system_key
+            FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.portfolio_id = {self.portfolio_id} AND s.is_active = true;
         """
         self.raw_strategies = self.db.execute_query(sql_strategies) or []
         
@@ -225,9 +228,10 @@ class PortfolioInspector:
             strat_report = {
                 "strategy_name": s_name,
                 "violation_found": False,
-                "violated_assets": [],   
-                "violated_sectors": [],  
-                "tax_shield_breaches": [] 
+                "violated_assets": [],
+                "violated_sectors": [],
+                "tax_shield_breaches": [],
+                "unassigned_assets": []
             }
 
             # 🔥 РЕФОРМА ШАГА 3: Элегантный запрос к нашему новому СУБД VIEW
@@ -254,13 +258,25 @@ class PortfolioInspector:
                 
                 # Забираем уже готовые, пересчитанные базовые доллары из СУБД
                 asset_usd = float(asset["total_usd"])
-                
-                # Накопление для идеального секторального рентгена
-                sector_totals_usd[sector] = sector_totals_usd.get(sector, 0.0) + asset_usd
-                
+
                 # Вычисляем реальный текущий процент акции от ВСЕГО капитала портфеля
                 asset_share_pct = (asset_usd / total_capital) * 100.0
-                
+
+                # Неопределённая стратегия -- служебный "карман", в ней вообще не должно быть
+                # бумаг: сам факт наличия позиции уже нарушение, обычные лимиты по доле/сектору/
+                # дивидендам для неё не проверяем (у неё нет содержательного rules_config).
+                if strat.get("system_key") == "UNALLOCATED":
+                    strat_report["violation_found"] = True
+                    audit_report["has_violations"] = True
+                    strat_report["unassigned_assets"].append({
+                        "symbol": symbol,
+                        "current_share_pct": round(asset_share_pct, 2)
+                    })
+                    continue
+
+                # Накопление для идеального секторального рентгена
+                sector_totals_usd[sector] = sector_totals_usd.get(sector, 0.0) + asset_usd
+
                 # А: ПРОВЕРКА ЛИМИТА НА АКЦИЮ (например, > 5% с учетом ETF)
                 if asset_share_pct > max_asset_pct:
                     strat_report["violation_found"] = True

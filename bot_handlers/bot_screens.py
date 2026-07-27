@@ -3,6 +3,7 @@ import asyncio
 import yfinance as yf
 from database import db_bot
 from analytics.analytics_utils import convert_currency_amount, convert_to_base_currency
+from analytics.portfolio_inspector import PortfolioInspector
 
 # ─── СТАНДАРТ ШИРИНЫ ЭКРАНОВ (header/body/footer) -- см. Claude/05_strategy_screen_and_kubiki.md,
 # BACKLOG.md #19. Используется, чтобы решить, влезает ли строка целиком, или её нужно красиво
@@ -609,9 +610,10 @@ async def format_ticker_behavior(ticker_id: int, listing_id: int = 0, portfolio_
 
 async def format_strategy_header(strategy_id: int) -> str:
     """
-    Универсальный сборщик шапки карточки стратегии UPort.
-    Переиспользуется списком стратегий портфеля и самой карточкой стратегии,
-    чтобы не дублировать формат в двух местах (см. Claude/BACKLOG.md #13).
+    Универсальный сборщик шапки карточки стратегии UPort (см. Claude/BACKLOG.md #13).
+    Список стратегий портфеля использует свою отдельную LEGO-строку
+    (`generate_strategy_button_text`, однострочный формат для кнопки, не подходит
+    для многострочной шапки) -- эта функция используется только самой карточкой.
     """
     sql = f"""
         SELECT s.strategy_name, s.strategy_share_pct, s.human_philosophy, s.is_active,
@@ -641,6 +643,93 @@ async def format_strategy_header(strategy_id: int) -> str:
         f"{SEPARATOR_LINE}\n"
     )
     return header
+
+
+async def format_strategy_capital_block(portfolio_id: int, strategy_id: int, target_sign: str = "$", fx_rate: float = 1.0) -> str:
+    """
+    Блок body карточки стратегии: план/факт капитала (идеальный бюджет / текущая стоимость
+    позиций / свободный остаток) -- из PortfolioInspector.get_virtual_cash_balances().
+
+    Мультивалютность: PortfolioInspector считает всегда в USD (внутренний хаб-расчёт,
+    см. Claude/07_glossary.md), fx_rate -- курс USD -> валюта СМОТРЯЩЕГО пользователя,
+    посчитанный один раз за рендер вызывающим кодом (тот же принцип, что у
+    format_position_financials для тикера).
+    """
+    inspector = await asyncio.to_thread(PortfolioInspector, db_bot, portfolio_id)
+    balances = await asyncio.to_thread(inspector.get_virtual_cash_balances)
+    strat_balance = balances.get("strategies", {}).get(strategy_id)
+
+    if not strat_balance:
+        return ""
+
+    ideal = float(strat_balance["ideal_budget_usd"]) * fx_rate
+    current = float(strat_balance["current_holdings_usd"]) * fx_rate
+    free = float(strat_balance["virtual_free_cash_usd"]) * fx_rate
+
+    return (
+        f"💰 **План/факт капитала:**\n"
+        f" • Идеальный бюджет: **{target_sign}{ideal:,.2f}**\n"
+        f" • Текущая стоимость позиций: **{target_sign}{current:,.2f}**\n"
+        f" • Свободный остаток: **{target_sign}{free:,.2f}**\n"
+        f"{SEPARATOR_LINE}\n"
+    )
+
+
+async def format_strategy_risk_audit_block(portfolio_id: int, strategy_id: int) -> str:
+    """
+    Блок body карточки стратегии: аудит лимитов и налоговых рисков стратегии -- из
+    PortfolioInspector.audit_limits_and_rules(). Только проценты, валюты не касается.
+    """
+    inspector = await asyncio.to_thread(PortfolioInspector, db_bot, portfolio_id)
+    audit = await asyncio.to_thread(inspector.audit_limits_and_rules)
+    strat_audit = audit.get("strategies", {}).get(strategy_id)
+
+    if strat_audit and strat_audit.get("violation_found"):
+        text = "🛡️ **Нарушения лимитов стратегии:**\n"
+        for a in strat_audit.get("violated_assets", []):
+            text += f" ⚠️ {a['symbol']}: доля {a['current_share_pct']:.1f}% (лимит {a['limit_pct']}%)\n"
+        for sec in strat_audit.get("violated_sectors", []):
+            text += f" ⚠️ Сектор {sec.get('sector', '?')}: доля {sec.get('current_share_pct', 0):.1f}% (лимит {sec.get('limit_pct', 0)}%)\n"
+        for t in strat_audit.get("tax_shield_breaches", []):
+            text += f" ⚠️ {t['symbol']}: дивиденды {t['dividend_yield_pct']:.1f}% (лимит {t['limit_pct']}%)\n"
+        for u in strat_audit.get("unassigned_assets", []):
+            text += f" ⚠️ {u['symbol']}: не распределена по стратегии ({u['current_share_pct']:.1f}% капитала)\n"
+        text += f"{SEPARATOR_LINE}\n"
+    else:
+        text = f"🛡️ Лимиты и налоговые риски стратегии соблюдены.\n{SEPARATOR_LINE}\n"
+
+    return text
+
+
+async def format_portfolio_risk_audit_rollup(portfolio_id: int) -> str:
+    """
+    Блок body карточки портфеля (вкладка passport): роллап риск-аудита по ВСЕМ активным
+    стратегиям портфеля -- заменяет старый блок "Соответствие стратегии", завязанный на
+    легаси-поля portfolios.strategy_type/risk_profile/etc (см. Claude/BACKLOG.md #17).
+    Один PortfolioInspector, один вызов audit_limits_and_rules() -- не по одному на
+    стратегию, чтобы не плодить лишние пересчёты total_capital.
+    """
+    inspector = await asyncio.to_thread(PortfolioInspector, db_bot, portfolio_id)
+    audit = await asyncio.to_thread(inspector.audit_limits_and_rules)
+
+    if not audit.get("has_violations"):
+        return "🛡️ Нарушений лимитов и налоговых рисков не найдено ни в одной стратегии.\n"
+
+    text = "🛡️ **Нарушения лимитов по стратегиям:**\n"
+    for strat_audit in audit.get("strategies", {}).values():
+        if not strat_audit.get("violation_found"):
+            continue
+        text += f"🎯 {strat_audit.get('strategy_name', '')}:\n"
+        for a in strat_audit.get("violated_assets", []):
+            text += f" ⚠️ {a['symbol']}: доля {a['current_share_pct']:.1f}% (лимит {a['limit_pct']}%)\n"
+        for sec in strat_audit.get("violated_sectors", []):
+            text += f" ⚠️ Сектор {sec.get('sector', '?')}: доля {sec.get('current_share_pct', 0):.1f}% (лимит {sec.get('limit_pct', 0)}%)\n"
+        for t in strat_audit.get("tax_shield_breaches", []):
+            text += f" ⚠️ {t['symbol']}: дивиденды {t['dividend_yield_pct']:.1f}% (лимит {t['limit_pct']}%)\n"
+        for u in strat_audit.get("unassigned_assets", []):
+            text += f" ⚠️ {u['symbol']}: не распределена по стратегии ({u['current_share_pct']:.1f}% капитала)\n"
+
+    return text
 
 
 def generate_confirm_screen(header_text: str, action_title: str, details_list: list, parse_mode: str = "Markdown") -> str:
