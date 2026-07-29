@@ -66,7 +66,16 @@ class SyncStrategyAssetFB:
             self._apply_strategy_balance(portfolio_id, listing_id, unalloc_id, excess_qty)
             logging.info(f"ℹ️ [UPort Стратегии]: Излишек {excess_qty} по ticker_id {ticker_id} (сверх плана {matched_qty}) ушёл в 'Нераспределенные'")
 
-        if action in ('NEXT_STEP', 'COMPLETE_PIPELINE'):
+        if action == 'DIRECT_SELL_NO_PLAN':
+            # Экстренная продажа без предварительного плана -- бумага держалась ровно в
+            # одной стратегии, гадать было не нужно (см. Claude/11_asset_lifecycle_and_plan.md).
+            # Задним числом пишем COMPLETED-запись, чтобы история циклов не терялась даже
+            # для продаж "в обход" бота.
+            logging.info(f"✅ [UPort Стратегии]: Экстренная продажа (стратегия ID: {target_strategy_id}) распределена без предварительного плана -- пишу историю задним числом.")
+            new_pipe_id = self._record_retroactive_exit(portfolio_id, listing_id, ticker_id, target_strategy_id, matched_qty)
+            if new_pipe_id:
+                self._notify_step_filled(new_pipe_id, 'COMPLETE_PIPELINE', matched_qty)
+        elif action in ('NEXT_STEP', 'COMPLETE_PIPELINE'):
             logging.info(f"✅ [UPort Стратегии]: Шаг плана (стратегия ID: {target_strategy_id}) засчитан -- {action}")
             # Уведомление -- ДО обновления статуса конвейера, пока current_step/pending_broker_order_id
             # ещё не сброшены (см. Claude/09_pipeline_reconciliation.md, реального "срочного канала" не
@@ -104,6 +113,54 @@ class SyncStrategyAssetFB:
             return None
         return pipes[0]
 
+    def _find_single_holder_strategy(self, portfolio_id: int, ticker_id: int):
+        """
+        Третий, последний уровень поиска -- только для ПРОДАЖ (см. _find_target_strategy).
+        Если бумага сейчас реально держится ровно в ОДНОЙ стратегии, продажа однозначно
+        относится к ней -- ответ уже есть в strategy_assets, план заводить не нужно (см.
+        Claude/11_asset_lifecycle_and_plan.md, обсуждение "срочной продажи без плана").
+        Держится в нескольких стратегиях сразу -- настоящая неоднозначность, не резолвим.
+        Возвращает (strategy_id, allocated_quantity) или None.
+        """
+        sql = f"""
+            SELECT sa.strategy_id, sa.allocated_quantity
+            FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            JOIN public.listings l ON a.listing_id = l.id
+            WHERE a.portfolio_id = {int(portfolio_id)} AND l.ticker_id = {int(ticker_id)}
+              AND sa.allocated_quantity > 0;
+        """
+        rows = self.db.execute_query(sql)
+        rows = rows if isinstance(rows, list) else ([rows] if rows else [])
+
+        if len(rows) != 1:
+            return None
+        return int(rows[0]["strategy_id"]), float(rows[0]["allocated_quantity"])
+
+    def _record_retroactive_exit(self, portfolio_id: int, listing_id: int, ticker_id: int, strategy_id: int, matched_qty: float):
+        """
+        Пишет задним числом COMPLETED-план для продажи без предварительного "Плана выхода"
+        (см. Claude/11_asset_lifecycle_and_plan.md) -- чтобы история циклов не терялась даже
+        для срочных продаж, сделанных в обход бота. Цена -- assets.avg_price на момент записи
+        (нет привязанного ордера, откуда брать цену исполнения, см. _notify_step_filled).
+        """
+        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+        result = self.db.execute_query(f"""
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
+            VALUES
+                ({int(portfolio_id)}, {int(listing_id)}, {int(ticker_id)}, {int(strategy_id)}, 1, 'COMPLETED',
+                 {matched_qty}, 0, NULL, '{system_now}', '{system_now}')
+            RETURNING id;
+        """)
+        if not result:
+            logging.error(f"🚨 [UPort Стратегии]: Не удалось записать задним числом план продажи (портфель {portfolio_id}, тикер {ticker_id}, стратегия {strategy_id}).")
+            return None
+        pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
+        logging.info(f"📝 [UPort Стратегии]: Задним числом записан план продажи #{pipe_id} (портфель {portfolio_id}, тикер {ticker_id}, стратегия {strategy_id}, {matched_qty} шт).")
+        return pipe_id
+
     def _find_target_strategy(self, portfolio_id: int, ticker_id: int, delta: float):
         """
         Внутренний аналитический узел. Ищет план, ожидающий эту дельту -- сначала строго
@@ -125,9 +182,18 @@ class SyncStrategyAssetFB:
         if pipe is None:
             pipe = self._find_waiting_pipeline(portfolio_id, ticker_id, require_linked_order=False)
 
-        # Ни одного плана вообще -- ни привязанного, ни "голого" -- либо план не заведён,
-        # либо между шагами (пользователь ещё не привязал следующий ордер).
+        # Ни одного плана вообще -- ни привязанного, ни "голого". Для ПРОДАЖИ (delta<0)
+        # это не обязательно тупик: если бумага сейчас держится ровно в одной стратегии,
+        # гадать не нужно -- ответ уже есть в strategy_assets (см. _find_single_holder_strategy,
+        # Claude/11_asset_lifecycle_and_plan.md, "срочная продажа без плана"). Для покупки
+        # неоднозначность настоящая (новых денег ещё нигде нет) -- туда этот путь не идёт.
         if pipe is None:
+            if clean_delta < 0:
+                holder = self._find_single_holder_strategy(portfolio_id, ticker_id)
+                if holder is not None:
+                    strat_id, held_qty = holder
+                    if abs(clean_delta) <= held_qty:
+                        return strat_id, None, 'DIRECT_SELL_NO_PLAN', clean_delta, 0
             return None, None, None, 0, 0
 
         pipe_id = int(pipe['id'])
