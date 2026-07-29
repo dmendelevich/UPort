@@ -396,13 +396,44 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 if plan.get("step_ready_notified_at"):
                     report_text += "└ 🪜 Условие следующего шага уже выполнено — пора ставить приказ.\n"
 
-        nav_markup = generate_nav_back_keyboard(
+        # Кнопки-действия ВНУТРИ вкладки Плана (согласовано 2026-07-29, см.
+        # Claude/11_asset_lifecycle_and_plan.md) -- раньше жили на основной карточке,
+        # теперь единая точка входа "📋 План" ведёт сюда, а отсюда уже разветвляется.
+        action_builder = InlineKeyboardBuilder()
+        action_builder.row(types.InlineKeyboardButton(
+            text="🔗 Привязать ордер к плану",
+            callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+        ))
+        if not plan_rows:
+            action_builder.row(types.InlineKeyboardButton(
+                text="📝 План входа",
+                callback_data=MenuAction(action="plan_from_idea_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            ))
+
+        # "План выхода" -- симметрично "Плану входа" (см. Claude/11_asset_lifecycle_and_plan.md,
+        # "Смерть"), видна только если бумага реально держится хоть в одной стратегии.
+        held_anywhere = db_bot.execute_row(f"""
+            SELECT 1 FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id} AND sa.allocated_quantity > 0
+            LIMIT 1;
+        """)
+        if held_anywhere:
+            action_builder.row(types.InlineKeyboardButton(
+                text="📋 План выхода",
+                callback_data=MenuAction(action="plan_exit_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            ))
+
+        nav_kb = generate_nav_back_keyboard(
             one_step_back_text="🔙 К карточке бумаги",
             full_back_callback=MenuAction(
                 action="view_ticker", portfolio_id=p_id, listing_id=l_id,
                 ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
             ).pack()
         )
+        final_builder = InlineKeyboardBuilder.from_markup(action_builder.as_markup())
+        final_builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
+        nav_markup = final_builder.as_markup()
 
         print("🖥️ [ТИКЕР ПЛАН]: Отправляю шторку плана в Telegram...")
         try:
@@ -525,22 +556,15 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     )
 
     if is_owner_view:
-        active_plan_row = db_bot.execute_row(f"""
-            SELECT 1 FROM public.order_pipelines
-            WHERE portfolio_id = {p_id} AND listing_id = {l_id}
-              AND pipeline_status IN ('PENDING', 'ACTIVE') LIMIT 1;
-        """)
-        if active_plan_row:
-            builder.row(types.InlineKeyboardButton(
-                text="📋 План",
-                callback_data=MenuAction(
-                    action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                    ticker_name=pure_symbol, sub_view="plan", strategy_id=strategy_id
-                ).pack()
-            ))
+        # Единая точка входа в План (согласовано 2026-07-29) -- и "привязать ордер",
+        # и "план входа" теперь живут ВНУТРИ вкладки sub_view="plan", а не отдельными
+        # кнопками здесь. См. Claude/11_asset_lifecycle_and_plan.md.
         builder.row(types.InlineKeyboardButton(
-            text="🔗 Привязать ордер к плану",
-            callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            text="📋 План",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                ticker_name=pure_symbol, sub_view="plan", strategy_id=strategy_id
+            ).pack()
         ))
 
     # Footer, ряд 4 -- навигация (см. Claude/05_strategy_screen_and_kubiki.md): один общий кубик

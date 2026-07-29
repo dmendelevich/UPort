@@ -76,11 +76,42 @@ class SyncStrategyAssetFB:
         elif action == 'PARTIAL_NO_ADVANCE':
             logging.info(f"ℹ️ [UPort Стратегии]: Частичное исполнение шага (стратегия ID: {target_strategy_id}) -- зачтено в план, шаг пока не продвинут (ждём остаток заявки)")
 
+    def _find_waiting_pipeline(self, portfolio_id: int, ticker_id: int, require_linked_order: bool):
+        """
+        Ищет ровно один план (PENDING/ACTIVE), ожидающий эту бумагу -- либо строго с уже
+        привязанным ордером (require_linked_order=True, ручная привязка через бота), либо
+        "голый" план без ордера вообще (require_linked_order=False -- "План входа", создан
+        проактивно до всякой покупки, см. Claude/11_asset_lifecycle_and_plan.md). Больше одного
+        кандидата -- не гадаем, чей это ордер/покупка (см. Claude/09_pipeline_reconciliation.md).
+        """
+        condition = "pending_broker_order_id IS NOT NULL" if require_linked_order else "pending_broker_order_id IS NULL"
+        sql = f"""
+            SELECT id, strategy_id, current_step, target_quantity
+            FROM public.order_pipelines
+            WHERE portfolio_id = {int(portfolio_id)}
+              AND ticker_id = {int(ticker_id)}
+              AND pipeline_status IN ('PENDING', 'ACTIVE')
+              AND {condition};
+        """
+        pipes = self.db.execute_query(sql)
+        pipes = pipes if isinstance(pipes, list) else ([pipes] if pipes else [])
+
+        if len(pipes) == 0:
+            return None
+        if len(pipes) > 1:
+            kind = "с привязанным ордером" if require_linked_order else "без привязанного ордера ('План входа')"
+            logging.warning(f"⚠️ [UPort Стратегии]: {len(pipes)} планов {kind} одновременно ждут ticker_id {ticker_id} в портфеле {portfolio_id} -- дельта не может быть однозначно сопоставлена.")
+            return None
+        return pipes[0]
+
     def _find_target_strategy(self, portfolio_id: int, ticker_id: int, delta: float):
         """
-        Внутренний аналитический узел. Ищет план, у которого текущий шаг явно привязан
-        к ожидаемому ордеру (pending_broker_order_id) -- привязка делается вручную через бота
-        (bot_handlers/order_pipelines.py), это и снимает неоднозначность "бумага в двух стратегиях".
+        Внутренний аналитический узел. Ищет план, ожидающий эту дельту -- сначала строго
+        с привязанным ордером (pending_broker_order_id, привязка вручную через бота,
+        bot_handlers/order_pipelines.py), а если такого нет -- "голый" план без ордера
+        ("План входа", покупка рынком тоже должна поймать заранее созданный план, не только
+        лимитный ордер, привязанный вручную -- согласовано 2026-07-29). Оба случая снимают
+        неоднозначность "бумага в двух стратегиях" одинаково -- через "ровно один кандидат".
         Возвращает (strategy_id, pipeline_id, action, matched_qty, excess_qty).
         """
         # Жестко отсекаем дробную часть у прилетевшей от брокера дельты
@@ -90,30 +121,15 @@ class SyncStrategyAssetFB:
         if clean_delta == 0:
             return None, None, None, 0, 0
 
-        sql = f"""
-            SELECT id, strategy_id, current_step, target_quantity
-            FROM public.order_pipelines
-            WHERE portfolio_id = {int(portfolio_id)}
-              AND ticker_id = {int(ticker_id)}
-              AND pipeline_status IN ('PENDING', 'ACTIVE')
-              AND pending_broker_order_id IS NOT NULL;
-        """
-        pipes = self.db.execute_query(sql)
-        pipes = pipes if isinstance(pipes, list) else ([pipes] if pipes else [])
+        pipe = self._find_waiting_pipeline(portfolio_id, ticker_id, require_linked_order=True)
+        if pipe is None:
+            pipe = self._find_waiting_pipeline(portfolio_id, ticker_id, require_linked_order=False)
 
-        # Ни одного плана, явно ожидающего ордер по этой бумаге -- либо план не заведён,
+        # Ни одного плана вообще -- ни привязанного, ни "голого" -- либо план не заведён,
         # либо между шагами (пользователь ещё не привязал следующий ордер).
-        if len(pipes) == 0:
+        if pipe is None:
             return None, None, None, 0, 0
 
-        # Больше одного плана одновременно ждут ордер по этой же бумаге (бумага в нескольких
-        # стратегиях с параллельными планами) -- на снимке позиции неотличимо, чей это ордер.
-        # Не гадаем -- см. Claude/09_pipeline_reconciliation.md.
-        if len(pipes) > 1:
-            logging.warning(f"⚠️ [UPort Стратегии]: {len(pipes)} планов одновременно ждут ордер по ticker_id {ticker_id} в портфеле {portfolio_id} -- дельта не может быть однозначно сопоставлена.")
-            return None, None, None, 0, 0
-
-        pipe = pipes[0]
         pipe_id = int(pipe['id'])
         strat_id = int(pipe['strategy_id'])
         curr_step = int(pipe['current_step'])
@@ -212,19 +228,25 @@ class SyncStrategyAssetFB:
             row = self.db.execute_row(f"""
                 SELECT op.current_step, op.pending_broker_order_id,
                        t.symbol, s.strategy_name, port.name AS portfolio_name,
-                       u.telegram_id, o.p AS order_price
+                       u.telegram_id, o.p AS order_price, a.avg_price
                 FROM public.order_pipelines op
                 JOIN public.tickers t ON op.ticker_id = t.id
                 JOIN public.strategies s ON op.strategy_id = s.id
                 JOIN public.portfolios port ON op.portfolio_id = port.id
                 JOIN public.users u ON port.owner_id = u.id
                 LEFT JOIN public.orders o ON o.broker_order_id = op.pending_broker_order_id
+                LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
                 WHERE op.id = {int(pipeline_id)};
             """)
             if not row or not row.get("telegram_id"):
                 return
 
-            price_str = f"{float(row['order_price']):.2f}" if row.get("order_price") is not None else "?"
+            # Цена ордера есть только у шага, привязанного вручную (pending_broker_order_id) --
+            # у "голого" плана ("План входа", см. Claude/11_asset_lifecycle_and_plan.md), пойманного
+            # автоматически при покупке рынком, order_price всегда NULL. Реальная цена в этом
+            # случае уже лежит в assets.avg_price (только что записана этим же циклом синхронизации).
+            fallback_price = row.get("order_price") if row.get("order_price") is not None else row.get("avg_price")
+            price_str = f"{float(fallback_price):.2f}" if fallback_price is not None else "?"
             qty_str = f"{abs(float(matched_qty)):.0f}"
 
             if action == 'COMPLETE_PIPELINE':
