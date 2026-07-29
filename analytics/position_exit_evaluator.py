@@ -38,7 +38,7 @@ class PositionExitEvaluator:
         """
         sql = f"""
             SELECT
-                a.id AS asset_id, a.portfolio_id, a.quantity, a.avg_price, a.position_opened_at,
+                a.id AS asset_id, a.portfolio_id, a.listing_id, a.quantity, a.avg_price, a.position_opened_at,
                 lt.id AS ticker_id, lt.symbol, lt.current_price,
                 lt.return_on_equity, lt.debt_to_equity, lt.pe_trailing,
                 lt.signal_rsi, lt.signal_macd, lt.signal_ema_20, lt.signal_sma_50,
@@ -79,6 +79,7 @@ class PositionExitEvaluator:
         return {
             "asset_id": pos.get("asset_id"),
             "portfolio_id": pos.get("portfolio_id"),
+            "listing_id": pos.get("listing_id"),
             "ticker_id": pos.get("ticker_id"),
             "symbol": pos.get("symbol"),
             "strategy_id": pos.get("strategy_id"),

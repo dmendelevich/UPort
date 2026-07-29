@@ -5,13 +5,34 @@ from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.portfolio_inspector import PortfolioInspector
 from analytics.analytics_utils import expected_step_quantity
 
+# Порядок и подписи разделов дайджеста -- единый источник правды для сборки данных
+# и для рендера (bot_screens.py) / клавиатур (bot_keyboards.py). См. Claude/BACKLOG.md
+# п.35 (оглавление дайджеста) и Claude/11_asset_lifecycle_and_plan.md.
+SECTION_ORDER = ("sell", "hold", "limits", "buy", "ladder", "stale")
+SECTION_META = {
+    "sell": {"emoji": "🔴", "label": "Продать"},
+    "hold": {"emoji": "🟡", "label": "Придержать"},
+    "limits": {"emoji": "⚠️", "label": "Лимиты"},
+    "buy": {"emoji": "🟢", "label": "Купить"},
+    "ladder": {"emoji": "🪜", "label": "Лесенка"},
+    "stale": {"emoji": "🕰", "label": "Устаревшие"},
+}
 
-def assemble_portfolio_digest(db_instance, portfolio_id: int) -> str:
+
+def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     """
-    Собирает утренний дайджест по одному портфелю: пульс капитала + список
-    действий на сегодня (продать/придержать, нарушения лимитов, идея для покупки).
-    Чистая текстовая сборка -- не знает про Telegram/aiogram, только читает уже
-    готовую аналитику (PositionExitEvaluator, CashDeploymentAdvisor, PortfolioInspector).
+    Собирает утренний дайджест по одному портфелю как СТРУКТУРУ ДАННЫХ (не текст) --
+    пульс капитала + шесть разделов действий на сегодня. Чистая сборка -- не знает про
+    Telegram/aiogram, только читает уже готовую аналитику (PositionExitEvaluator,
+    CashDeploymentAdvisor, PortfolioInspector). Рендер текста -- bot_screens.py
+    (render_digest_overview_text/render_digest_section_text), клавиатуры -- bot_keyboards.py.
+
+    Каждый пункт раздела -- словарь с обязательным "text" (человекочитаемая строка) и
+    "label" (короткая подпись для кнопки), плюс один из навигационных ключей:
+    "listing_id" (открыть карточку тикера -- бумага уже держится/есть приказ) или
+    "ticker_id" (кандидат на покупку, листинга в этом портфеле может ещё не быть).
+    У пунктов раздела "limits" навигационных ключей нет -- целевой экран пока не решён
+    (см. Claude/BACKLOG.md), кнопка-заглушка.
 
     Сознательно НЕ входит в v0 (см. BACKLOG.md): проверка/редактирование уже
     выставленных приказов и алертов -- обязательный пункт V1.
@@ -32,34 +53,58 @@ def assemble_portfolio_digest(db_instance, portfolio_id: int) -> str:
     )
 
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
-    sell_alerts = [a for a in exit_alerts if a["recommendation"] == "SELL"]
-    hold_alerts = [a for a in exit_alerts if a["recommendation"] == "HOLD"]
+    sell_items = [
+        {
+            "text": f"{a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "label": a["symbol"],
+            "listing_id": a["listing_id"],
+        }
+        for a in exit_alerts if a["recommendation"] == "SELL"
+    ]
+    hold_items = [
+        {
+            "text": f"{a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "label": a["symbol"],
+            "listing_id": a["listing_id"],
+        }
+        for a in exit_alerts if a["recommendation"] == "HOLD"
+    ]
 
     audit_report = inspector.audit_limits_and_rules()
-    limit_warnings = []
+    limit_items = []
     for strat_report in audit_report.get("strategies", {}).values():
         for v in strat_report.get("violated_assets", []):
-            limit_warnings.append(
-                f"{v['symbol']}: {v['current_share_pct']}% от портфеля (лимит {v['limit_pct']}%)"
-            )
+            limit_items.append({
+                "text": f"{v['symbol']}: {v['current_share_pct']}% от портфеля (лимит {v['limit_pct']}%)",
+                "label": v["symbol"],
+            })
         for v in strat_report.get("violated_sectors", []):
-            limit_warnings.append(
-                f"сектор {v['sector']}: {v['current_share_pct']}% от портфеля (лимит {v['limit_pct']}%)"
-            )
+            limit_items.append({
+                "text": f"сектор {v['sector']}: {v['current_share_pct']}% от портфеля (лимит {v['limit_pct']}%)",
+                "label": v["sector"],
+            })
         for v in strat_report.get("tax_shield_breaches", []):
-            limit_warnings.append(
-                f"{v['symbol']}: дивиденды {v['dividend_yield_pct']}% (лимит {v['limit_pct']}%)"
-            )
+            limit_items.append({
+                "text": f"{v['symbol']}: дивиденды {v['dividend_yield_pct']}% (лимит {v['limit_pct']}%)",
+                "label": v["symbol"],
+            })
 
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
-    buy_recs = [r for r in cash_recs if r["status"] == "CANDIDATE_FOUND"]
+    buy_items = [
+        {
+            "text": f"{r['strategy_name']}: {r['reason']}",
+            "label": r["symbol"],
+            "ticker_id": r["ticker_id"],
+        }
+        for r in cash_recs if r["status"] == "CANDIDATE_FOUND"
+    ]
 
     # Готовность следующего шага лесенки -- рыночно-зависимая проверка, решается на цикле
     # котировок (analytics/ladder_step_watcher.py::check_ladder_step_triggers), не в дайджесте
     # (обсуждено 2026-07-24). Дайджест только читает уже проставленный флаг, свежие цифры для
     # отображения считает на лету (listings.last_price), сам условие не пересчитывает.
-    ladder_steps = db_instance.execute_query(f"""
-        SELECT t.symbol, s.strategy_name, op.current_step, op.target_quantity,
+    ladder_rows = db_instance.execute_query(f"""
+        SELECT op.listing_id, t.symbol, s.strategy_name, op.current_step, op.target_quantity,
                st.budget_share_pct, l.last_price
         FROM public.order_pipelines op
         JOIN public.tickers t ON t.id = op.ticker_id
@@ -68,10 +113,22 @@ def assemble_portfolio_digest(db_instance, portfolio_id: int) -> str:
         JOIN public.strategy_tactics st ON st.strategy_id = op.strategy_id AND st.step_number = op.current_step
         WHERE op.portfolio_id = {int(portfolio_id)} AND op.step_ready_notified_at IS NOT NULL;
     """)
-    ladder_steps = ladder_steps if isinstance(ladder_steps, list) else ([ladder_steps] if ladder_steps else [])
+    ladder_rows = ladder_rows if isinstance(ladder_rows, list) else ([ladder_rows] if ladder_rows else [])
+    ladder_items = []
+    for step in ladder_rows:
+        qty = expected_step_quantity(step["target_quantity"], step["budget_share_pct"])
+        price = float(step["last_price"] or 0)
+        ladder_items.append({
+            "text": (
+                f"{step['symbol']} ({step['strategy_name']}), шаг {step['current_step']}: "
+                f"условие выполнено, ~{abs(qty):.0f} шт по ${price:,.2f}"
+            ),
+            "label": step["symbol"],
+            "listing_id": step["listing_id"],
+        })
 
-    stale_orders = db_instance.execute_query(f"""
-        SELECT t.symbol, s.strategy_name, o.p AS order_price, l.last_price
+    stale_rows = db_instance.execute_query(f"""
+        SELECT op.listing_id, t.symbol, s.strategy_name, o.p AS order_price, l.last_price
         FROM public.order_pipelines op
         JOIN public.orders o ON o.broker_order_id = op.pending_broker_order_id
         JOIN public.listings l ON l.id = op.listing_id
@@ -79,70 +136,33 @@ def assemble_portfolio_digest(db_instance, portfolio_id: int) -> str:
         JOIN public.strategies s ON s.id = op.strategy_id
         WHERE op.portfolio_id = {int(portfolio_id)} AND op.stale_notified_at IS NOT NULL;
     """)
-    stale_orders = stale_orders if isinstance(stale_orders, list) else ([stale_orders] if stale_orders else [])
-
-    today_str = datetime.date.today().isoformat()
-    lines = [f"📊 *{portfolio_name}* — дайджест на {today_str}", ""]
-    lines.append(f"💰 Капитал: ${total_capital:,.2f} · Кэш: ${real_cash:,.2f}")
-    lines.append(
-        f"🔴 к продаже: {len(sell_alerts)} · ⚠️ нарушений лимитов: {len(limit_warnings)} · "
-        f"🟢 идей для покупки: {len(buy_recs)} · 🪜 шагов лесенки: {len(ladder_steps)} · "
-        f"🕰 устаревших приказов: {len(stale_orders)}"
-    )
-    lines.append("")
-
-    has_actions = bool(sell_alerts or hold_alerts or limit_warnings or buy_recs or ladder_steps or stale_orders)
-    if not has_actions:
-        lines.append("Действий сегодня не требуется — всё по плану.")
-        return "\n".join(lines)
-
-    lines.append("━━━ Действия на сегодня ━━━")
-
-    if sell_alerts:
-        lines.append("")
-        lines.append("🔴 *ПРОДАТЬ:*")
-        for a in sell_alerts:
-            lines.append(f"• {a['symbol']} ({a['strategy_name']}): {a['reason']}")
-
-    if hold_alerts:
-        lines.append("")
-        lines.append("🟡 *ПРИДЕРЖАТЬ:*")
-        for a in hold_alerts:
-            lines.append(f"• {a['symbol']} ({a['strategy_name']}): {a['reason']}")
-
-    if limit_warnings:
-        lines.append("")
-        lines.append("⚠️ *ЛИМИТЫ:*")
-        for w in limit_warnings:
-            lines.append(f"• {w}")
-
-    if buy_recs:
-        lines.append("")
-        lines.append("🟢 *КУПИТЬ:*")
-        for r in buy_recs:
-            lines.append(f"• {r['strategy_name']}: {r['reason']}")
-
-    if ladder_steps:
-        lines.append("")
-        lines.append("🪜 *СЛЕДУЮЩИЙ ШАГ ЛЕСЕНКИ (уже отмечено на котировках):*")
-        for step in ladder_steps:
-            qty = expected_step_quantity(step["target_quantity"], step["budget_share_pct"])
-            price = float(step["last_price"] or 0)
-            lines.append(
-                f"• {step['symbol']} ({step['strategy_name']}), шаг {step['current_step']}: "
-                f"условие выполнено, ~{abs(qty):.0f} шт по ${price:,.2f}"
-            )
-
-    if stale_orders:
-        lines.append("")
-        lines.append("🕰 *УСТАРЕВШИЕ ПРИКАЗЫ:*")
-        for so in stale_orders:
-            order_price = float(so["order_price"] or 0)
-            last_price = float(so["last_price"] or 0)
-            drift_pct = abs(last_price - order_price) / order_price * 100.0 if order_price else 0.0
-            lines.append(
-                f"• {so['symbol']} ({so['strategy_name']}): приказ по ${order_price:,.2f}, "
+    stale_rows = stale_rows if isinstance(stale_rows, list) else ([stale_rows] if stale_rows else [])
+    stale_items = []
+    for so in stale_rows:
+        order_price = float(so["order_price"] or 0)
+        last_price = float(so["last_price"] or 0)
+        drift_pct = abs(last_price - order_price) / order_price * 100.0 if order_price else 0.0
+        stale_items.append({
+            "text": (
+                f"{so['symbol']} ({so['strategy_name']}): приказ по ${order_price:,.2f}, "
                 f"текущая цена ${last_price:,.2f} ({drift_pct:.1f}%). Пересмотрите или отмените."
-            )
+            ),
+            "label": so["symbol"],
+            "listing_id": so["listing_id"],
+        })
 
-    return "\n".join(lines)
+    return {
+        "portfolio_id": portfolio_id,
+        "portfolio_name": portfolio_name,
+        "today_str": datetime.date.today().isoformat(),
+        "total_capital": total_capital,
+        "real_cash": real_cash,
+        "sections": {
+            "sell": {**SECTION_META["sell"], "items": sell_items},
+            "hold": {**SECTION_META["hold"], "items": hold_items},
+            "limits": {**SECTION_META["limits"], "items": limit_items},
+            "buy": {**SECTION_META["buy"], "items": buy_items},
+            "ladder": {**SECTION_META["ladder"], "items": ladder_items},
+            "stale": {**SECTION_META["stale"], "items": stale_items},
+        },
+    }

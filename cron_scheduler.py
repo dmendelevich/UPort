@@ -16,7 +16,9 @@ from brokers_connectors.sync_alerts_fb import sync_all_broker_alerts
 from site_connectors.trigger_etf_look_through import run_etf_look_through_decomposition
 from site_connectors.sync_signals_yf import sync_global_yahoo_signals
 from utils import was_us_market_open_yesterday
-from analytics.daily_digest import assemble_portfolio_digest
+from analytics.daily_digest import assemble_portfolio_digest_data
+from bot_handlers.bot_screens import render_digest_overview_text
+from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
 
 
 
@@ -137,8 +139,10 @@ async def send_daily_digests(db_instance, bot):
     for p in portfolios:
         p_id = int(p["id"])
         try:
-            text = await asyncio.to_thread(assemble_portfolio_digest, db_instance, p_id)
-            await bot.send_message(chat_id=admin_telegram_id, text=text, parse_mode="Markdown")
+            data = await asyncio.to_thread(assemble_portfolio_digest_data, db_instance, p_id)
+            text = render_digest_overview_text(data)
+            keyboard = generate_digest_toc_keyboard(p_id, data["sections"])
+            await bot.send_message(chat_id=admin_telegram_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
             logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен.")
         except Exception as e:
             logging.error(f"❌ [Digest]: Не удалось собрать/отправить дайджест по портфелю {p['name']} (ID: {p_id}): {e}")

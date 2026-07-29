@@ -310,6 +310,108 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         return
     # =========================================================================
 
+    # =========================================================================
+    # 🔥 ШТОРКА "ПЛАН" (v0, см. Claude/11_asset_lifecycle_and_plan.md) -- показывает
+    # уже существующий order_pipelines (PENDING/ACTIVE) как читаемую шпаргалку.
+    # Динамические SL/TP и календарный чек-пойнт ещё не реализованы -- показываем
+    # только то, что реально уже есть в данных.
+    # =========================================================================
+    if view == "plan":
+        print(f"🎯 [ТИКЕР ПЛАН]: Сборка шторки плана для portfolio_id={p_id}, listing_id={l_id}")
+        await callback.answer("Загрузка плана...")
+
+        plan_rows = db_bot.execute_query(f"""
+            SELECT op.id, op.strategy_id, s.strategy_name, s.rules_config,
+                   op.current_step, op.target_quantity, op.initial_entry_price,
+                   op.pending_broker_order_id, op.stale_notified_at, op.step_ready_notified_at,
+                   sa.allocated_quantity,
+                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at))::int AS days_held,
+                   (SELECT COUNT(*) FROM public.strategy_tactics st WHERE st.strategy_id = op.strategy_id) AS total_steps,
+                   (SELECT trigger_conditions FROM public.strategy_tactics st
+                        WHERE st.strategy_id = op.strategy_id AND st.step_number = op.current_step) AS current_step_conditions
+            FROM public.order_pipelines op
+            JOIN public.strategies s ON s.id = op.strategy_id
+            LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
+            LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.strategy_id = op.strategy_id
+            WHERE op.portfolio_id = {p_id} AND op.listing_id = {l_id}
+              AND op.pipeline_status IN ('PENDING', 'ACTIVE');
+        """)
+        plan_rows = plan_rows if isinstance(plan_rows, list) else ([plan_rows] if plan_rows else [])
+
+        report_text = header_text + "📋 **ПЛАН:**\n"
+
+        if not plan_rows:
+            report_text += "   *Активного плана по этой бумаге сейчас нет.*\n"
+        else:
+            for plan in plan_rows:
+                rules = plan.get("rules_config") or {}
+                total_steps = int(plan.get("total_steps") or 1)
+                current_step = int(plan["current_step"])
+                target_qty = float(plan["target_quantity"] or 0)
+                bought_qty = float(plan.get("allocated_quantity") or 0)
+                entry_price = float(plan.get("initial_entry_price") or 0)
+
+                report_text += f"\n🎯 *{plan['strategy_name']}* — шаг {current_step} из {total_steps}\n"
+                report_text += f"└ Куплено: {bought_qty:.0f} из {target_qty:.0f} шт"
+                if entry_price > 0:
+                    report_text += f" по ${entry_price:.2f}"
+                report_text += "\n"
+
+                time_limit = rules.get("tactic_time_limit_days")
+                days_held = plan.get("days_held")
+                if days_held is not None:
+                    if time_limit:
+                        report_text += f"└ Дней в позиции: {days_held} из {int(time_limit)}\n"
+                    else:
+                        report_text += f"└ Дней в позиции: {days_held}\n"
+
+                target_profit = rules.get("tactic_target_profit_pct")
+                if target_profit:
+                    report_text += f"└ Цель по доходности: +{float(target_profit):.1f}%\n"
+
+                if current_step > total_steps:
+                    report_text += "└ Все ступени лесенки уже пройдены.\n"
+                else:
+                    conditions = plan.get("current_step_conditions") or {}
+                    mode = conditions.get("mode")
+                    if mode == "market":
+                        report_text += "└ Условие следующего шага: рыночная заявка, можно ставить сразу.\n"
+                    elif mode == "limit":
+                        cond_parts = []
+                        if conditions.get("max_rsi") is not None:
+                            cond_parts.append(f"RSI ≤ {conditions['max_rsi']}")
+                        if conditions.get("price_drop_pct") is not None:
+                            cond_parts.append(f"просадка ≥ {conditions['price_drop_pct']}% от входа")
+                        report_text += f"└ Условие следующего шага: {', '.join(cond_parts) if cond_parts else 'лимитная заявка'}.\n"
+                    else:
+                        report_text += "└ Условие следующего шага ещё не задано в тактике стратегии.\n"
+
+                if plan.get("pending_broker_order_id"):
+                    report_text += f"└ Ожидается исполнение приказа №{plan['pending_broker_order_id']}.\n"
+                else:
+                    report_text += "└ Приказ на текущий шаг ещё не привязан — используйте «🔗 Привязать ордер к плану».\n"
+
+                if plan.get("stale_notified_at"):
+                    report_text += "└ ⚠️ Привязанный приказ мог устареть — цена ушла от цены приказа.\n"
+                if plan.get("step_ready_notified_at"):
+                    report_text += "└ 🪜 Условие следующего шага уже выполнено — пора ставить приказ.\n"
+
+        nav_markup = generate_nav_back_keyboard(
+            one_step_back_text="🔙 К карточке бумаги",
+            full_back_callback=MenuAction(
+                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
+            ).pack()
+        )
+
+        print("🖥️ [ТИКЕР ПЛАН]: Отправляю шторку плана в Telegram...")
+        try:
+            await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
+        except TelegramBadRequest:
+            pass
+        return
+    # =========================================================================
+
     # 3. ФОРМИРОВАНИЕ УЛЬТИМАТИВНЫХ ШАПОК СТУДИИ ДИЗАЙНА UPORT
     if is_owner_view:
         # Вариант 1: В портфеле конкретного счета -- Блок 1 стандарта body
@@ -423,6 +525,19 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     )
 
     if is_owner_view:
+        active_plan_row = db_bot.execute_row(f"""
+            SELECT 1 FROM public.order_pipelines
+            WHERE portfolio_id = {p_id} AND listing_id = {l_id}
+              AND pipeline_status IN ('PENDING', 'ACTIVE') LIMIT 1;
+        """)
+        if active_plan_row:
+            builder.row(types.InlineKeyboardButton(
+                text="📋 План",
+                callback_data=MenuAction(
+                    action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                    ticker_name=pure_symbol, sub_view="plan", strategy_id=strategy_id
+                ).pack()
+            ))
         builder.row(types.InlineKeyboardButton(
             text="🔗 Привязать ордер к плану",
             callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()

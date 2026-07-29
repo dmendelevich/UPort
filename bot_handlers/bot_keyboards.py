@@ -356,10 +356,15 @@ def generate_portfolio_button_text(crystal: str, ticker: str, quantity: int, pro
     ]
     return assemble_lego_line(blueprint)
 
-def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: str, f5: str, alert_icon: str, alerts_count: int) -> str:
+def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: str, f5: str, f6: str, alert_icon: str, alerts_count: int) -> str:
     """
     Генерирует жесткую монолитную строку для инлайн-кнопок Списков Наблюдения.
     🔥 ФИНАЛ: Полностью многомерный радар. Каждое знакоместо управляется независимо.
+    f6 -- ортогонален жизненному циклу f1-f5 (не фаза "изучение→...→распродано", а
+    отдельный факт "прямо сейчас есть активный План" -- order_pipelines PENDING/ACTIVE,
+    см. Claude/11_asset_lifecycle_and_plan.md). Стоит ПОСЛЕ колокольчика алертов (не
+    внутри кластера жизненного цикла) -- по просьбе пользователя 2026-07-29, визуально
+    отдельная колонка правее.
     """
     blueprint = [
         {"type": "ticker", "value": ticker},
@@ -370,6 +375,71 @@ def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: s
         {"type": "badge", "icon": f4, "index": 0},          # Фаза 4: Портфель (💼)
         {"type": "badge", "icon": f5, "index": 0},          # Фаза 5: Распродано (🏁)
         {"type": "badge", "icon": alert_icon, "index": alerts_count},  # Колокольчик алертов (Управляется из хэндлера)
+        {"type": "badge", "icon": f6, "index": 0},          # Есть активный План (📋), правее колокольчика
         {"type": "final_row", "value": ""}
     ]
     return assemble_lego_line(blueprint)
+
+
+def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
+    """
+    Оглавление свёрнутого дайджеста (см. Claude/BACKLOG.md п.35) -- одна кнопка на
+    непустой раздел, с счётчиком. Пустые разделы не показываются (как и в тексте).
+    Переиспользует generate_tab_switch_keyboard -- дайджест-разделы это те же вкладки
+    одного экрана. Возвращает None, если действий сегодня вообще нет.
+    """
+    from analytics.daily_digest import SECTION_ORDER
+
+    tabs = []
+    for key in SECTION_ORDER:
+        sec = sections[key]
+        if not sec["items"]:
+            continue
+        tabs.append((
+            f"{sec['emoji']} {sec['label']} ({len(sec['items'])})",
+            MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view=key)
+        ))
+
+    if not tabs:
+        return None
+    return generate_tab_switch_keyboard(tabs, current_sub_view="overview")
+
+
+def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list):
+    """
+    Клавиатура детального раздела дайджеста -- одна кнопка-действие на пункт (см.
+    Claude/BACKLOG.md п.35 для разбора, какое действие у какого раздела):
+    "listing_id" в пункте -- открыть карточку тикера (бумага уже держится/есть приказ);
+    "ticker_id" без "listing_id" -- кандидат на покупку, кнопка "В СН" (заводит листинг
+    сама, если его ещё нет); ни того ни другого -- заглушка "в разработке" (целевой
+    экран для этого раздела ещё не решён). Плюс навигация назад к свёрнутому дайджесту.
+    """
+    builder = InlineKeyboardBuilder()
+    for item in items:
+        if item.get("listing_id"):
+            builder.row(types.InlineKeyboardButton(
+                text=f"🔗 {item['label']}",
+                callback_data=MenuAction(
+                    action="view_ticker", portfolio_id=portfolio_id, listing_id=int(item["listing_id"]), sub_view="owner"
+                ).pack()
+            ))
+        elif item.get("ticker_id"):
+            builder.row(types.InlineKeyboardButton(
+                text=f"🔬 В СН: {item['label']}",
+                callback_data=MenuAction(
+                    action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(item["ticker_id"])
+                ).pack()
+            ))
+        else:
+            builder.row(types.InlineKeyboardButton(
+                text=f"🔧 {item['label']} (в разработке)" if item.get("label") else "🔧 В разработке",
+                callback_data=MenuAction(action="digest_stub").pack()
+            ))
+
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    back_kb = generate_nav_back_keyboard(
+        one_step_back_text="🔙 Назад к дайджесту",
+        full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view="overview").pack()
+    )
+    final_builder.attach(InlineKeyboardBuilder.from_markup(back_kb))
+    return final_builder.as_markup()

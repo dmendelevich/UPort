@@ -765,3 +765,46 @@ def generate_confirm_screen(header_text: str, action_title: str, details_list: l
             lines.append(f"└ {item}")
 
     return "\n".join(lines)
+
+
+def render_digest_overview_text(data: dict) -> str:
+    """
+    Свёрнутый вид дайджеста (см. Claude/BACKLOG.md п.35) -- шапка + пульс капитала +
+    счётчики по разделам. Детали разделов -- по клику на кнопку оглавления
+    (generate_digest_toc_keyboard), не в этом тексте.
+    """
+    from analytics.daily_digest import SECTION_ORDER
+
+    lines = [f"📊 *{data['portfolio_name']}* — дайджест на {data['today_str']}", ""]
+    lines.append(f"💰 Капитал: ${data['total_capital']:,.2f} · Кэш: ${data['real_cash']:,.2f}")
+
+    total_items = 0
+    counts_parts = []
+    for key in SECTION_ORDER:
+        sec = data["sections"][key]
+        n = len(sec["items"])
+        total_items += n
+        counts_parts.append(f"{sec['emoji']} {sec['label'].lower()}: {n}")
+    lines.append(" · ".join(counts_parts))
+    lines.append("")
+
+    if total_items == 0:
+        lines.append("Действий сегодня не требуется — всё по плану.")
+    else:
+        lines.append("Выберите раздел кнопкой ниже, чтобы посмотреть детали.")
+
+    return "\n".join(lines)
+
+
+def render_digest_section_text(data: dict, section_key: str) -> str:
+    """Детальный текст одного раздела дайджеста -- см. render_digest_overview_text."""
+    sec = data["sections"].get(section_key) or {"emoji": "", "label": section_key, "items": []}
+    lines = [f"📊 *{data['portfolio_name']}* — {sec['emoji']} {sec['label'].upper()}", ""]
+
+    if not sec["items"]:
+        lines.append("Пусто.")
+    else:
+        for item in sec["items"]:
+            lines.append(f"• {item['text']}")
+
+    return "\n".join(lines)

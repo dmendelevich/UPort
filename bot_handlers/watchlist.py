@@ -120,11 +120,14 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
             watchlist_query = """
                 SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
                        w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
-                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
+                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
+                       COUNT(DISTINCT op.id)::int as active_plans_count
                 FROM public.watchlist w
                 JOIN public.listings l ON w.listing_id = l.id
                 JOIN public.tickers t ON l.ticker_id = t.id
                 LEFT JOIN public.alerts al ON al.listing_id = l.id AND al.is_active = true
+                LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
+                                          AND op.pipeline_status IN ('PENDING', 'ACTIVE')
                 WHERE w.portfolio_id = 9999
                 GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
                 ORDER BY t.symbol ASC;
@@ -133,13 +136,16 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
             watchlist_query = f"""
                 SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
                        w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
-                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
+                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
+                       COUNT(DISTINCT op.id)::int as active_plans_count
                 FROM public.watchlist w
                 JOIN public.listings l ON w.listing_id = l.id
                 JOIN public.tickers t ON l.ticker_id = t.id
-                LEFT JOIN public.alerts al ON al.listing_id = w.listing_id 
-                                          AND al.portfolio_id = w.portfolio_id 
+                LEFT JOIN public.alerts al ON al.listing_id = w.listing_id
+                                          AND al.portfolio_id = w.portfolio_id
                                           AND al.is_active = true
+                LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
+                                          AND op.pipeline_status IN ('PENDING', 'ACTIVE')
                 WHERE w.portfolio_id = {p_id}
                 GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
                 ORDER BY t.symbol ASC;
@@ -181,12 +187,15 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                 b_order = "📃" if item.get('ordered_at') is not None else ""
                 b_asset = "💼" if item.get('bought_at') is not None else ""
                 b_sold  = "🏁" if item.get('sold_out_at') is not None else ""
+                # Отдельный от жизненного цикла факт -- прямо сейчас есть активный План
+                # (order_pipelines PENDING/ACTIVE), см. Claude/11_asset_lifecycle_and_plan.md
+                b_plan = "📋" if int(item.get('active_plans_count') or 0) > 0 else ""
 
                 # Извлекаем честный счетчик активных алертов из базы
                 alerts_count = int(item.get('active_alerts_count') or 0)
                 # Логика видимости колокольчика вынесена ВНЕ генератора по вашему ТЗ
                 b_alert = "🔔" if alerts_count > 0 else ""
-                
+
                 # 🔥 РЕФАКТОРИНГ: Переводим Списки наблюдения на жесткую LEGO-сетку с радаром
                 button_text = generate_watchlist_button_text(
                     ticker=pure_symbol,
@@ -195,13 +204,16 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                     f3=b_order,
                     f4=b_asset,
                     f5=b_sold,
+                    f6=b_plan,
                     alert_icon=b_alert,
                     alerts_count=alerts_count
                 )
 
+                # Полная карточка тикера (sub_view="owner"), не сразу шторка алертов --
+                # по просьбе пользователя (2026-07-29), чтобы была видна кнопка "План".
                 builder.row(types.InlineKeyboardButton(
                     text=button_text,
-                    callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="alerts").pack()
+                    callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner").pack()
                 ))
         else:
             report_text += "\n   *Активы в данном списке наблюдения пока отсутствуют.*"
