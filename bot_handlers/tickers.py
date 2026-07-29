@@ -13,7 +13,7 @@ from bot_handlers.bot_screens import (
     format_cross_holdings, format_broker_link_summary, format_order_line,
     format_alert_condition_line, classify_order, ORDER_CATEGORIES, SEPARATOR_LINE,
 )
-from bot_handlers.bot_keyboards import generate_nav_back_keyboard
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_ticker_footer_keyboard
 #from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
@@ -400,10 +400,25 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # Claude/11_asset_lifecycle_and_plan.md) -- раньше жили на основной карточке,
         # теперь единая точка входа "📋 План" ведёт сюда, а отсюда уже разветвляется.
         action_builder = InlineKeyboardBuilder()
-        action_builder.row(types.InlineKeyboardButton(
-            text="🔗 Привязать ордер к плану",
-            callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
-        ))
+
+        # Кнопка видна, только если реально есть что привязывать -- та же проверка,
+        # что и в самом pipeline_link_start (order_pipelines.py), по просьбе
+        # пользователя 2026-07-29 (раньше показывалась всегда, даже без единого приказа).
+        unlinked_order = db_bot.execute_row(f"""
+            SELECT 1 FROM public.orders o
+            WHERE o.portfolio_id = {p_id} AND o.ticker_id = {t_id}
+              AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED')
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.order_pipelines op
+                  WHERE op.pending_broker_order_id = o.broker_order_id
+              )
+            LIMIT 1;
+        """)
+        if unlinked_order:
+            action_builder.row(types.InlineKeyboardButton(
+                text="🔗 Привязать ордер к плану",
+                callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            ))
         if not plan_rows:
             action_builder.row(types.InlineKeyboardButton(
                 text="📝 План входа",
@@ -509,7 +524,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # отдельный экран). Единственная оставшаяся вкладка была бы всегда одна и та же
     # (current_sub_view всегда совпадает) -- переключатель вкладок (footer, ряд 2)
     # больше не нужен вообще для этого экрана.
-    builder = InlineKeyboardBuilder()
 
     # Блок 5 стандарта body (см. Claude/05_strategy_screen_and_kubiki.md): компактная
     # сводка алертов/ордеров + кнопки "подробнее" в отдельные шторки (sub_view=alerts/orders).
@@ -538,35 +552,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     text += format_broker_link_summary(alerts_count, orders_count)
 
-    builder.row(
-        types.InlineKeyboardButton(
-            text=f"🔔 Алерты ({alerts_count})",
-            callback_data=MenuAction(
-                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                ticker_name=pure_symbol, sub_view="alerts/from_ticker", strategy_id=strategy_id
-            ).pack()
-        ),
-        types.InlineKeyboardButton(
-            text=f"📃 Приказы ({orders_count})",
-            callback_data=MenuAction(
-                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                ticker_name=pure_symbol, sub_view="orders", strategy_id=strategy_id
-            ).pack()
-        )
-    )
-
-    if is_owner_view:
-        # Единая точка входа в План (согласовано 2026-07-29) -- и "привязать ордер",
-        # и "план входа" теперь живут ВНУТРИ вкладки sub_view="plan", а не отдельными
-        # кнопками здесь. См. Claude/11_asset_lifecycle_and_plan.md.
-        builder.row(types.InlineKeyboardButton(
-            text="📋 План",
-            callback_data=MenuAction(
-                action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                ticker_name=pure_symbol, sub_view="plan", strategy_id=strategy_id
-            ).pack()
-        ))
-
     # Footer, ряд 4 -- навигация (см. Claude/05_strategy_screen_and_kubiki.md): один общий кубик
     # вместо ручной сборки "назад" + "главное меню" по отдельности
     if strategy_id > 0:
@@ -582,13 +567,18 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         back_text = "🔙 В главное меню"
         back_callback = MenuAction(action="main_menu").pack()
 
-    nav_markup = generate_nav_back_keyboard(one_step_back_text=back_text, full_back_callback=back_callback)
-    builder.attach(InlineKeyboardBuilder.from_markup(nav_markup))
+    # Блок 5 (Алерты/Приказы/План) + навигация -- общий кубик (см. Claude/BACKLOG.md,
+    # выделен 2026-07-29 вместе со стандартизацией «Предложений»).
+    reply_markup = generate_ticker_footer_keyboard(
+        portfolio_id=p_id, listing_id=l_id, symbol=pure_symbol, strategy_id=strategy_id,
+        is_owner_view=is_owner_view, alerts_count=alerts_count, orders_count=orders_count,
+        back_text=back_text, back_callback=back_callback
+    )
 
     print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")
 
     try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     except TelegramBadRequest as e:
         print(f"⚠️ Ошибка редактирования шторки тикера: {e}")
         pass

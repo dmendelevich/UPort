@@ -5,10 +5,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 
-from database import db_bot
+from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_screens import format_strategy_header, format_premium_header, format_strategy_capital_block, format_strategy_risk_audit_block
-from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard
+from bot_handlers.bot_screens import (
+    format_strategy_header, format_premium_header, format_strategy_capital_block,
+    format_strategy_risk_audit_block, format_broker_link_summary, SEPARATOR_LINE,
+)
+from bot_handlers.bot_keyboards import (
+    generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard,
+    generate_ticker_footer_keyboard,
+)
 from analytics.analytics_utils import TickerEvaluator, convert_currency_amount, CONTENT_STRATEGY_SYSTEM_KEYS
 
 router = Router()
@@ -277,7 +283,12 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
 
 @router.callback_query(MenuAction.filter(F.action == "view_idea_reason"))
 async def process_view_idea_reason(callback: types.CallbackQuery, callback_data: MenuAction):
-    """Обоснование конкретного кандидата: PASS/FAIL по каждому критерию из explain_map."""
+    """
+    Обоснование конкретного кандидата: стандартная карточка тикера (тот же
+    header+footer, что и полная карточка в tickers.py, см. Claude/BACKLOG.md,
+    стандартизация 2026-07-29) -- тело содержит PASS/FAIL по каждому критерию
+    из explain_map вместо позиции/сигналов (кандидат ещё не куплен).
+    """
     s_id = callback_data.strategy_id
     p_id = callback_data.portfolio_id
     t_id = callback_data.ticker_id
@@ -287,10 +298,9 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
     evaluator = TickerEvaluator(db_instance=db_bot)
     report = await asyncio.to_thread(evaluator.evaluate_ticker_strategy, t_id, p_id)
 
-    back_to_ideas = generate_nav_back_keyboard(
-        one_step_back_text="🔙 К списку идей",
-        full_back_callback=MenuAction(action="strategy_ideas", portfolio_id=p_id, strategy_id=s_id).pack()
-    )
+    back_text = "🔙 К списку идей"
+    back_callback = MenuAction(action="strategy_ideas", portfolio_id=p_id, strategy_id=s_id).pack()
+    back_to_ideas = generate_nav_back_keyboard(one_step_back_text=back_text, full_back_callback=back_callback)
 
     info = report.get("explain_map", {}).get(s_id)
     if not info:
@@ -303,6 +313,17 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
             pass
         return
 
+    # Кандидат мог никогда не отслеживаться в этом портфеле -- легализуем листинг
+    # (тот же приём, что и в execute_watchlist_fixation, bot_handlers/watchlist.py),
+    # чтобы «🔗 Привязать ордер»/«📋 План» в футере ниже были кликабельны.
+    broker_row = await asyncio.to_thread(
+        db_bot.execute_row, f"SELECT broker_id FROM public.portfolios WHERE id = {int(p_id)};"
+    )
+    broker_id = int((broker_row or {}).get("broker_id") or 1)
+    l_id = await asyncio.to_thread(db_sys.ensure_listing, ticker_id=int(t_id), broker_id=broker_id, fb_client=None)
+
+    symbol = report.get("symbol") or ""
+
     header_text = await format_premium_header(t_id, p_id)
     text = header_text
     text += f"🎯 Обоснование для «{info['strategy_name']}»:\n\n"
@@ -312,9 +333,34 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
         text += f"{icon} {label}: факт `{m['fact']}`, порог `{m['limit']}`\n"
 
     verdict = "✅ Проходит экран стратегии" if info["is_compatible_technically"] else "❌ Не проходит экран стратегии"
-    text += f"\n*{verdict}*"
+    text += f"\n*{verdict}*\n{SEPARATOR_LINE}\n"
+
+    if l_id:
+        alerts_list = db_bot.get_ticker_alerts_context(l_id)
+        alerts_count = len([al for al in alerts_list if al.get('portfolio_id') == p_id])
+        orders_res = await asyncio.to_thread(
+            db_bot.execute_query,
+            f"""
+                SELECT 1 FROM public.orders
+                WHERE portfolio_id = {int(p_id)} AND listing_id = {int(l_id)}
+                  AND status IN ('active', 'NEW', 'PARTIALLY_FILLED');
+            """
+        )
+        orders_res = orders_res if isinstance(orders_res, list) else ([orders_res] if orders_res else [])
+        orders_count = len(orders_res)
+        text += format_broker_link_summary(alerts_count, orders_count)
+
+        reply_markup = generate_ticker_footer_keyboard(
+            portfolio_id=p_id, listing_id=l_id, symbol=symbol, strategy_id=s_id,
+            is_owner_view=True, alerts_count=alerts_count, orders_count=orders_count,
+            back_text=back_text, back_callback=back_callback
+        )
+    else:
+        # Легализовать листинг не удалось (не должно происходить в норме) -- откатываемся
+        # на минимальную навигацию, чтобы экран хотя бы не падал.
+        reply_markup = back_to_ideas
 
     try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_to_ideas)
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     except TelegramBadRequest:
         pass

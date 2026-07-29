@@ -125,6 +125,51 @@ def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str)
     
     return builder.as_markup()
 
+
+def generate_ticker_footer_keyboard(
+    portfolio_id: int, listing_id: int, symbol: str, strategy_id: int, is_owner_view: bool,
+    alerts_count: int, orders_count: int, back_text: str, back_callback: str
+) -> InlineKeyboardMarkup:
+    """
+    Блок 5 стандарта body (см. Claude/05_strategy_screen_and_kubiki.md) -- компактные
+    Алерты/Приказы + условная кнопка «План» (только владельцу, ведёт на общую вкладку
+    "plan" из tickers.py, где уже разветвляется на "Привязать ордер"/"План входа"/
+    "План выхода"/просмотр) + навигация назад. Общий кубик для любой карточки тикера
+    с портфельным контекстом (полная карточка в tickers.py, обоснование идеи в
+    «Предложениях» и т.п.) -- выделен 2026-07-29, см. Claude/BACKLOG.md.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(
+            text=f"🔔 Алерты ({alerts_count})",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id,
+                ticker_name=symbol, sub_view="alerts/from_ticker", strategy_id=strategy_id
+            ).pack()
+        ),
+        types.InlineKeyboardButton(
+            text=f"📃 Приказы ({orders_count})",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id,
+                ticker_name=symbol, sub_view="orders", strategy_id=strategy_id
+            ).pack()
+        )
+    )
+
+    if is_owner_view:
+        builder.row(types.InlineKeyboardButton(
+            text="📋 План",
+            callback_data=MenuAction(
+                action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id,
+                ticker_name=symbol, sub_view="plan", strategy_id=strategy_id
+            ).pack()
+        ))
+
+    nav_kb = generate_nav_back_keyboard(one_step_back_text=back_text, full_back_callback=back_callback)
+    builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
+    return builder.as_markup()
+
+
 def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     """
     Генерирует интерактивный пульт Главного меню экосистемы UPort.
