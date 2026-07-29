@@ -247,56 +247,52 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         print("🎯 [ПОРТФЕЛЬ]: Рендеринг списка активных стратегий...")
         report_text += "🎯 **Активные стратегии портфеля:**"
 
-        if p_id == 9999:
-            report_text += "\n   *Стратегии применимы только к персональному портфелю конкретного брокера.*"
-        else:
-            inspector = await asyncio.to_thread(PortfolioInspector, db_bot, p_id)
-            balances = await asyncio.to_thread(inspector.get_virtual_cash_balances)
-            total_capital = float(balances.get("total_capital_usd") or 0.0)
-            strat_map = balances.get("strategies", {})
+        inspector = await asyncio.to_thread(PortfolioInspector, db_bot, p_id)
+        balances = await asyncio.to_thread(inspector.get_virtual_cash_balances)
+        total_capital = float(balances.get("total_capital_usd") or 0.0)
+        strat_map = balances.get("strategies", {})
 
-            # Короткие подписи ищутся по system_key -- один запрос на весь список,
-            # не по одному на стратегию.
-            system_key_by_id = {}
-            if strat_map:
-                ids_str = ", ".join(str(int(sid)) for sid in strat_map.keys())
-                key_rows = await asyncio.to_thread(
-                    db_bot.execute_query,
-                    f"""
-                        SELECT s.id, st.system_key FROM public.strategies s
-                        JOIN public.strategy_templates st ON s.template_id = st.id
-                        WHERE s.id IN ({ids_str});
-                    """
+        # Короткие подписи ищутся по system_key -- один запрос на весь список,
+        # не по одному на стратегию.
+        system_key_by_id = {}
+        if strat_map:
+            ids_str = ", ".join(str(int(sid)) for sid in strat_map.keys())
+            key_rows = await asyncio.to_thread(
+                db_bot.execute_query,
+                f"""
+                    SELECT s.id, st.system_key FROM public.strategies s
+                    JOIN public.strategy_templates st ON s.template_id = st.id
+                    WHERE s.id IN ({ids_str});
+                """
+            )
+            key_rows = key_rows if isinstance(key_rows, list) else ([key_rows] if key_rows else [])
+            system_key_by_id = {int(r["id"]): r.get("system_key") for r in key_rows if r}
+
+        if strat_map:
+            for s_id, s in strat_map.items():
+                target_pct = float(s["target_share_pct"])
+                current_usd = float(s["current_holdings_usd"])
+                actual_pct = (current_usd / total_capital * 100.0) if total_capital > 0 else 0.0
+                system_key = system_key_by_id.get(int(s_id))
+                short_name = SHORT_STRATEGY_LABELS.get(system_key, s['strategy_name'])
+                button_text = generate_strategy_button_text(
+                    name=short_name,
+                    target_pct=target_pct,
+                    actual_pct=actual_pct
                 )
-                key_rows = key_rows if isinstance(key_rows, list) else ([key_rows] if key_rows else [])
-                system_key_by_id = {int(r["id"]): r.get("system_key") for r in key_rows if r}
-
-            if strat_map:
-                for s_id, s in strat_map.items():
-                    target_pct = float(s["target_share_pct"])
-                    current_usd = float(s["current_holdings_usd"])
-                    actual_pct = (current_usd / total_capital * 100.0) if total_capital > 0 else 0.0
-                    system_key = system_key_by_id.get(int(s_id))
-                    short_name = SHORT_STRATEGY_LABELS.get(system_key, s['strategy_name'])
-                    button_text = generate_strategy_button_text(
-                        name=short_name,
-                        target_pct=target_pct,
-                        actual_pct=actual_pct
-                    )
-                    builder.row(types.InlineKeyboardButton(
-                        text=button_text,
-                        callback_data=MenuAction(action="view_strategy", strategy_id=int(s_id), portfolio_id=p_id).pack()
-                    ))
-            else:
-                report_text += "\n   *Активные стратегии в этом портфеле не найдены.*"
+                builder.row(types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=MenuAction(action="view_strategy", strategy_id=int(s_id), portfolio_id=p_id).pack()
+                ))
+        else:
+            report_text += "\n   *Активные стратегии в этом портфеле не найдены.*"
 
     # Динамический пульт шторки: переключатель вкладок через общий кубик-сборщик (см. Claude/BACKLOG.md #13)
     tabs = [
         ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets")),
         ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport")),
+        ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies")),
     ]
-    if p_id != 9999:
-        tabs.append(("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies")))
 
     tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)
     for tab_row in tab_switch_markup.inline_keyboard:

@@ -116,10 +116,10 @@ def run_database_janitor(db_instance):
 
 async def send_daily_digests(db_instance, bot):
     """
-    v0: собирает дайджест по каждому реальному портфелю (кроме служебного 9999)
-    и шлёт ВСЕ сообщения админу, независимо от реального владельца портфеля --
-    сознательное решение на период отладки (см. BACKLOG.md). Переключение на
-    реального владельца портфеля -- будущая доработка настроек.
+    v0: собирает дайджест по каждому реальному портфелю и шлёт ВСЕ сообщения
+    админу, независимо от реального владельца портфеля -- сознательное решение
+    на период отладки (см. BACKLOG.md). Переключение на реального владельца
+    портфеля -- будущая доработка настроек.
     """
     admin_row = await asyncio.to_thread(
         db_instance.execute_row,
@@ -132,7 +132,7 @@ async def send_daily_digests(db_instance, bot):
 
     portfolios = await asyncio.to_thread(
         db_instance.execute_query,
-        "SELECT id, name FROM public.portfolios WHERE id != 9999 ORDER BY id;"
+        "SELECT id, name FROM public.portfolios ORDER BY id;"
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 

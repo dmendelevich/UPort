@@ -29,10 +29,9 @@ async def process_watchlist_focus_menu(callback: types.CallbackQuery):
     await callback.answer("Загрузка радаров исследования...")
 
     sql_portfolios = """
-        SELECT p.id, p.name, u.name AS owner_name 
+        SELECT p.id, p.name, u.name AS owner_name
         FROM public.portfolios p
         JOIN public.users u ON p.owner_id = u.id
-        WHERE p.id != 9999
         ORDER BY p.id ASC;
     """
     p_res = await asyncio.to_thread(db_bot.execute_query, sql_portfolios)
@@ -55,11 +54,6 @@ async def process_watchlist_focus_menu(callback: types.CallbackQuery):
             callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
         ))
 
-    builder.row(types.InlineKeyboardButton(
-        text="🔎 Глобальный интерес (Вне стратегий)",
-        callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=9999, sub_view="assets").pack()
-    ))
-
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
 
     try:
@@ -76,35 +70,26 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
     print(f"\n🔬 [WATCHLIST]: Сборка шторки для p_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка паспорта исследования...")
 
-    if p_id == 9999:
-        owner_name = "Семья"
-        portfolio_name = "Глобальный интерес"
-        strategy_type = "Вне стратегий (Общая песочница)"
-    else:
-        p_sql = f"""
-            SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type
-            FROM public.portfolios p
-            JOIN public.users u ON p.owner_id = u.id
-            WHERE p.id = {p_id};
-        """
-        p_meta_res = db_bot.execute_query(p_sql)
-        p_meta = p_meta_res if isinstance(p_meta_res, list) else ([p_meta_res] if p_meta_res else [])
-        
-        if p_meta and len(p_meta) > 0:
-            p_row = p_meta[0] if isinstance(p_meta, list) else p_meta
-            owner_name = p_row.get('owner_name', 'Unknown')
-            portfolio_name = p_row.get('portfolio_name', f"П{p_id}")
-            strategy_type = p_row.get('strategy_type', 'Not Set')
-        else:
-            owner_name = "Unknown"
-            portfolio_name = f"П{p_id}"
-            strategy_type = "Not Set"
+    p_sql = f"""
+        SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type
+        FROM public.portfolios p
+        JOIN public.users u ON p.owner_id = u.id
+        WHERE p.id = {p_id};
+    """
+    p_meta_res = db_bot.execute_query(p_sql)
+    p_meta = p_meta_res if isinstance(p_meta_res, list) else ([p_meta_res] if p_meta_res else [])
 
-    if p_id == 9999:
-        report_text = f"🔎 **{portfolio_name.upper()}**\n"
+    if p_meta and len(p_meta) > 0:
+        p_row = p_meta[0] if isinstance(p_meta, list) else p_meta
+        owner_name = p_row.get('owner_name', 'Unknown')
+        portfolio_name = p_row.get('portfolio_name', f"П{p_id}")
+        strategy_type = p_row.get('strategy_type', 'Not Set')
     else:
-        report_text = f"🔬 **ФОКУС НА {portfolio_name.upper()}**\n"
-        
+        owner_name = "Unknown"
+        portfolio_name = f"П{p_id}"
+        strategy_type = "Not Set"
+
+    report_text = f"🔬 **ФОКУС НА {portfolio_name.upper()}**\n"
     report_text += f"👤 {owner_name}\n"
     report_text += f"💼 `{strategy_type}`\n"
     report_text += f"───────\n"
@@ -116,41 +101,24 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
         report_text += "🎯 **АКТИВНЫЕ РАДАРЫ И ЦЕЛИ СЛЕДОВАНИЯ:**"
         
         # 🔥 СУПЕР-ЗАПРОС АГРЕГАЦИИ С ВЫГРУЗКОЙ ТЕКУЩЕЙ ЦЕНЫ БРОКЕРА (last_price)
-        if p_id == 9999:
-            watchlist_query = """
-                SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
-                       w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
-                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
-                       COUNT(DISTINCT op.id)::int as active_plans_count
-                FROM public.watchlist w
-                JOIN public.listings l ON w.listing_id = l.id
-                JOIN public.tickers t ON l.ticker_id = t.id
-                LEFT JOIN public.alerts al ON al.listing_id = l.id AND al.is_active = true
-                LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
-                                          AND op.pipeline_status IN ('PENDING', 'ACTIVE')
-                WHERE w.portfolio_id = 9999
-                GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
-                ORDER BY t.symbol ASC;
-            """
-        else:
-            watchlist_query = f"""
-                SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
-                       w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
-                       COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
-                       COUNT(DISTINCT op.id)::int as active_plans_count
-                FROM public.watchlist w
-                JOIN public.listings l ON w.listing_id = l.id
-                JOIN public.tickers t ON l.ticker_id = t.id
-                LEFT JOIN public.alerts al ON al.listing_id = w.listing_id
-                                          AND al.portfolio_id = w.portfolio_id
-                                          AND al.is_active = true
-                LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
-                                          AND op.pipeline_status IN ('PENDING', 'ACTIVE')
-                WHERE w.portfolio_id = {p_id}
-                GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
-                ORDER BY t.symbol ASC;
-            """
-            
+        watchlist_query = f"""
+            SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
+                   w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
+                   COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
+                   COUNT(DISTINCT op.id)::int as active_plans_count
+            FROM public.watchlist w
+            JOIN public.listings l ON w.listing_id = l.id
+            JOIN public.tickers t ON l.ticker_id = t.id
+            LEFT JOIN public.alerts al ON al.listing_id = w.listing_id
+                                      AND al.portfolio_id = w.portfolio_id
+                                      AND al.is_active = true
+            LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
+                                      AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+            WHERE w.portfolio_id = {p_id}
+            GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
+            ORDER BY t.symbol ASC;
+        """
+
         w_res_raw = db_bot.execute_query(watchlist_query)
         w_res = w_res_raw if isinstance(w_res_raw, list) else ([w_res_raw] if w_res_raw else [])
 
@@ -275,8 +243,8 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
         return
 
     sql_get_portfolios = f"""
-        SELECT id, name FROM public.portfolios 
-        WHERE owner_id = {int(user_db_id)} AND id NOT IN (0, 9999)
+        SELECT id, name FROM public.portfolios
+        WHERE owner_id = {int(user_db_id)} AND id != 0
         ORDER BY id ASC;
     """
     p_res = await asyncio.to_thread(db_bot.execute_query, sql_get_portfolios)

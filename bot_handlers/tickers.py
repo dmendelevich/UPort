@@ -148,10 +148,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # один на все варианты этого экрана, включая шторку алертов ниже
     header_text = await format_premium_header(t_id, p_id, target_currency=target_currency, target_sign=target_sign)
 
-    # Динамически вычисляем типы отображения (Владение, Общий капитал, Исследование)
-    is_owner_view = (p_id > 0 and p_id != 9999)
+    # Динамически вычисляем типы отображения (Владение, Общий капитал). Портфель 9999
+    # ("Семейная лаборатория ИИ") удалён (см. Claude/BACKLOG.md, Трек C, п.11) -- эти два
+    # случая исчерпывающие, третьей ветки ("исследование в 9999") больше нет.
+    is_owner_view = (p_id > 0)
     is_family_view = (p_id == 0)
-    is_research_portfolio = (p_id == 9999 and getattr(callback_data, 'listing_id', 0) is not None and int(getattr(callback_data, 'listing_id', 0)) > 0)
 
     # 2. СБОР СТРАТЕГИЧЕСКИХ ДАННЫХ И ХОЛДИНГ-ПЕРИОДОВ
     assets_info_sql = f"""
@@ -477,23 +478,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         text += f"{SEPARATOR_LINE}\n"
         text += await format_cross_holdings(t_id, l_id, portfolio_id=p_id, strategy_id=strategy_id)
 
-    elif is_family_view:
+    else:
         # Вариант 2: В Сводном семейном капитале -- целиком Блок 6 (портфельный разрез,
         # без исключения -- показываем всю семью)
         text = header_text
         text += await format_cross_holdings(t_id, l_id, portfolio_id=0, strategy_id=0)
-
-    elif is_research_portfolio:
-        # Вариант 4: Исследование В ПОРТФЕЛЕ (Фокус конкретной стратегии) -- вне темы,
-        # завязано на устаревший портфель 9999 (см. Claude/BACKLOG.md №11), не трогаем
-        text = header_text
-        text += f"ИССЛЕДОВАНИЕ ПО СТРАТЕГИИ\n"
-        text += f"🎯 Статус: Наблюдение по декларации счета\n"
-    else:
-        # Вариант 3: Исследование ВООБЩЕ (Глобальная песочница 9999) -- Блок 6
-        # (портфельный разрез, 9999 не держит реальных активов -- исключение инертно)
-        text = header_text
-        text += await format_cross_holdings(t_id, l_id, portfolio_id=p_id, strategy_id=0)
 
     # Блок 2 ("Поведение") и Блок 4 ("Рыночные сигналы") стандарта body (см.
     # Claude/05_strategy_screen_and_kubiki.md) -- оба свойство самого тикера, общее
@@ -502,9 +491,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     text += await format_ticker_behavior(t_id, listing_id=l_id, portfolio_id=p_id)
     text += await format_market_signals(t_id)
 
-    # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля или портфельного фокуса)
-    if is_owner_view or is_research_portfolio:
-        audit_id = p_id if is_owner_view else 1
+    # 4. ВЫЗОВ РИСК-АУДИТОРА IPS (Только для личного портфеля)
+    if is_owner_view:
+        audit_id = p_id
         # 🔥 РЕФАКТОРИНГ: Заменяем на чистый execute_row
         p_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
         p_title = p_row.get('name', f"Счет #{audit_id}")

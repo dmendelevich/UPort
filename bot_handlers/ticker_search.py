@@ -186,7 +186,7 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
     try:
         portfolio_rows = await asyncio.to_thread(
             db_bot.execute_query,
-            "SELECT id, name FROM public.portfolios WHERE id != 9999 ORDER BY id;"
+            "SELECT id, name FROM public.portfolios ORDER BY id;"
         )
         portfolio_rows = portfolio_rows if isinstance(portfolio_rows, list) else ([portfolio_rows] if portfolio_rows else [])
 
