@@ -12,33 +12,6 @@ BRAILLE_EMPTY = "\u2800"  # Прозрачный знак Брайля
 SIX_PER_EM = "\u2006"     # Тончайший микро-отступ (1/6 пробела)
 
 
-def build_smart_badge(icon: str, value: int) -> str:
-    """
-    Пункт 1: Преобразователь одной иконки и индекса в кубик фиксированной ширины.
-    - value > 9: Перегрузка индекса превращается в знак '⁺'.
-    - value == 0 или нет иконки: Возвращает калиброванную невидимую заглушку 
-      из пустого символа Брайля и шестого пробела для удержания ширины.
-    """
-    # Состояние 3: Пустой кубик (Иконки нет). Ставим прозрачную заглушку UPort
-    if value == 0 or not icon:
-        BRAILLE_EMPTY = "\u2800"  # Полноразмерный пустой знак Брайля
-        SIX_PER_EM = "\u2006"     # Микро-отступ (1/6 ширины пробела) для точной калибровки
-        return f"{BRAILLE_EMPTY}{SIX_PER_EM}"
-        
-    # Состояние 2: Перегрузка индекса (Число больше 9)
-    if value > 9:
-        superscript = "⁺"
-    # Состояние 1: Стандартный полный кубик (Индекс от 1 до 9)
-    else:
-        superscripts = {
-            '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-            '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-        }
-        superscript = superscripts.get(str(value), '⁰')
-        
-    # Возвращаем живой графический кубик-бэдж
-    return f"{icon}{superscript}"
-
 def generate_confirm_keyboard(yes_text: str, yes_callback_packed: str, no_text: str, no_callback_packed: str) -> InlineKeyboardMarkup:
     """
     Универсальный пульт подтверждения критических операций (Да / Нет).
@@ -399,13 +372,16 @@ def generate_portfolio_button_text(crystal: str, ticker: str, quantity: int, pro
     return assemble_lego_line(blueprint)
 
 def generate_watchlist_button_text(
-    ticker: str, f1: str, f2: str, f3: str, f4: str, f5: str, f6: str,
+    ticker: str, f1: str, f2: str, f3: str, f4: str,
     alert_icon: str, alerts_count: int, f_strategy: str = "", strategy_count: int = 0
 ) -> str:
     """
     Генерирует жесткую монолитную строку для инлайн-кнопок Списков Наблюдения.
-    🔥 ФИНАЛ: Полностью многомерный радар. Каждое знакоместо управляется независимо.
-    f6 -- ортогонален жизненному циклу f1-f5 (не фаза "изучение→...→распродано", а
+    Многомерный радар, каждое знакоместо управляется независимо. Фазы "Изучение"
+    (considered_at) и "Наблюдение" (watched_at) убраны из радара 2026-07-30 --
+    см. BACKLOG.md п.12/47 (watched_at заполнен всегда, considered_at не пишется
+    ни одним живым интерактивным путём).
+    f4 -- ортогонален жизненному циклу f1-f3 (не фаза "ордер→портфель→распродано", а
     отдельный факт "прямо сейчас есть активный План" -- order_pipelines PENDING/ACTIVE,
     см. Claude/11_asset_lifecycle_and_plan.md). Стоит ПОСЛЕ колокольчика алертов (не
     внутри кластера жизненного цикла) -- по просьбе пользователя 2026-07-29, визуально
@@ -417,14 +393,12 @@ def generate_watchlist_button_text(
     blueprint = [
         {"type": "ticker", "value": ticker},
         {"type": "separator", "value": " "},
-        {"type": "badge", "icon": f1, "index": 0},          # Фаза 1: Изучение (🔍)
-        {"type": "badge", "icon": f2, "index": 0},          # Фаза 2: Наблюдение (🎯)
-        {"type": "badge", "icon": f3, "index": 0},          # Фаза 3: Ордер (📃)
-        {"type": "badge", "icon": f4, "index": 0},          # Фаза 4: Портфель (💼)
+        {"type": "badge", "icon": f1, "index": 0},          # Ордер (📃)
+        {"type": "badge", "icon": f2, "index": 0},          # Портфель (💼)
         {"type": "badge", "icon": f_strategy, "index": strategy_count},  # В скольких стратегиях портфеля (🎯N)
-        {"type": "badge", "icon": f5, "index": 0},          # Фаза 5: Распродано (🏁)
+        {"type": "badge", "icon": f3, "index": 0},          # Распродано (🏁)
         {"type": "badge", "icon": alert_icon, "index": alerts_count},  # Колокольчик алертов (Управляется из хэндлера)
-        {"type": "badge", "icon": f6, "index": 0},          # Есть активный План (📋), правее колокольчика
+        {"type": "badge", "icon": f4, "index": 0},          # Есть активный План (📋), правее колокольчика
         {"type": "final_row", "value": ""}
     ]
     return assemble_lego_line(blueprint)

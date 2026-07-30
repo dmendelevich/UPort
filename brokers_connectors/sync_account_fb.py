@@ -168,8 +168,8 @@ class FreedomBrokerSyncManager:
                     else:
                         # Если купили сразу в терминале "мимо блокнота" — легализуем в watchlist одной секундной пачкой!
                         self.db.execute_query(f"""
-                            INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at, watched_at, bought_at)
-                            VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                            INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, bought_at)
+                            VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
                         """)
 
                     # 🔎 СНАЙПЕРСКАЯ ПРОВЕРКА MASTER-ТАБЛИЦЫ (Вынесена на самый верх!)
@@ -220,7 +220,7 @@ class FreedomBrokerSyncManager:
                             self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
                         else:
                             # Если бумаги не было вообще ни в одном списке — легализуем её с нуля пачкой
-                            self.db.execute_query(f"INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at, watched_at, bought_at) VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+                            self.db.execute_query(f"INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, bought_at) VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
 
                         # Фиксируем холдинг-дни position_opened_at
                         sql_asset_insert = f"""
@@ -316,8 +316,8 @@ class FreedomBrokerSyncManager:
                     else:
                         # Если вы выставили ордер в терминале "мимо блокнота" — легализуем в watchlist с фиксацией даты ордера!
                         self.db.execute_query(f"""
-                            INSERT INTO public.watchlist (portfolio_id, listing_id, considered_at, watched_at, ordered_at)
-                            VALUES ({portfolio_id}, {ord_listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                            INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, ordered_at)
+                            VALUES ({portfolio_id}, {ord_listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
                         """)
                     
                     # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров

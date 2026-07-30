@@ -70,7 +70,6 @@ CREATE_STATEMENTS = [
         w.portfolio_id,
         w.updated_at AS watchlist_updated_at,
         w.last_interest_at,
-        w.considered_at,
         w.watched_at,
         w.ordered_at,
         w.bought_at,
@@ -157,7 +156,7 @@ CREATE_STATEMENTS = [
 COMMENTS = [
     "COMMENT ON VIEW public.v_listings_tickers IS 'Слой 0: один листинг бумаги у брокера + все поля tickers. Базовый view для остальных.';",
     "COMMENT ON VIEW public.v_assets_full IS 'Слой 1: одна реальная позиция (холдинг) в портфеле, с полным контекстом бумаги и владельца.';",
-    "COMMENT ON VIEW public.v_watchlist_full IS 'Слой 1: одна запись вотчлиста портфеля, с полным контекстом бумаги. considered_at устарел, вытеснен provenance в tickers.';",
+    "COMMENT ON VIEW public.v_watchlist_full IS 'Слой 1: одна запись вотчлиста портфеля, с полным контекстом бумаги.';",
     "COMMENT ON VIEW public.v_orders_full IS 'Слой 1: один ордер, с полным контекстом бумаги.';",
     "COMMENT ON VIEW public.v_order_pipelines_full IS 'Слой 1: один шаг пайплайна исполнения по стратегии, с полным контекстом бумаги.';",
     "COMMENT ON VIEW public.v_strategy_assets_full IS 'Слой 2: доля одной позиции портфеля, закреплённая за стратегией.';",

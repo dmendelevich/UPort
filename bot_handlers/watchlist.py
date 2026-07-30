@@ -103,7 +103,7 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
         # 🔥 СУПЕР-ЗАПРОС АГРЕГАЦИИ С ВЫГРУЗКОЙ ТЕКУЩЕЙ ЦЕНЫ БРОКЕРА (last_price)
         watchlist_query = f"""
             SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
-                   w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
+                   w.ordered_at, w.bought_at, w.sold_out_at,
                    COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
                    COUNT(DISTINCT op.id)::int as active_plans_count,
                    COUNT(DISTINCT sa.strategy_id)::int as strategy_count
@@ -131,30 +131,12 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                 l_id = int(item['listing_id'] or 0)
                 last_price = float(item['last_price'] or 0)
                 
-                # # 🛠️ НОВЫЙ ДИЗАЙН-КОД: Вычисляем иконку фазы жизненного цикла UPort
-                # if item.get('sold_out_at') is not None:
-                #     crystal = "🏁"
-                # elif item.get('bought_at') is not None:
-                #     crystal = "💼"
-                # elif item.get('ordered_at') is not None:
-                #     crystal = "📃" # Заменяем старую иконку на аккуратный биржевый свиток приказа
-                # elif item.get('watched_at') is not None:
-                #     crystal = "🎯"
-                # elif item.get('considered_at') is not None:
-                #     crystal = "🔍"
-                # else:
-                #     crystal = "🔹"
-                
-                # # 🔥 ВНЕДРЕНИЕ СУПЕРСКРИПТ-БЭДЖА АЛЕРТОВ (ВСТАЕТ МЕЖДУ ИКОНКОЙ И ТИКЕРОМ)  #----
-                # # Вызываем универсальный конструктор смарт-индикаторов UPort  #----
-                # alert_badge = build_smart_badge(text=item.get('active_alerts_count'), icon="🔔", convert_to_superscript=True)  #----
-                
-                # # Собираем премиальный текст кнопки по новому ТЗ  #----
-                # button_text = f"{crystal} {alert_badge}{pure_symbol} • ${last_price:,.2f}"  #----
-
-                # 🛠️ НОВЫЙ ДИЗАЙН-КОД: Вычисляем многомерный радар фаз жизненного цикла UPort
-                b_study = "🔍" if item.get('considered_at') is not None else ""
-                b_watch = "👀" if item.get('watched_at') is not None else ""
+                # Многомерный радар фаз жизненного цикла UPort. Фазы "Изучение"/"Наблюдение"
+                # (considered_at/watched_at) убраны из радара 2026-07-30 -- на живых данных
+                # watched_at заполнен всегда (0 NULL из 39 строк), бейдж не различал ничего;
+                # considered_at не пишется ни одним живым интерактивным путём (см. BACKLOG.md
+                # п.12/47), только тремя легаси-инсертами в sync_account_fb.py, всегда синхронно
+                # с watched_at -- то есть никогда не нёс отдельной информации.
                 b_order = "📃" if item.get('ordered_at') is not None else ""
                 b_asset = "💼" if item.get('bought_at') is not None else ""
                 b_sold  = "🏁" if item.get('sold_out_at') is not None else ""
@@ -176,14 +158,12 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                 # 🔥 РЕФАКТОРИНГ: Переводим Списки наблюдения на жесткую LEGO-сетку с радаром
                 button_text = generate_watchlist_button_text(
                     ticker=pure_symbol,
-                    f1=b_study,
-                    f2=b_watch,
-                    f3=b_order,
-                    f4=b_asset,
+                    f1=b_order,
+                    f2=b_asset,
                     f_strategy=b_strategy,
                     strategy_count=strategy_count,
-                    f5=b_sold,
-                    f6=b_plan,
+                    f3=b_sold,
+                    f4=b_plan,
                     alert_icon=b_alert,
                     alerts_count=alerts_count
                 )

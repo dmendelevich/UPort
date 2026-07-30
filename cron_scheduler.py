@@ -75,7 +75,7 @@ def run_quotes_update(db_instance):
                 JOIN public.listings l ON w.listing_id = l.id
                 JOIN public.portfolios p ON w.portfolio_id = p.id
                 JOIN public.currencies c ON l.currency_id = c.id
-                WHERE p.broker_id = {b_id} AND (w.considered_at IS NOT NULL OR w.watched_at IS NOT NULL OR w.ordered_at IS NOT NULL OR w.bought_at IS NOT NULL);
+                WHERE p.broker_id = {b_id} AND (w.watched_at IS NOT NULL OR w.ordered_at IS NOT NULL OR w.bought_at IS NOT NULL);
             """
             tickers_data = db_instance.execute_query(sql_tickers)
             if not tickers_data:
