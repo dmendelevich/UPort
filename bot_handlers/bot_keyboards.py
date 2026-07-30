@@ -148,6 +148,7 @@ def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
+    builder.row(types.InlineKeyboardButton(text="📅 Утренний дайджест", callback_data=MenuAction(action="show_digest_focus").pack()))
     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
 
     if is_admin:
@@ -431,9 +432,16 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     Клавиатура детального раздела дайджеста -- одна кнопка-действие на пункт (см.
     Claude/BACKLOG.md п.35 для разбора, какое действие у какого раздела):
     "listing_id" в пункте -- открыть карточку тикера (бумага уже держится/есть приказ);
-    "ticker_id" без "listing_id" -- кандидат на покупку, кнопка "В СН" (заводит листинг
-    сама, если его ещё нет); ни того ни другого -- заглушка "в разработке" (целевой
-    экран для этого раздела ещё не решён). Плюс навигация назад к свёрнутому дайджесту.
+    "ticker_id" без "listing_id" -- кандидат на покупку, кнопка "В список наблюдения"
+    (заводит листинг сама, если его ещё нет); ни того ни другого -- заглушка "в
+    разработке" (целевой экран для этого раздела ещё не решён). Плюс навигация назад
+    к свёрнутому дайджесту.
+
+    sub_view="digest" в callback "confirm_wl_add" -- составной sub_view с пометкой
+    происхождения (тот же приём, что уже решил ту же природу проблемы для шторки
+    алертов, см. BACKLOG.md "Сделано" п.17): экран успеха добавления в список
+    наблюдения (bot_handlers/watchlist.py::execute_watchlist_fixation) по этой
+    пометке вернёт "🔙 Назад к дайджесту", а не только "В главное меню".
     """
     builder = InlineKeyboardBuilder()
     for item in items:
@@ -446,9 +454,9 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
             ))
         elif item.get("ticker_id"):
             builder.row(types.InlineKeyboardButton(
-                text=f"🔬 В СН: {item['label']}",
+                text=f"🔬 В список наблюдения: {item['label']}",
                 callback_data=MenuAction(
-                    action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(item["ticker_id"])
+                    action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(item["ticker_id"]), sub_view="digest"
                 ).pack()
             ))
         else:

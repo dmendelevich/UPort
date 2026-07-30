@@ -7,22 +7,34 @@ from analytics.analytics_utils import expected_step_quantity
 
 # Порядок и подписи разделов дайджеста -- единый источник правды для сборки данных
 # и для рендера (bot_screens.py) / клавиатур (bot_keyboards.py). См. Claude/BACKLOG.md
-# п.35 (оглавление дайджеста) и Claude/11_asset_lifecycle_and_plan.md.
-SECTION_ORDER = ("sell", "hold", "limits", "buy", "ladder", "stale")
+# и Claude/11_asset_lifecycle_and_plan.md.
+#
+# Реорганизовано 2026-07-30: разделы группируют по ПРИЧИНЕ появления пункта, а не по
+# глаголу действия -- прежние 6 разделов (Продать/Придержать/Купить/Лесенка/Устаревшие/
+# Лимиты) смешивали "что делать" и "почему", из-за чего у ребалансировки не было
+# естественного дома (не то продать, не то купить). Теперь:
+#   "schedule" -- сработало от ПРОШЕДШЕГО ВРЕМЕНИ (календарный триггер), не от цены.
+#                 Сегодня единственный живой пример -- тайм-аут слота Револьверной.
+#   "signals"  -- сработало от цены/RSI/фундаментала/наличия кэша: экс-Продать/Придержать/
+#                 Купить/Лесенка/Устаревшие -- всё это один и тот же тип причины ("рынок
+#                 или капитал сигналят"), просто с разным итогом. Каждый пункт несёт свою
+#                 пометку действия в тексте (📤 продать / 📧 придержать / 📥 купить и т.п.),
+#                 раздел их не разделяет.
+#   "limits"   -- нарушение ЛИМИТА портфеля (концентрация/сектор/налоговый щит) -- без
+#                 изменений, отдельная причина по своей природе (не про стратегию бумаги).
+SECTION_ORDER = ("schedule", "signals", "limits")
 SECTION_META = {
-    "sell": {"emoji": "🔴", "label": "Продать"},
-    "hold": {"emoji": "🟡", "label": "Придержать"},
+    "schedule": {"emoji": "⏰", "label": "По расписанию"},
+    "signals": {"emoji": "📊", "label": "Сигналы по бумагам и деньгам"},
     "limits": {"emoji": "⚠️", "label": "Лимиты"},
-    "buy": {"emoji": "🟢", "label": "Купить"},
-    "ladder": {"emoji": "🪜", "label": "Лесенка"},
-    "stale": {"emoji": "🕰", "label": "Устаревшие"},
 }
 
 
 def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     """
     Собирает утренний дайджест по одному портфелю как СТРУКТУРУ ДАННЫХ (не текст) --
-    пульс капитала + шесть разделов действий на сегодня. Чистая сборка -- не знает про
+    пульс капитала + три раздела действий на сегодня (см. SECTION_META выше). Чистая
+    сборка -- не знает про
     Telegram/aiogram, только читает уже готовую аналитику (PositionExitEvaluator,
     CashDeploymentAdvisor, PortfolioInspector). Рендер текста -- bot_screens.py
     (render_digest_overview_text/render_digest_section_text), клавиатуры -- bot_keyboards.py.
@@ -52,22 +64,27 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         for v in balances.get("strategies", {}).values()
     )
 
+    # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
+    # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
+    # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
+    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰"}
+
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
-    sell_items = [
+    schedule_items = [
         {
-            "text": f"{a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }
-        for a in exit_alerts if a["recommendation"] == "SELL"
+        for a in exit_alerts if a["trigger_kind"] == "calendar"
     ]
-    hold_items = [
+    signal_items = [
         {
-            "text": f"{a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }
-        for a in exit_alerts if a["recommendation"] == "HOLD"
+        for a in exit_alerts if a["trigger_kind"] != "calendar"
     ]
 
     audit_report = inspector.audit_limits_and_rules()
@@ -90,9 +107,9 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             })
 
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
-    buy_items = [
+    signal_items += [
         {
-            "text": f"{r['strategy_name']}: {r['reason']}",
+            "text": f"{ACTION_BADGES['BUY']} {r['strategy_name']}: {r['reason']}",
             "label": r["symbol"],
             "ticker_id": r["ticker_id"],
         }
@@ -114,13 +131,12 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         WHERE op.portfolio_id = {int(portfolio_id)} AND op.step_ready_notified_at IS NOT NULL;
     """)
     ladder_rows = ladder_rows if isinstance(ladder_rows, list) else ([ladder_rows] if ladder_rows else [])
-    ladder_items = []
     for step in ladder_rows:
         qty = expected_step_quantity(step["target_quantity"], step["budget_share_pct"])
         price = float(step["last_price"] or 0)
-        ladder_items.append({
+        signal_items.append({
             "text": (
-                f"{step['symbol']} ({step['strategy_name']}), шаг {step['current_step']}: "
+                f"{ACTION_BADGES['LADDER']} {step['symbol']} ({step['strategy_name']}), шаг {step['current_step']}: "
                 f"условие выполнено, ~{abs(qty):.0f} шт по ${price:,.2f}"
             ),
             "label": step["symbol"],
@@ -137,14 +153,13 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         WHERE op.portfolio_id = {int(portfolio_id)} AND op.stale_notified_at IS NOT NULL;
     """)
     stale_rows = stale_rows if isinstance(stale_rows, list) else ([stale_rows] if stale_rows else [])
-    stale_items = []
     for so in stale_rows:
         order_price = float(so["order_price"] or 0)
         last_price = float(so["last_price"] or 0)
         drift_pct = abs(last_price - order_price) / order_price * 100.0 if order_price else 0.0
-        stale_items.append({
+        signal_items.append({
             "text": (
-                f"{so['symbol']} ({so['strategy_name']}): приказ по ${order_price:,.2f}, "
+                f"{ACTION_BADGES['STALE']} {so['symbol']} ({so['strategy_name']}): приказ по ${order_price:,.2f}, "
                 f"текущая цена ${last_price:,.2f} ({drift_pct:.1f}%). Пересмотрите или отмените."
             ),
             "label": so["symbol"],
@@ -158,11 +173,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         "total_capital": total_capital,
         "real_cash": real_cash,
         "sections": {
-            "sell": {**SECTION_META["sell"], "items": sell_items},
-            "hold": {**SECTION_META["hold"], "items": hold_items},
+            "schedule": {**SECTION_META["schedule"], "items": schedule_items},
+            "signals": {**SECTION_META["signals"], "items": signal_items},
             "limits": {**SECTION_META["limits"], "items": limit_items},
-            "buy": {**SECTION_META["buy"], "items": buy_items},
-            "ladder": {**SECTION_META["ladder"], "items": ladder_items},
-            "stale": {**SECTION_META["stale"], "items": stale_items},
         },
     }

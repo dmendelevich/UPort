@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from aiogram import Router, types, F
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 from database import db_sys
@@ -10,6 +11,39 @@ from bot_handlers.bot_screens import render_digest_overview_text, render_digest_
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard, generate_digest_section_keyboard
 
 router = Router()
+
+
+@router.callback_query(MenuAction.filter(F.action == "show_digest_focus"))
+async def process_digest_focus_menu(callback: types.CallbackQuery):
+    """
+    Ручной вызов дайджеста из главного меню (по просьбе пользователя 2026-07-30 --
+    иначе дайджест доступен только по кнопкам самого пуш-уведомления, и просмотренное
+    один раз сообщение позже некуда вернуться). Пикер портфелей -- тот же паттерн,
+    что и у "🔬 Списки наблюдения" (bot_handlers/watchlist.py::process_watchlist_focus_menu).
+    """
+    await callback.answer("Загрузка дайджеста...")
+
+    sql_portfolios = """
+        SELECT p.id, p.name, u.name AS owner_name
+        FROM public.portfolios p
+        JOIN public.users u ON p.owner_id = u.id
+        ORDER BY p.id ASC;
+    """
+    p_res = await asyncio.to_thread(db_sys.execute_query, sql_portfolios)
+    portfolios_list = p_res if isinstance(p_res, list) else ([p_res] if p_res else [])
+
+    builder = InlineKeyboardBuilder()
+    for p in portfolios_list:
+        builder.row(types.InlineKeyboardButton(
+            text=f"📅 Дайджест {p['name']} ({p['owner_name']})",
+            callback_data=MenuAction(action="view_digest", portfolio_id=int(p["id"]), sub_view="overview").pack()
+        ))
+    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+
+    try:
+        await callback.message.edit_text("📅 **УТРЕННИЙ ДАЙДЖЕСТ**\nВыберите портфель:", parse_mode="Markdown", reply_markup=builder.as_markup())
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(MenuAction.filter(F.action == "view_digest"))

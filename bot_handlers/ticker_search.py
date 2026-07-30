@@ -92,6 +92,29 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         )
         return
 
+    await render_ticker_passport(status_msg, ticker_id)
+
+
+@router.callback_query(MenuAction.filter(F.action == "view_ticker_passport"))
+async def process_view_ticker_passport(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Повторное открытие паспорта тикера по уже известному ticker_id -- напр. кнопка
+    "🔙 Назад к поиску" после добавления в список наблюдения (origin="search", см.
+    bot_handlers/watchlist.py::execute_watchlist_fixation, составной sub_view с
+    происхождением, тот же приём, что и в BACKLOG.md "Сделано" п.17). Тикер уже
+    легализован (иначе ticker_id было бы неоткуда взять), легализация не повторяется.
+    """
+    await callback.answer()
+    await render_ticker_passport(callback.message, callback_data.ticker_id)
+
+
+async def render_ticker_passport(target_message: types.Message, ticker_id: int):
+    """
+    Собирает и рендерит "Паспорт качества" бумаги по уже известному, легализованному
+    ticker_id -- шаги 4-6 бывшего process_global_ticker_search, вынесенные в общую
+    функцию, чтобы паспорт можно было открыть повторно (см. process_view_ticker_passport
+    выше), не только сразу после текстового ввода.
+    """
     # 4. ШАГ 4: СБОР АНАЛИТИЧЕСКИХ ДАННЫХ ИЗ ТАБЛИЦЫ TICKERS
     try:
         # 🔥 РЕФАКТОРИНГ: Заменяем на метод одной строки execute_row
@@ -99,14 +122,14 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         t = await asyncio.to_thread(db_bot.execute_row, sql_get_ticker)
         
         if not t:
-            await status_msg.edit_text("❌ Ошибка: не удалось извлечь паспорт бумаги из СУБД.")
+            await target_message.edit_text("❌ Ошибка: не удалось извлечь паспорт бумаги из СУБД.")
             return
 
         ticker_name_map = t.get("ticker_name_map") or {}
 
     except Exception as data_err:
         logging.error(f"🚨 [SEARCH ERROR]: Сбой сбора паспортных данных для id={ticker_id}: {data_err}")
-        await status_msg.edit_text("❌ Сбой экспресс-анализа паспорта бумаги.")
+        await target_message.edit_text("❌ Сбой экспресс-анализа паспорта бумаги.")
         return
 
     # 🧮 БЫСТРЫЙ И СВЕРХЛЕГКИЙ ЗАПРОС КОМПОНЕНТОВ ДЛЯ ДЕКОМПОЗИЦИИ ETF
@@ -208,8 +231,8 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
     # 6. ШАГ 6: СБОРКА СМАРТ-ПУЛЬТА ИЗ ДВУХ КНОПОК
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(
-        text="🔬 В список наблюдения", 
-        callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id)).pack()
+        text="🔬 В список наблюдения",
+        callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id), sub_view="search").pack()
     ))
     context_markup = builder.as_markup()
     
@@ -225,6 +248,6 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
 
 
     try:
-        await status_msg.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+        await target_message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass

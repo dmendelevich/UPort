@@ -75,7 +75,7 @@ class PositionExitEvaluator:
 
         return alerts
 
-    def _build_alert(self, pos: dict, recommendation: str, reason: str, metrics: dict) -> dict:
+    def _build_alert(self, pos: dict, recommendation: str, reason: str, metrics: dict, trigger_kind: str = "price") -> dict:
         return {
             "asset_id": pos.get("asset_id"),
             "portfolio_id": pos.get("portfolio_id"),
@@ -89,6 +89,10 @@ class PositionExitEvaluator:
             "recommendation": recommendation,  # "SELL" | "HOLD"
             "reason": reason,
             "metrics": metrics,
+            # "price" -- сработало от цены/RSI/фундаментала; "calendar" -- сработало от
+            # прошедшего времени (напр. тайм-аут слота Револьверной), см. Claude/BACKLOG.md
+            # (реорганизация дайджеста на разделы "по расписанию" vs "сигналы", 2026-07-30).
+            "trigger_kind": trigger_kind,
         }
 
     def _check_revolver_exit(self, pos: dict):
@@ -133,6 +137,7 @@ class PositionExitEvaluator:
                 f"Тайм-аут слота: {days_held} дн. с открытия позиции (лимит {time_limit_days}), цель "
                 f"+{target_profit_pct:.1f}% не достигнута (факт {profit_pct:.1f}%). Освобождай слот.",
                 metrics,
+                trigger_kind="calendar",
             )
 
         return None

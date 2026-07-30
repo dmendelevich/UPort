@@ -251,7 +251,7 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
         target_p_id = int(p_row["id"])
         print(f"🧬 [WATCHLIST SMART ROUTE]: Моно-портфель обнаружен. Авто-выбор portfolio_id = {target_p_id}")
         
-        await execute_watchlist_fixation(callback.message, target_p_id, t_id)
+        await execute_watchlist_fixation(callback.message, target_p_id, t_id, origin=callback_data.sub_view)
         return
 
     # 🔹 СЦЕНАРИЙ 2: Несколько портфелей — выводим лаконичное меню выбора портфеля
@@ -260,7 +260,7 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
         # Передаем выбранный portfolio_id и сохраняем исследуемый ticker_id в кнопке подтверждения
         builder.row(types.InlineKeyboardButton(
             text=f"💼 {p['name']}",
-            callback_data=MenuAction(action="confirm_wl_add", portfolio_id=int(p["id"]), ticker_id=int(t_id)).pack()
+            callback_data=MenuAction(action="confirm_wl_add", portfolio_id=int(p["id"]), ticker_id=int(t_id), sub_view=callback_data.sub_view).pack()
         ))
     
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
@@ -277,13 +277,20 @@ async def process_confirm_watchlist_addition(callback: types.CallbackQuery, call
     Этап Б: Фиксация выбора в мульти-портфельном режиме.
     """
     await callback.answer("Легализую актив...")
-    await execute_watchlist_fixation(callback.message, callback_data.portfolio_id, callback_data.ticker_id)
+    await execute_watchlist_fixation(callback.message, callback_data.portfolio_id, callback_data.ticker_id, origin=callback_data.sub_view)
 
 
-async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, ticker_id: int):
+async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, ticker_id: int, origin: str = ""):
     """
     Атомарный системный исполнитель v2.0
     Легализует листинг через изолированный метод ensure_listing и штампует статус в ватчлист.
+
+    origin -- откуда реально пришли (составной sub_view, тот же приём, что уже решил
+    аналогичную проблему для шторки алертов, см. BACKLOG.md "Сделано" п.17): "digest"
+    (кнопка из раздела дайджеста), "search" (кнопка из паспорта тикера, глобальный
+    поиск -- см. bot_handlers/ticker_search.py::process_view_ticker_passport) или ""
+    (нераспознанное/отсутствующее происхождение -- только "В главное меню", как и
+    было раньше). Влияет только на кнопку "назад" на финальном экране успеха, см. ниже.
     """
     import logging
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -324,11 +331,23 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
         # 4. АТОМАРНАЯ ЗАПИСЬ В ТАБЛИЦУ WATCHLIST
         db_sys.ensure_watchlist_row_v2(portfolio_id=int(portfolio_id), listing_id=int(l_id), reason="watched")
         
-        # 5. ВЫВОД ФИНАЛЬНОГО ПРЕМИАЛЬНОГО СТАТУСА
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-        
-        await message.edit_text(f"✅ Добавлено: **{yahoo_symbol}**", parse_mode="Markdown", reply_markup=builder.as_markup())
+        # 5. ВЫВОД ФИНАЛЬНОГО ПРЕМИАЛЬНОГО СТАТУСА -- кнопка "назад" зависит от origin
+        if origin == "digest":
+            success_markup = generate_nav_back_keyboard(
+                one_step_back_text="🔙 Назад к дайджесту",
+                full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view="signals").pack()
+            )
+        elif origin == "search":
+            success_markup = generate_nav_back_keyboard(
+                one_step_back_text="🔙 Назад к поиску",
+                full_back_callback=MenuAction(action="view_ticker_passport", ticker_id=ticker_id).pack()
+            )
+        else:
+            builder = InlineKeyboardBuilder()
+            builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+            success_markup = builder.as_markup()
+
+        await message.edit_text(f"✅ Добавлено: **{yahoo_symbol}**", parse_mode="Markdown", reply_markup=success_markup)
         print(f"🏁 [WATCHLIST FIX COMPLETE]: Бумага {yahoo_symbol} успешно прописана в СУБД.")
 
     except ValueError as val_err:
