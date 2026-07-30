@@ -92,11 +92,11 @@ async def process_global_ticker_search(message: types.Message, state: FSMContext
         )
         return
 
-    await render_ticker_passport(status_msg, ticker_id)
+    await render_ticker_passport(status_msg, ticker_id, user_db_id)
 
 
 @router.callback_query(MenuAction.filter(F.action == "view_ticker_passport"))
-async def process_view_ticker_passport(callback: types.CallbackQuery, callback_data: MenuAction):
+async def process_view_ticker_passport(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """
     Повторное открытие паспорта тикера по уже известному ticker_id -- напр. кнопка
     "🔙 Назад к поиску" после добавления в список наблюдения (origin="search", см.
@@ -105,15 +105,24 @@ async def process_view_ticker_passport(callback: types.CallbackQuery, callback_d
     легализован (иначе ticker_id было бы неоткуда взять), легализация не повторяется.
     """
     await callback.answer()
-    await render_ticker_passport(callback.message, callback_data.ticker_id)
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    await render_ticker_passport(callback.message, callback_data.ticker_id, user_db_id)
 
 
-async def render_ticker_passport(target_message: types.Message, ticker_id: int):
+async def render_ticker_passport(target_message: types.Message, ticker_id: int, user_db_id: int = None):
     """
     Собирает и рендерит "Паспорт качества" бумаги по уже известному, легализованному
     ticker_id -- шаги 4-6 бывшего process_global_ticker_search, вынесенные в общую
     функцию, чтобы паспорт можно было открыть повторно (см. process_view_ticker_passport
     выше), не только сразу после текстового ввода.
+
+    user_db_id -- если известен, паспорт проверяет, не в СН ли эта бумага уже в одном
+    из портфелей ЭТОГО пользователя (тот же охват, что и у самой кнопки добавления,
+    см. process_add_to_watchlist_routing) -- по просьбе пользователя 2026-07-30, чтобы
+    не предлагать добавить то, что уже добавлено. Если да -- кнопки "В список
+    наблюдения"/"Оставить в покое" заменяются статус-строкой и ссылкой на карточку
+    тикера в соответствующем портфеле (там уже есть «🗑 Убрать из СН», если понадобится).
     """
     # 4. ШАГ 4: СБОР АНАЛИТИЧЕСКИХ ДАННЫХ ИЗ ТАБЛИЦЫ TICKERS
     try:
@@ -225,26 +234,52 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int):
     if strategy_compat_lines:
         report_text += "🎯 **Совместимость со стратегиями:**\n" + "\n".join(strategy_compat_lines) + "\n───────\n"
 
-    report_text += "Включить инструмент в список наблюдения?"
+    # 5c. Уже ли бумага в СН хотя бы одного портфеля ЭТОГО пользователя -- тот же охват,
+    # что и у самой кнопки добавления (process_add_to_watchlist_routing). Определяет,
+    # показывать ли вообще "Добавить"/"Оставить в покое" (см. docstring выше).
+    watched_portfolios = []
+    if user_db_id:
+        watched_rows = await asyncio.to_thread(db_bot.execute_query, f"""
+            SELECT w.portfolio_id, p.name AS portfolio_name, w.listing_id
+            FROM public.watchlist w
+            JOIN public.listings l ON w.listing_id = l.id
+            JOIN public.portfolios p ON w.portfolio_id = p.id
+            WHERE l.ticker_id = {int(ticker_id)} AND p.owner_id = {int(user_db_id)};
+        """)
+        watched_portfolios = watched_rows if isinstance(watched_rows, list) else ([watched_rows] if watched_rows else [])
 
-
-    # 6. ШАГ 6: СБОРКА СМАРТ-ПУЛЬТА ИЗ ДВУХ КНОПОК
+    # 6. ШАГ 6: СБОРКА СМАРТ-ПУЛЬТА
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="🔬 В список наблюдения",
-        callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id), sub_view="search").pack()
-    ))
+    if watched_portfolios:
+        names = ", ".join(wp["portfolio_name"] for wp in watched_portfolios)
+        report_text += f"✅ Уже в списке наблюдения: {names}."
+        for wp in watched_portfolios:
+            builder.row(types.InlineKeyboardButton(
+                text=f"📂 Карточка в «{wp['portfolio_name']}»",
+                callback_data=MenuAction(
+                    action="view_ticker", portfolio_id=int(wp["portfolio_id"]), listing_id=int(wp["listing_id"]), sub_view="owner"
+                ).pack()
+            ))
+    else:
+        report_text += "Включить инструмент в список наблюдения?"
+        builder.row(types.InlineKeyboardButton(
+            text="🔬 В список наблюдения",
+            callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id), sub_view="search").pack()
+        ))
     context_markup = builder.as_markup()
-    
-    # Нижнюю кнопку отмены генерируем через наш универсальный подпрограммный подвал UPort
-    reply_markup = generate_nav_back_keyboard(
-        one_step_back_text="💤 Оставить в покое",
-        full_back_callback=MenuAction(action="main_menu").pack()
-    )
-    
-    # Склеиваем контекстную кнопку ватчлиста и системный навигационный подвал
     final_builder = InlineKeyboardBuilder.from_markup(context_markup)
-    final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
+
+    if watched_portfolios:
+        # Уже в СН -- "Оставить в покое" не имеет смысла (нечего оставлять, решение уже
+        # принято раньше), обычная кнопка "В главное меню" без дублирующей формулировки.
+        final_builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    else:
+        # Нижнюю кнопку отмены генерируем через наш универсальный подпрограммный подвал UPort
+        reply_markup = generate_nav_back_keyboard(
+            one_step_back_text="💤 Оставить в покое",
+            full_back_callback=MenuAction(action="main_menu").pack()
+        )
+        final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
 
 
     try:
