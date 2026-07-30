@@ -10,6 +10,9 @@ from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_screens import generate_confirm_screen
 from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
+from bot_handlers.bot_utils import execute_virtual_transfer
+from analytics.analytics_utils import TickerEvaluator
+from brokers_connectors.sync_strategy_asset_fb import SyncStrategyAssetFB
 
 router = Router()
 
@@ -553,7 +556,9 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
     "владеем ли в ДРУГОЙ стратегии": если бумага уже держится в ТОЙ ЖЕ стратегии (пусть и
     по давно завершённому циклу) или не куплена вовсе -- это всё ещё ветка 1, новый
     независимый цикл поверх старого. Настоящая ветка 3 (перенос между стратегиями) --
-    только если бумага сейчас реально числится в ДРУГОЙ стратегии, это пока не реализовано.
+    только если бумага сейчас реально числится в ДРУГОЙ стратегии -- ведём в тот же единый
+    механизм переноса (transfer_*), что и с прямой кнопки на карточке тикера, а не строим
+    вторую отдельную реализацию (согласовано 2026-07-30).
     """
     p_id, t_id, l_id, s_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id, callback_data.strategy_id
     await callback.answer()
@@ -561,8 +566,10 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
     other_strategy_row = await asyncio.to_thread(
         db_bot.execute_row,
         f"""
-            SELECT 1 FROM public.strategy_assets sa
+            SELECT sa.strategy_id, sa.allocated_quantity, s.strategy_name
+            FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
+            JOIN public.strategies s ON sa.strategy_id = s.id
             WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)}
               AND sa.strategy_id != {int(s_id)} AND sa.allocated_quantity > 0
             LIMIT 1;
@@ -570,9 +577,12 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
     )
 
     if other_strategy_row:
-        await callback.answer(
-            "🔧 Бумага уже держится в ДРУГОЙ стратегии -- перенос между стратегиями при создании плана пока не реализован.",
-            show_alert=True
+        target_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(s_id)};")
+        target_name = (target_row or {}).get("strategy_name", "?")
+        await _start_transfer_quantity_ask(
+            callback, state, p_id, t_id, l_id,
+            source_id=int(other_strategy_row["strategy_id"]), target_id=s_id, target_name=target_name,
+            source_qty=float(other_strategy_row["allocated_quantity"])
         )
         return
 
@@ -995,5 +1005,467 @@ async def process_exit_plan_execute(callback: types.CallbackQuery, state: FSMCon
             parse_mode="Markdown",
             reply_markup=back_kb
         )
+    except TelegramBadRequest:
+        pass
+
+
+# =========================================================================
+# 🔄 "ПЕРЕНОС" -- ЕДИНЫЙ МЕХАНИЗМ ПЕРЕНОСА МЕЖДУ СТРАТЕГИЯМИ (согласовано 2026-07-30,
+# см. Claude/11_asset_lifecycle_and_plan.md, "реинкарнация"). Две двери в один и тот же
+# код: прямая кнопка на карточке тикера (transfer_start), и обнаружение "держится в
+# другой стратегии" внутри "Плана входа" (process_plan_from_idea_strategy выше) --
+# оба ведут в _start_transfer_quantity_ask, не в две параллельные реализации.
+# Перенос в СОДЕРЖАТЕЛЬНУЮ стратегию всегда сопровождается планом (переносим -- значит,
+# уже есть решение, куда и зачем); перенос в служебную (пока только "Неопределённая",
+# "Кэш/Резерв" как приёмник исключён -- бессмысленно для реальной позиции в бумаге) --
+# просто перенос, без плана, планировать там нечего.
+# =========================================================================
+
+class TransferPlanStates(StatesGroup):
+    waiting_for_target_quantity = State()
+
+
+async def _get_current_holders(portfolio_id: int, listing_id: int) -> list:
+    rows = await asyncio.to_thread(
+        db_bot.execute_query,
+        f"""
+            SELECT sa.strategy_id, s.strategy_name, sa.allocated_quantity
+            FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            JOIN public.strategies s ON sa.strategy_id = s.id
+            WHERE a.portfolio_id = {int(portfolio_id)} AND a.listing_id = {int(listing_id)}
+              AND sa.allocated_quantity > 0;
+        """
+    )
+    return rows if isinstance(rows, list) else ([rows] if rows else [])
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_start"))
+async def process_transfer_start(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Вход с карточки тикера. Если бумага держится в нескольких стратегиях сразу -- сначала спрашиваем источник."""
+    p_id, t_id, l_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id
+    await callback.answer()
+
+    holders = await _get_current_holders(p_id, l_id)
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+
+    if not holders:
+        try:
+            await callback.message.edit_text(
+                "⚠️ Эта бумага сейчас не держится ни в одной стратегии этого портфеля.",
+                reply_markup=back_kb
+            )
+        except TelegramBadRequest:
+            pass
+        return
+
+    if len(holders) == 1:
+        h = holders[0]
+        await _show_transfer_target_picker(callback, p_id, t_id, l_id, int(h["strategy_id"]), h["strategy_name"], float(h["allocated_quantity"]))
+        return
+
+    builder = InlineKeyboardBuilder()
+    for h in holders:
+        builder.row(types.InlineKeyboardButton(
+            text=f"🎯 {h['strategy_name']} ({float(h['allocated_quantity']):.0f} шт)",
+            callback_data=MenuAction(
+                action="transfer_source", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id, strategy_id=int(h["strategy_id"])
+            ).pack()
+        ))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(back_kb))
+
+    try:
+        await callback.message.edit_text(
+            "🔄 **Перенос**\n\nБумага держится сразу в нескольких стратегиях -- откуда переносим?",
+            parse_mode="Markdown", reply_markup=final_builder.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_source"))
+async def process_transfer_source(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Источник выбран (только когда держателей было несколько) -- дальше общий выбор приёмника."""
+    p_id, t_id, l_id, s_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id, callback_data.strategy_id
+    await callback.answer()
+
+    row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT sa.allocated_quantity, s.strategy_name FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            JOIN public.strategies s ON sa.strategy_id = s.id
+            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(s_id)};
+        """
+    )
+    if not row:
+        await callback.answer("⚠️ Уже не актуально.", show_alert=True)
+        return
+
+    await _show_transfer_target_picker(callback, p_id, t_id, l_id, s_id, row["strategy_name"], float(row["allocated_quantity"]))
+
+
+async def _show_transfer_target_picker(callback, p_id: int, t_id: int, l_id: int, source_id: int, source_name: str, source_qty: float):
+    """
+    Список стратегий-приёмников (исключая источник) с подсказкой совместимости (✅/❌)
+    для содержательных стратегий -- переиспользует уже существующий
+    TickerEvaluator.evaluate_ticker_strategy (та же проверка, что уже показывается в
+    паспорте тикера при глобальном поиске).
+
+    «Кэш/Резерв» исключён из приёмников не произвольно, а по природе вещи: это служебная
+    стратегия, моделирующая ДЕНЬГИ (доля капитала, не отдельная таблица счетов, см.
+    Claude/03_strategies_and_templates.md) -- в неё в принципе нельзя перенести долю
+    актива, она физически не может содержать позиции по бумагам.
+    """
+    strategies = await asyncio.to_thread(
+        db_bot.execute_query,
+        f"""
+            SELECT s.id, s.strategy_name, st.system_key
+            FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true
+              AND s.id != {int(source_id)} AND st.system_key != 'CASH_RESERVE';
+        """
+    )
+    strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+
+    if not strategies:
+        try:
+            await callback.message.edit_text("⚠️ В портфеле нет других стратегий-приёмников.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    evaluator = TickerEvaluator(db_instance=db_bot)
+    report = await asyncio.to_thread(evaluator.evaluate_ticker_strategy, t_id, p_id)
+    explain_map = report.get("explain_map", {})
+
+    builder = InlineKeyboardBuilder()
+    for s in strategies:
+        s_id = int(s["id"])
+        badge = ""
+        if s["system_key"] in CONTENT_SYSTEM_KEYS:
+            info = explain_map.get(s_id)
+            if info:
+                badge = " ✅" if info["is_compatible_technically"] else " ❌"
+        builder.row(types.InlineKeyboardButton(
+            text=f"🎯 {s['strategy_name']}{badge}",
+            callback_data=MenuAction(
+                action="transfer_target", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id,
+                strategy_id=source_id, task_id=s_id
+            ).pack()
+        ))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(back_kb))
+
+    try:
+        await callback.message.edit_text(
+            f"🔄 **Перенос**\n\nИз «{source_name}» ({source_qty:.0f} шт) — куда перенести?",
+            parse_mode="Markdown", reply_markup=final_builder.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_target"))
+async def process_transfer_target(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    """
+    Приёмник выбран. Содержательная стратегия -- просим количество на весь план и
+    дальше заводим план вместе с переносом; служебная («Неопределённая») -- просто
+    переносим, планировать там нечего.
+    """
+    p_id, t_id, l_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id
+    source_id, target_id = callback_data.strategy_id, callback_data.task_id
+    await callback.answer()
+
+    row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT sa.allocated_quantity FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(source_id)};
+        """
+    )
+    source_qty = float((row or {}).get("allocated_quantity") or 0)
+    if source_qty <= 0:
+        await callback.answer("⚠️ Уже не актуально -- в источнике не осталось акций.", show_alert=True)
+        return
+
+    target_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT s.strategy_name, st.system_key FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.id = {int(target_id)};
+        """
+    )
+    if not target_row:
+        await callback.answer("⚠️ Стратегия больше не существует.", show_alert=True)
+        return
+
+    if target_row["system_key"] in CONTENT_SYSTEM_KEYS:
+        await _start_transfer_quantity_ask(callback, state, p_id, t_id, l_id, source_id, target_id, target_row["strategy_name"], source_qty)
+    else:
+        await _show_transfer_confirm_simple(callback, p_id, t_id, l_id, source_id, target_id, target_row["strategy_name"], source_qty)
+
+
+async def _start_transfer_quantity_ask(callback, state: FSMContext, p_id: int, t_id: int, l_id: int, source_id: int, target_id: int, target_name: str, source_qty: float):
+    """Общая точка для обеих дверей (прямая кнопка "Перенос" и обнаружение внутри "Плана входа")."""
+    prior_data = await state.get_data()
+    await state.set_state(TransferPlanStates.waiting_for_target_quantity)
+    await state.update_data(
+        user_db_id=prior_data.get("user_db_id"),
+        is_admin=prior_data.get("is_admin", False),
+        transfer_portfolio_id=p_id,
+        transfer_ticker_id=t_id,
+        transfer_listing_id=l_id,
+        transfer_source_id=source_id,
+        transfer_target_id=target_id,
+        transfer_source_qty=source_qty,
+        menu_msg_id=callback.message.message_id,
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(
+        text="🔙 Отмена", callback_data=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
+    ))
+
+    try:
+        await callback.message.edit_text(
+            f"🔄 **Перенос в «{target_name}»**\n\nСейчас переносим {source_qty:.0f} шт. Отправьте в чат итоговое "
+            f"количество на ВЕСЬ план в этой стратегии (все шаги суммарно, включая уже переносимое).",
+            parse_mode="Markdown",
+            reply_markup=builder.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.message(TransferPlanStates.waiting_for_target_quantity)
+async def process_transfer_quantity_text(message: types.Message, state: FSMContext, bot: Bot):
+    user_data = await state.get_data()
+    raw = (message.text or "").strip().replace(",", ".")
+
+    try:
+        await message.delete()
+    except Exception as del_err:
+        logging.warning(f"⚠️ [ПЕРЕНОС]: Не удалось удалить сообщение пользователя: {del_err}")
+
+    menu_msg_id = user_data.get("menu_msg_id")
+    p_id = int(user_data.get("transfer_portfolio_id", 0))
+    l_id = int(user_data.get("transfer_listing_id", 0))
+    source_qty = float(user_data.get("transfer_source_qty", 0))
+
+    menu_message = types.Message(message_id=menu_msg_id, date=message.date, chat=message.chat, from_user=message.from_user)
+    menu_message._bot = bot
+
+    try:
+        target_qty = float(raw)
+    except ValueError:
+        target_qty = 0.0
+
+    if target_qty < source_qty:
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(
+            text="🔙 Отмена", callback_data=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
+        ))
+        await menu_message.edit_text(
+            f"⚠️ Введите число не меньше {source_qty:.0f} (переносимое количество не может превышать план). Отправьте ещё раз.",
+            reply_markup=builder.as_markup()
+        )
+        return
+
+    await state.update_data(transfer_target_quantity=target_qty)
+
+    target_row = await asyncio.to_thread(
+        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('transfer_target_id', 0))};"
+    )
+    source_row = await asyncio.to_thread(
+        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('transfer_source_id', 0))};"
+    )
+    target_name = (target_row or {}).get("strategy_name", "?")
+    source_name = (source_row or {}).get("strategy_name", "?")
+
+    confirm_text = generate_confirm_screen(
+        header_text="🔄 **Перенос**",
+        action_title="ПОДТВЕРЖДЕНИЕ",
+        details_list=[
+            f"Перенести {source_qty:.0f} шт из «{source_name}» в «{target_name}»",
+            f"Итого на план в «{target_name}»: {target_qty:.0f} шт",
+        ],
+        parse_mode="Markdown"
+    )
+    reply_markup = generate_confirm_keyboard(
+        yes_text="🚀 Да, перенести и создать план",
+        yes_callback_packed=MenuAction(action="transfer_execute").pack(),
+        no_text="❌ Отмена",
+        no_callback_packed=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
+    )
+    await menu_message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_cancel"))
+async def process_transfer_cancel(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    user_data = await state.get_data()
+    is_admin = user_data.get("is_admin", False)
+    user_db_id = user_data.get("user_db_id", None)
+    await state.clear()
+    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
+
+    p_id, l_id = callback_data.portfolio_id, callback_data.listing_id
+    try:
+        await callback.message.edit_text("Отменено.", reply_markup=_back_to_plan_keyboard(p_id, l_id))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_execute"))
+async def process_transfer_execute(callback: types.CallbackQuery, state: FSMContext):
+    """
+    Переносит доли (execute_virtual_transfer) и заводит "голый" план в целевой стратегии,
+    сразу же прогоняя перенесённое количество через уже существующую логику сопоставления
+    шагов (_find_target_strategy) -- план должен оказаться на правильном шаге/статусе, а
+    не притворяться, что ничего ещё не куплено (см. Claude/11_asset_lifecycle_and_plan.md).
+    """
+    user_data = await state.get_data()
+    await callback.answer("🚀 Переношу и создаю план...")
+
+    p_id = int(user_data.get("transfer_portfolio_id", 0))
+    t_id = int(user_data.get("transfer_ticker_id", 0))
+    l_id = int(user_data.get("transfer_listing_id", 0))
+    source_id = int(user_data.get("transfer_source_id", 0))
+    target_id = int(user_data.get("transfer_target_id", 0))
+    source_qty = float(user_data.get("transfer_source_qty", 0))
+    target_qty = float(user_data.get("transfer_target_quantity", 0))
+
+    is_admin = user_data.get("is_admin", False)
+    user_db_id = user_data.get("user_db_id", None)
+    await state.clear()
+    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
+
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+
+    if source_qty <= 0 or target_qty <= 0:
+        try:
+            await callback.message.edit_text("❌ Сбой: данные устарели. Начните заново.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    # 1. Физический перенос долей между стратегиями (уже существующий, ранее не
+    # подключённый ни к одной живой кнопке механизм).
+    await execute_virtual_transfer(
+        portfolio_id=p_id, listing_id=l_id, source_strategy_id=source_id, target_strategy_id=target_id, quantity=source_qty
+    )
+
+    # 2. Заводим "голый" план в целевой стратегии -- шаг 1, PENDING, без ордера.
+    result = await asyncio.to_thread(
+        db_sys.execute_query,
+        f"""
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
+            VALUES
+                ({p_id}, {l_id}, {t_id}, {target_id}, 1, 'PENDING',
+                 {target_qty}, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id;
+        """
+    )
+    if not result:
+        logging.error(f"❌ [ПЕРЕНОС]: Перенос выполнен, но сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {target_id}).")
+        try:
+            await callback.message.edit_text(
+                "⚠️ Перенос выполнен, но план создать не удалось (возможно, уже есть активный план в этой стратегии). Проверьте лог.",
+                reply_markup=back_kb
+            )
+        except TelegramBadRequest:
+            pass
+        return
+    pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    # 3. Прогоняем перенесённое количество через ту же математику, что и реальная
+    # рыночная дельта -- план сразу окажется на правильном шаге, если перенесённого
+    # количества уже достаточно (не перезаписываем баланс повторно -- перенос его уже
+    # применил, здесь только определяем current_step/pipeline_status).
+    sync = SyncStrategyAssetFB(db_sys)
+    _, matched_pipe_id, action, _, _ = await asyncio.to_thread(sync._find_target_strategy, p_id, t_id, source_qty)
+
+    if matched_pipe_id == pipe_id and action in ('NEXT_STEP', 'COMPLETE_PIPELINE'):
+        await asyncio.to_thread(sync._update_pipeline_status, pipe_id, action)
+        step_summary = "План уже полностью выполнен перенесённым количеством." if action == 'COMPLETE_PIPELINE' else "Шаг 1 плана уже засчитан перенесённым количеством."
+    else:
+        step_summary = "План ждёт первого шага (перенесённого количества пока недостаточно)."
+
+    logging.info(f"✅ [ПЕРЕНОС]: {source_qty} шт перенесено из стратегии {source_id} в {target_id}, план #{pipe_id} создан (портфель {p_id}, тикер {t_id}).")
+
+    try:
+        await callback.message.edit_text(
+            f"✅ **Перенос выполнен** (план #{pipe_id})\n{source_qty:.0f} шт перенесено. {step_summary}",
+            parse_mode="Markdown",
+            reply_markup=back_kb
+        )
+    except TelegramBadRequest:
+        pass
+
+
+async def _show_transfer_confirm_simple(callback, p_id: int, t_id: int, l_id: int, source_id: int, target_id: int, target_name: str, source_qty: float):
+    """Перенос в служебную стратегию (сейчас -- только «Неопределённая») -- без плана, планировать там нечего."""
+    source_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(source_id)};")
+    source_name = (source_row or {}).get("strategy_name", "?")
+
+    confirm_text = generate_confirm_screen(
+        header_text="🔄 **Перенос**",
+        action_title="ПОДТВЕРЖДЕНИЕ",
+        details_list=[f"Перенести {source_qty:.0f} шт из «{source_name}» в «{target_name}»"],
+        parse_mode="Markdown"
+    )
+    reply_markup = generate_confirm_keyboard(
+        yes_text="🚀 Да, перенести",
+        yes_callback_packed=MenuAction(
+            action="transfer_execute_simple", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id,
+            strategy_id=source_id, task_id=target_id
+        ).pack(),
+        no_text="❌ Отмена",
+        no_callback_packed=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
+    )
+    try:
+        await callback.message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "transfer_execute_simple"))
+async def process_transfer_execute_simple(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Перенос без плана (приёмник -- служебная стратегия)."""
+    p_id, t_id, l_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id
+    source_id, target_id = callback_data.strategy_id, callback_data.task_id
+    await callback.answer("🚀 Переношу...")
+
+    row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT sa.allocated_quantity FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(source_id)};
+        """
+    )
+    qty = float((row or {}).get("allocated_quantity") or 0)
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+    if qty <= 0:
+        try:
+            await callback.message.edit_text("⚠️ Уже не актуально.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    await execute_virtual_transfer(
+        portfolio_id=p_id, listing_id=l_id, source_strategy_id=source_id, target_strategy_id=target_id, quantity=qty
+    )
+    logging.info(f"✅ [ПЕРЕНОС]: {qty} шт перенесено из стратегии {source_id} в {target_id} без плана (портфель {p_id}, тикер {t_id}).")
+
+    try:
+        await callback.message.edit_text(f"✅ Перенос выполнен: {qty:.0f} шт.", reply_markup=back_kb)
     except TelegramBadRequest:
         pass

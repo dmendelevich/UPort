@@ -439,6 +439,12 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 text="📋 План выхода",
                 callback_data=MenuAction(action="plan_exit_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
             ))
+            # "Перенос" -- единый механизм переноса между стратегиями (согласовано
+            # 2026-07-30, см. Claude/11_asset_lifecycle_and_plan.md, "реинкарнация").
+            action_builder.row(types.InlineKeyboardButton(
+                text="🔄 Перенести в другую стратегию",
+                callback_data=MenuAction(action="transfer_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+            ))
 
         nav_kb = generate_nav_back_keyboard(
             one_step_back_text="🔙 К карточке бумаги",

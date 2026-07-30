@@ -105,7 +105,8 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
             SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
                    w.considered_at, w.watched_at, w.ordered_at, w.bought_at, w.sold_out_at,
                    COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
-                   COUNT(DISTINCT op.id)::int as active_plans_count
+                   COUNT(DISTINCT op.id)::int as active_plans_count,
+                   COUNT(DISTINCT sa.strategy_id)::int as strategy_count
             FROM public.watchlist w
             JOIN public.listings l ON w.listing_id = l.id
             JOIN public.tickers t ON l.ticker_id = t.id
@@ -114,6 +115,8 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                                       AND al.is_active = true
             LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
                                       AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+            LEFT JOIN public.assets a ON a.portfolio_id = w.portfolio_id AND a.listing_id = w.listing_id
+            LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
             WHERE w.portfolio_id = {p_id}
             GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
             ORDER BY t.symbol ASC;
@@ -159,6 +162,12 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                 # (order_pipelines PENDING/ACTIVE), см. Claude/11_asset_lifecycle_and_plan.md
                 b_plan = "📋" if int(item.get('active_plans_count') or 0) > 0 else ""
 
+                # В скольких стратегиях портфеля бумага реально держится сейчас
+                # (strategy_assets.allocated_quantity > 0) -- по просьбе пользователя
+                # 2026-07-30, между "Портфель" и "Распродано".
+                strategy_count = int(item.get('strategy_count') or 0)
+                b_strategy = "🎯" if strategy_count > 0 else ""
+
                 # Извлекаем честный счетчик активных алертов из базы
                 alerts_count = int(item.get('active_alerts_count') or 0)
                 # Логика видимости колокольчика вынесена ВНЕ генератора по вашему ТЗ
@@ -171,6 +180,8 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                     f2=b_watch,
                     f3=b_order,
                     f4=b_asset,
+                    f_strategy=b_strategy,
+                    strategy_count=strategy_count,
                     f5=b_sold,
                     f6=b_plan,
                     alert_icon=b_alert,

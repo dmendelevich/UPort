@@ -102,7 +102,6 @@ def generate_tab_switch_keyboard(tabs: list, current_sub_view: str) -> InlineKey
         builder.row(*buttons)
     return builder.as_markup()
 
-
 def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str) -> InlineKeyboardMarkup:
     """
     Абсолютно универсальный навигационный пульт возврата экосистемы UPort.
@@ -124,7 +123,6 @@ def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str)
     ))
     
     return builder.as_markup()
-
 
 def generate_ticker_footer_keyboard(
     portfolio_id: int, listing_id: int, symbol: str, strategy_id: int, is_owner_view: bool,
@@ -168,7 +166,6 @@ def generate_ticker_footer_keyboard(
     nav_kb = generate_nav_back_keyboard(one_step_back_text=back_text, full_back_callback=back_callback)
     builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
     return builder.as_markup()
-
 
 def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     """
@@ -401,7 +398,10 @@ def generate_portfolio_button_text(crystal: str, ticker: str, quantity: int, pro
     ]
     return assemble_lego_line(blueprint)
 
-def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: str, f5: str, f6: str, alert_icon: str, alerts_count: int) -> str:
+def generate_watchlist_button_text(
+    ticker: str, f1: str, f2: str, f3: str, f4: str, f5: str, f6: str,
+    alert_icon: str, alerts_count: int, f_strategy: str = "", strategy_count: int = 0
+) -> str:
     """
     Генерирует жесткую монолитную строку для инлайн-кнопок Списков Наблюдения.
     🔥 ФИНАЛ: Полностью многомерный радар. Каждое знакоместо управляется независимо.
@@ -410,6 +410,9 @@ def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: s
     см. Claude/11_asset_lifecycle_and_plan.md). Стоит ПОСЛЕ колокольчика алертов (не
     внутри кластера жизненного цикла) -- по просьбе пользователя 2026-07-29, визуально
     отдельная колонка правее.
+    f_strategy/strategy_count -- в скольких стратегиях портфеля бумага реально держится
+    сейчас (strategy_assets.allocated_quantity > 0), число, не просто факт "да/нет" --
+    вставлено между "Портфель" и "Распродано" по просьбе пользователя 2026-07-30.
     """
     blueprint = [
         {"type": "ticker", "value": ticker},
@@ -418,13 +421,13 @@ def generate_watchlist_button_text(ticker: str, f1: str, f2: str, f3: str, f4: s
         {"type": "badge", "icon": f2, "index": 0},          # Фаза 2: Наблюдение (🎯)
         {"type": "badge", "icon": f3, "index": 0},          # Фаза 3: Ордер (📃)
         {"type": "badge", "icon": f4, "index": 0},          # Фаза 4: Портфель (💼)
+        {"type": "badge", "icon": f_strategy, "index": strategy_count},  # В скольких стратегиях портфеля (🎯N)
         {"type": "badge", "icon": f5, "index": 0},          # Фаза 5: Распродано (🏁)
         {"type": "badge", "icon": alert_icon, "index": alerts_count},  # Колокольчик алертов (Управляется из хэндлера)
         {"type": "badge", "icon": f6, "index": 0},          # Есть активный План (📋), правее колокольчика
         {"type": "final_row", "value": ""}
     ]
     return assemble_lego_line(blueprint)
-
 
 def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
     """
@@ -448,7 +451,6 @@ def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
     if not tabs:
         return None
     return generate_tab_switch_keyboard(tabs, current_sub_view="overview")
-
 
 def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list):
     """
