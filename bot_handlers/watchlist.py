@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 # Импортируем готовые объекты СУБД, фабрику и навигацию
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text, generate_main_menu_keyboard
+from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text, generate_main_menu_keyboard, generate_confirm_keyboard
 
 router = Router()
 
@@ -360,3 +360,102 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
     except Exception as fix_err:
         logging.error(f"🚨 [WATCHLIST CRITICAL СБОЙ]: Ошибка фиксации инвест-идеи: {fix_err}")
         await message.edit_text("❌ Сбой записи актива в списки наблюдения СУБД.", reply_markup=generate_main_menu_keyboard())
+
+
+# =========================================================================
+# 🗑 УДАЛЕНИЕ ИЗ СН -- только там, где известен конкретный портфель (карточка
+# тикера, "owner"-режим), см. обсуждение 2026-07-30 в Claude/BACKLOG.md.
+# =========================================================================
+
+def get_watchlist_removal_status(db_instance, portfolio_id: int, listing_id: int) -> dict | None:
+    """
+    Проверяет, есть ли бумага в СН этого КОНКРЕТНОГО портфеля и безопасно ли её оттуда
+    убрать -- те же поля, что уже считаются для LEGO-радара СН (bot_handlers/watchlist.py,
+    process_view_watchlist_portfolio): нет активного приказа, бумага не куплена (не
+    держится), не привязана ни к одной стратегии, нет активного Плана (order_pipelines
+    PENDING/ACTIVE), нет активных алертов брокера. Возвращает None, если записи в СН
+    для этой пары (портфель, листинг) вообще нет.
+    """
+    row = db_instance.execute_row(f"""
+        SELECT w.id, w.ordered_at, w.bought_at,
+               COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
+               COUNT(DISTINCT op.id)::int as active_plans_count,
+               COUNT(DISTINCT sa.strategy_id)::int as strategy_count
+        FROM public.watchlist w
+        LEFT JOIN public.alerts al ON al.listing_id = w.listing_id
+                                   AND al.portfolio_id = w.portfolio_id AND al.is_active = true
+        LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
+                                   AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+        LEFT JOIN public.assets a ON a.portfolio_id = w.portfolio_id AND a.listing_id = w.listing_id
+        LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
+        WHERE w.portfolio_id = {int(portfolio_id)} AND w.listing_id = {int(listing_id)}
+        GROUP BY w.id, w.ordered_at, w.bought_at;
+    """)
+    if not row:
+        return None
+
+    is_safe = (
+        row.get("ordered_at") is None
+        and row.get("bought_at") is None
+        and int(row.get("strategy_count") or 0) == 0
+        and int(row.get("active_plans_count") or 0) == 0
+        and int(row.get("active_alerts_count") or 0) == 0
+    )
+    return {"watchlist_id": row["id"], "is_safe": is_safe}
+
+
+@router.callback_query(MenuAction.filter(F.action == "confirm_remove_wl"))
+async def process_confirm_remove_watchlist(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Шаг подтверждения -- кнопка в футере карточки тикера показывается, только если уже безопасно, но перепроверяем перед показом на случай, если состояние изменилось за секунду до клика."""
+    p_id = callback_data.portfolio_id
+    l_id = callback_data.listing_id
+    symbol = callback_data.ticker_name or "бумагу"
+
+    status = await asyncio.to_thread(get_watchlist_removal_status, db_bot, p_id, l_id)
+    back_callback = MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=symbol, sub_view="owner").pack()
+
+    if not status or not status["is_safe"]:
+        await callback.answer("⚠️ Состояние изменилось -- бумага больше не годится для удаления из СН.", show_alert=True)
+        return
+
+    await callback.answer()
+    keyboard = generate_confirm_keyboard(
+        yes_text="🗑 Да, убрать из СН",
+        yes_callback_packed=MenuAction(action="execute_remove_wl", portfolio_id=p_id, listing_id=l_id, ticker_name=symbol).pack(),
+        no_text="❌ Отмена",
+        no_callback_packed=back_callback,
+    )
+    try:
+        await callback.message.edit_text(f"Убрать **{symbol}** из списка наблюдения этого портфеля?", parse_mode="Markdown", reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "execute_remove_wl"))
+async def process_execute_remove_watchlist(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Собственно удаление -- перепроверяет безопасность заново прямо перед DELETE (не доверяет состоянию с прошлого экрана)."""
+    p_id = callback_data.portfolio_id
+    l_id = callback_data.listing_id
+    symbol = callback_data.ticker_name or "Бумага"
+
+    status = await asyncio.to_thread(get_watchlist_removal_status, db_bot, p_id, l_id)
+    if not status or not status["is_safe"]:
+        await callback.answer("⚠️ Состояние изменилось -- удаление отменено.", show_alert=True)
+        return
+
+    await asyncio.to_thread(db_sys.execute_query, f"DELETE FROM public.watchlist WHERE id = {int(status['watchlist_id'])};")
+    await callback.answer("Убрано из списка наблюдения.")
+
+    logging.info(f"🗑 [WATCHLIST REMOVE]: {symbol} убран из СН портфеля {p_id} (watchlist_id={status['watchlist_id']}).")
+
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(
+        text="🔬 К списку наблюдения",
+        callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+    ))
+    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+
+    try:
+        await callback.message.edit_text(f"✅ **{symbol}** убран из списка наблюдения.", parse_mode="Markdown", reply_markup=builder.as_markup())
+    except TelegramBadRequest:
+        pass

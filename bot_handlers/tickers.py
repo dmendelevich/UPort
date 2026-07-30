@@ -14,6 +14,7 @@ from bot_handlers.bot_screens import (
     format_alert_condition_line, classify_order, ORDER_CATEGORIES, SEPARATOR_LINE,
 )
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_ticker_footer_keyboard
+from bot_handlers.watchlist import get_watchlist_removal_status
 #from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
@@ -547,6 +548,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     text += format_broker_link_summary(alerts_count, orders_count)
 
+    # Кнопка «Убрать из СН» (см. Claude/BACKLOG.md, обсуждение 2026-07-30) -- только
+    # владельческий контекст (portfolio_id известен) и только если реально безопасно.
+    watchlist_removable = False
+    if is_owner_view:
+        wl_status = await asyncio.to_thread(get_watchlist_removal_status, db_bot, p_id, l_id)
+        watchlist_removable = bool(wl_status and wl_status["is_safe"])
+
     # Footer, ряд 4 -- навигация (см. Claude/05_strategy_screen_and_kubiki.md): один общий кубик
     # вместо ручной сборки "назад" + "главное меню" по отдельности
     if strategy_id > 0:
@@ -567,7 +575,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     reply_markup = generate_ticker_footer_keyboard(
         portfolio_id=p_id, listing_id=l_id, symbol=pure_symbol, strategy_id=strategy_id,
         is_owner_view=is_owner_view, alerts_count=alerts_count, orders_count=orders_count,
-        back_text=back_text, back_callback=back_callback
+        back_text=back_text, back_callback=back_callback, watchlist_removable=watchlist_removable
     )
 
     print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")

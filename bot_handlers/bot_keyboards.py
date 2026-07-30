@@ -99,7 +99,8 @@ def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str)
 
 def generate_ticker_footer_keyboard(
     portfolio_id: int, listing_id: int, symbol: str, strategy_id: int, is_owner_view: bool,
-    alerts_count: int, orders_count: int, back_text: str, back_callback: str
+    alerts_count: int, orders_count: int, back_text: str, back_callback: str,
+    watchlist_removable: bool = False
 ) -> InlineKeyboardMarkup:
     """
     Блок 5 стандарта body (см. Claude/05_strategy_screen_and_kubiki.md) -- компактные
@@ -108,6 +109,13 @@ def generate_ticker_footer_keyboard(
     "План выхода"/просмотр) + навигация назад. Общий кубик для любой карточки тикера
     с портфельным контекстом (полная карточка в tickers.py, обоснование идеи в
     «Предложениях» и т.п.) -- выделен 2026-07-29, см. Claude/BACKLOG.md.
+
+    watchlist_removable -- бумага сейчас в СН этого портфеля И безопасна к удалению
+    (см. bot_handlers/watchlist.py::get_watchlist_removal_status) -- вызывающий код уже
+    сходил в БД и решил, эта функция сама в БД не лезет (тот же принцип, что и для
+    alerts_count/orders_count выше). По умолчанию False -- сегодня вычисляется только
+    в tickers.py (карточка из СН), не в «Предложениях» (strategies.py) — можно
+    подключить туда позже тем же параметром, если понадобится.
     """
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -133,6 +141,14 @@ def generate_ticker_footer_keyboard(
             callback_data=MenuAction(
                 action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id,
                 ticker_name=symbol, sub_view="plan", strategy_id=strategy_id
+            ).pack()
+        ))
+
+    if watchlist_removable:
+        builder.row(types.InlineKeyboardButton(
+            text="🗑 Убрать из СН",
+            callback_data=MenuAction(
+                action="confirm_remove_wl", portfolio_id=portfolio_id, listing_id=listing_id, ticker_name=symbol
             ).pack()
         ))
 
