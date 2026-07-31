@@ -15,6 +15,7 @@ sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from database import db_sys
 import utils
 import config
+import settings
 
 # Настраиваем логирование для контроля пакетного прогресса в реальном времени
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -177,6 +178,16 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     macd_line = ema_12 - ema_26
                     macd_val = float(macd_line.iloc[-1])
 
+                    # Дневная волатильность -- общий примитив для PriceMoveWatcher и
+                    # протухания приказов/алертов (см. Claude/BACKLOG.md, 2026-07-30):
+                    # std дневных % изменений цены за окно, из той же истории, что и
+                    # остальные сигналы выше -- множитель валюты не нужен (отношение).
+                    daily_returns = history_series.pct_change().dropna()
+                    if len(daily_returns) >= settings.DAILY_VOLATILITY_WINDOW_DAYS:
+                        daily_volatility_pct = float(daily_returns.tail(settings.DAILY_VOLATILITY_WINDOW_DAYS).std() * 100)
+                    else:
+                        daily_volatility_pct = None
+
                     # Долгосрочный ценовой тренд (позиция цены относительно SMA100/SMA200) --
                     # НЕ инвестиционная рекомендация конкретной стратегии (та считается отдельно
                     # в analytics/analytics_utils.py). Значения намеренно не BUY/SELL, чтобы не
@@ -203,6 +214,7 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     pct1w_sql = f"{pct_1w:.2f}"
                     pct1m_sql = f"{pct_1m:.2f}"
                     pct1y_sql = f"{pct_1y:.2f}"
+                    volatility_sql = f"{daily_volatility_pct:.4f}" if daily_volatility_pct is not None else "NULL"
 
                     # 🔥 АТОМАРНЫЙ UPDATE СТРОКИ В СУБД (БЕЗ ЗАТИРАНИЯ ДАТЫ ОТЧЕТОВ)
                     sql_update_yhoo = f"""
@@ -223,6 +235,7 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                             signal_pct_1w = {pct1w_sql},
                             signal_pct_1m = {pct1m_sql},
                             signal_pct_1y = {pct1y_sql},
+                            signal_daily_volatility_pct = {volatility_sql},
                             signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
                             fb_market = 'YAHOO_GLOBAL', 
                             fb_exchange = 'YAHOO_GLOBAL'

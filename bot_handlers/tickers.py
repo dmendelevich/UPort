@@ -21,6 +21,7 @@ from bot_handlers.watchlist import get_watchlist_removal_status
 from analytics.portfolio_auditor import audit_ticker_for_portfolio
 # Мультивалютность (BACKLOG.md #30) -- плоская FX-конвертация для сумм брокерского слоя
 from analytics.analytics_utils import convert_currency_amount
+from analytics.order_alert_staleness import is_broker_order_price_stale
 
 # Инициализируем локальный роутер для модуля карточек акций
 router = Router()
@@ -325,7 +326,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         plan_rows = db_bot.execute_query(f"""
             SELECT op.id, op.strategy_id, s.strategy_name, s.rules_config,
                    op.current_step, op.target_quantity, op.initial_entry_price,
-                   op.pending_broker_order_id, op.stale_notified_at, op.step_ready_notified_at,
+                   op.pending_broker_order_id, op.step_ready_notified_at,
                    sa.allocated_quantity,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at))::int AS days_held,
                    (SELECT COUNT(*) FROM public.strategy_tactics st WHERE st.strategy_id = op.strategy_id) AS total_steps,
@@ -390,11 +391,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
                 if plan.get("pending_broker_order_id"):
                     report_text += f"└ Ожидается исполнение приказа №{plan['pending_broker_order_id']}.\n"
+                    # Живая проверка (не хранимый флаг) -- см. analytics/order_alert_staleness.py,
+                    # заменил analytics/stale_order_watcher.py (2026-07-30, п.5 БЭКЛОГА).
+                    if is_broker_order_price_stale(db_bot, plan["pending_broker_order_id"]):
+                        report_text += "└ ⚠️ Привязанный приказ мог устареть — цена ушла от цены приказа.\n"
                 else:
                     report_text += "└ Приказ на текущий шаг ещё не привязан — используйте «🔗 Привязать ордер к плану».\n"
 
-                if plan.get("stale_notified_at"):
-                    report_text += "└ ⚠️ Привязанный приказ мог устареть — цена ушла от цены приказа.\n"
                 if plan.get("step_ready_notified_at"):
                     report_text += "└ 🪜 Условие следующего шага уже выполнено — пора ставить приказ.\n"
 

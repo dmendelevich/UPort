@@ -24,5 +24,27 @@ TV_PREFERRED_EXCHANGES = ["NASDAQ", "NYSE"]
 # назад" по recorded_at, а не N-ю по счёту запись.
 PRICE_MOVE_WATCHER_WINDOW_MINUTES = 45      # окно для расчёта % движения цены
 PRICE_MOVE_WATCHER_BUFFER_SIZE = 20         # запас отсчётов в кольцевом буфере (не привязан жёстко к окну выше)
-PRICE_MOVE_WATCHER_THRESHOLD_PCT = 5.0      # % движения, начиная с которого это тревога
+PRICE_MOVE_WATCHER_THRESHOLD_PCT = 5.0      # ЗАПАСНОЙ плоский порог -- используется только если у бумаги ещё нет
+                                             # tickers.signal_daily_volatility_pct (см. блок ниже), напр. только что
+                                             # добавленный тикер без ночной истории
 PRICE_MOVE_WATCHER_PERIODIC_SEC = 3600      # повтор уведомления, пока условие не снято (см. alerts.periodic у ФБ)
+
+# ─── ВОЛАТИЛЬНОСТЬ БУМАГИ (общий примитив, см. Claude/BACKLOG.md, 2026-07-30) ───
+# tickers.signal_daily_volatility_pct -- std дневных % изменений цены за окно ниже,
+# считается раз в сутки в site_connectors/sync_signals_yf.py вместе с остальными
+# сигналами (EMA/RSI/MACD), из уже загруженной истории цен -- отдельного запроса не
+# требует. Единый фундамент для НЕСКОЛЬКИХ потребителей (PriceMoveWatcher и
+# протухание приказов/алертов ниже) -- каждый применяет свой K-множитель к одной и
+# той же цифре, а не считает волатильность заново по-своему.
+DAILY_VOLATILITY_WINDOW_DAYS = 20                  # окно для std дневных % изменений цены
+
+# PriceMoveWatcher: ожидаемое движение за окно = daily_volatility_pct × √(окно/торговый_день) × K
+PRICE_MOVE_WATCHER_VOLATILITY_MULTIPLIER = 2.0     # K -- во сколько раз больше нормы считать тревогой
+TRADING_DAY_MINUTES = 390                          # длина торговой сессии США в минутах (для масштабирования √t)
+
+# ─── ПРОТУХАНИЕ ПРИКАЗОВ И АЛЕРТОВ (см. Claude/BACKLOG.md, п.5, 2026-07-30) ───
+# Ось 1 (ушла цена, БЕЗ времени -- пересчитывается заново на каждом цикле котировок):
+# is_stale_price = |текущая_цена - цена_приказа| / цена_приказа > daily_volatility_pct × K'
+STALE_PRICE_VOLATILITY_MULTIPLIER = 3.0            # K'
+# Ось 2 (прошло время, независимо от цены):
+STALE_ORDER_TIME_LIMIT_DAYS = 30

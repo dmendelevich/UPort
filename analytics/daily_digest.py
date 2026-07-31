@@ -4,6 +4,7 @@ from analytics.position_exit_evaluator import PositionExitEvaluator
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.portfolio_inspector import PortfolioInspector
 from analytics.analytics_utils import expected_step_quantity
+from analytics.order_alert_staleness import evaluate_portfolio_staleness
 
 # Порядок и подписи разделов дайджеста -- единый источник правды для сборки данных
 # и для рендера (bot_screens.py) / клавиатур (bot_keyboards.py). См. Claude/BACKLOG.md
@@ -46,8 +47,9 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     У пунктов раздела "limits" навигационных ключей нет -- целевой экран пока не решён
     (см. Claude/BACKLOG.md), кнопка-заглушка.
 
-    Сознательно НЕ входит в v0 (см. BACKLOG.md): проверка/редактирование уже
-    выставленных приказов и алертов -- обязательный пункт V1.
+    Протухание уже выставленных приказов/алертов -- см. analytics/order_alert_staleness.py
+    (п.5 БЭКЛОГА, 2026-07-30). Сознательно НЕ входит: подавление/пометка рекомендаций
+    «Купить»/«Продать» при уже существующем активном приказе -- отдельная тема.
     """
     portfolio_row = db_instance.execute_row(
         f"SELECT name FROM public.portfolios WHERE id = {int(portfolio_id)};"
@@ -143,27 +145,31 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "listing_id": step["listing_id"],
         })
 
-    stale_rows = db_instance.execute_query(f"""
-        SELECT op.listing_id, t.symbol, s.strategy_name, o.p AS order_price, l.last_price
-        FROM public.order_pipelines op
-        JOIN public.orders o ON o.broker_order_id = op.pending_broker_order_id
-        JOIN public.listings l ON l.id = op.listing_id
-        JOIN public.tickers t ON t.id = op.ticker_id
-        JOIN public.strategies s ON s.id = op.strategy_id
-        WHERE op.portfolio_id = {int(portfolio_id)} AND op.stale_notified_at IS NOT NULL;
-    """)
-    stale_rows = stale_rows if isinstance(stale_rows, list) else ([stale_rows] if stale_rows else [])
-    for so in stale_rows:
-        order_price = float(so["order_price"] or 0)
-        last_price = float(so["last_price"] or 0)
-        drift_pct = abs(last_price - order_price) / order_price * 100.0 if order_price else 0.0
+    # Протухание приказов/алертов -- единый оценщик (см. Claude/BACKLOG.md, п.5,
+    # 2026-07-30), заменяет узкий analytics/stale_order_watcher.py (только Plan-приказы,
+    # push в Telegram) на чистую функцию по ВСЕМ активным приказам/алертам портфеля.
+    # Ось 1 (цена) -- в "signals" (сработало от рынка); ось 2 (время) -- в "schedule"
+    # (сработало от календаря), та же логика раздела, что и у остальных источников выше.
+    staleness = evaluate_portfolio_staleness(db_instance, portfolio_id)
+    kind_label = {"order": "приказ", "alert": "алерт"}
+    for item in staleness["price"]:
         signal_items.append({
             "text": (
-                f"{ACTION_BADGES['STALE']} {so['symbol']} ({so['strategy_name']}): приказ по ${order_price:,.2f}, "
-                f"текущая цена ${last_price:,.2f} ({drift_pct:.1f}%). Пересмотрите или отмените."
+                f"{ACTION_BADGES['STALE']} {item['symbol']} ({kind_label[item['kind']]} по ${item['order_price']:,.2f}, "
+                f"сейчас ${item['current_price']:,.2f}, {item['gap_pct']:.1f}%): необычно для этой бумаги. "
+                f"Пересмотрите или отмените."
             ),
-            "label": so["symbol"],
-            "listing_id": so["listing_id"],
+            "label": item["symbol"],
+            "listing_id": item["listing_id"],
+        })
+    for item in staleness["time"]:
+        schedule_items.append({
+            "text": (
+                f"{ACTION_BADGES['STALE']} {item['symbol']} ({kind_label[item['kind']]} висит {item['age_days']} дн. "
+                f"без изменений): актуален ли ещё тезис?"
+            ),
+            "label": item["symbol"],
+            "listing_id": item["listing_id"],
         })
 
     return {

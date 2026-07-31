@@ -1,9 +1,11 @@
 import os
 import logging
+import math
 import requests
 
 import settings
 from analytics.quote_snapshot_utils import record_quote_snapshot, compute_price_move
+from analytics.volatility_utils import daily_volatility_or_fallback
 from bot_handlers.common import MenuAction
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -23,10 +25,15 @@ def check_price_moves(db_instance, broker_id: int = 1):
     повторяет алерт (public.alerts, source_type='uport') с уведомлением в Телеграм и
     кнопкой "Остановить". Вызывается из sync_quotes_fb.py после обновления котировок --
     рыночно-зависимая проверка, поэтому на цикле котировок, а не в дайджесте (см. тот же
-    принцип в analytics/stale_order_watcher.py, analytics/ladder_step_watcher.py).
+    принцип в analytics/ladder_step_watcher.py).
+
+    Порог тревоги нормализован по собственной волатильности бумаги (см.
+    Claude/BACKLOG.md, 2026-07-30): ожидаемое движение за окно = дневная волатильность
+    × √(окно/торговый_день) × K -- спокойная голубая фишка и резкий small-cap получают
+    разные пороги вместо одного плоского % на всех (analytics/volatility_utils.py).
     """
     listings = db_instance.execute_query(f"""
-        SELECT l.id AS listing_id, l.last_price, t.symbol, t.id AS ticker_id
+        SELECT l.id AS listing_id, l.last_price, t.symbol, t.id AS ticker_id, t.signal_daily_volatility_pct
         FROM public.listings l
         JOIN public.tickers t ON l.ticker_id = t.id
         WHERE l.broker_id = {int(broker_id)} AND l.last_price IS NOT NULL AND l.last_price > 0;
@@ -53,7 +60,14 @@ def _check_one_listing(db_instance, row: dict):
         return  # ещё нет истории на всё окно -- рано считать
     pct_move, actual_minutes = move
 
-    if abs(pct_move) >= settings.PRICE_MOVE_WATCHER_THRESHOLD_PCT:
+    daily_volatility_pct = daily_volatility_or_fallback(row.get("signal_daily_volatility_pct"))
+    expected_move_pct = (
+        daily_volatility_pct
+        * math.sqrt(settings.PRICE_MOVE_WATCHER_WINDOW_MINUTES / settings.TRADING_DAY_MINUTES)
+        * settings.PRICE_MOVE_WATCHER_VOLATILITY_MULTIPLIER
+    )
+
+    if abs(pct_move) >= expected_move_pct:
         direction = "-" if pct_move < 0 else "+"
         trigger_type = "moving_down_from_current" if pct_move < 0 else "moving_up_from_current"
         _handle_triggered(db_instance, listing_id, ticker_id, symbol, price, pct_move, actual_minutes, direction, trigger_type)
