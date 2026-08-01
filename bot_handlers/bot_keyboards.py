@@ -355,7 +355,7 @@ def assemble_lego_line(json_blueprint: list) -> str:
 
 # 🏗️ ВЫСОКОУРОВНЕВЫЕ ВЫЗЫВАЕМЫЕ ГЕНЕРАТОРЫ СТРОК ДЛЯ ИНЛАЙН-КНОПОК
 
-def generate_strategy_button_text(name: str, target_pct: float, actual_pct: float, name_width: int = 14) -> str:
+def generate_strategy_button_text(name: str, target_pct: float, actual_pct: float, name_width: int = 14, icon: str = "🎯") -> str:
     """
     Генерирует жесткую монолитную строку для инлайн-кнопок списка стратегий портфеля.
     Название стратегии -- произвольной длины (не тикер), поэтому идёт через build_name_block;
@@ -363,9 +363,11 @@ def generate_strategy_button_text(name: str, target_pct: float, actual_pct: floa
     name_width по умолчанию уменьшен под короткие однословные подписи (см.
     bot_handlers/portfolios.py:SHORT_STRATEGY_LABELS) -- полное имя стратегии в кнопке
     не помещалось на экране телефона и обрезалось Telegram-клиентом.
+    icon -- по умолчанию 🎯, но пассивная стратегия (см. Claude/BACKLOG.md п.9,
+    2026-07-31) передаёт 😴 -- отдельный слот, не откусывает у name_width.
     """
     blueprint = [
-        {"type": "badge", "icon": "🎯", "index": 0},
+        {"type": "badge", "icon": icon, "index": 0},
         {"type": "name", "value": name, "width": name_width},
         {"type": "percent", "value": target_pct, "show_sign": False},
         {"type": "separator", "value": "/"},

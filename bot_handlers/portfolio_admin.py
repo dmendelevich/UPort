@@ -166,7 +166,10 @@ async def process_name_text(message: types.Message, state: FSMContext, bot: Bot)
             f"Имя: {raw_name}",
             f"Владелец: {owner_name}",
             f"Брокер: {broker_name}",
-            "При создании автоматически добавятся 2 служебные стратегии: Кэш/Резерв (10%) и Неопределенная стратегия (90%)",
+            "При создании автоматически добавятся все 5 стратегий: Кэш/Резерв (10%) и "
+            "Неопределённая (90%) активны сразу; Револьверная/Консервативное накопление/"
+            "Трендовая заводятся ПАССИВНЫМИ с долей 0% -- как готовые цели будущего "
+            "переноса, включаются вручную, когда понадобятся (см. Claude/BACKLOG.md п.9)",
         ],
         parse_mode="Markdown"
     )
@@ -218,28 +221,39 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
     raw_name = user_data.get("new_portfolio_name", "")
     clean_name = raw_name.replace("'", "''")
 
+    # Атомарно заводит ВСЕ 5 шаблонов стратегий (не только служебные), см.
+    # Claude/BACKLOG.md п.9 (2026-07-31) -- каждый портфель должен иметь полный
+    # набор, а не только те стратегии, которые сегодня кажутся нужными (будущая
+    # реструктуризация непредсказуема). Кэш/Резерв и Неопределённая -- активны
+    # сразу с заводской долей (`recommended_share_pct`); содержательные
+    # (Револьверная/Консервативное накопление/Трендовая) -- Пассивные, доля 0%,
+    # включаются вручную, когда понадобятся (готовая цель будущего переноса).
     sql_create = f"""
         WITH new_portfolio AS (
             INSERT INTO public.portfolios (name, owner_id, broker_id)
             VALUES ('{clean_name}', {owner_id}, {broker_id})
             RETURNING id
         ),
-        cash_strategy AS (
-            INSERT INTO public.strategies (portfolio_id, template_id, strategy_name, rules_config, human_philosophy, strategy_share_pct, is_active)
-            SELECT new_portfolio.id, st.id, st.template_name, st.rules_config, st.human_philosophy, 10.00, true
+        all_strategies AS (
+            INSERT INTO public.strategies
+                (portfolio_id, template_id, strategy_name, rules_config, human_philosophy,
+                 strategy_share_pct, is_active, is_screening_active)
+            SELECT
+                new_portfolio.id, st.id, st.template_name, st.rules_config, st.human_philosophy,
+                CASE WHEN st.system_key IN ('CASH_RESERVE', 'UNALLOCATED')
+                     THEN st.recommended_share_pct ELSE 0.00 END,
+                true,
+                CASE WHEN st.system_key IN ('CASH_RESERVE', 'UNALLOCATED') THEN true ELSE false END
             FROM new_portfolio, public.strategy_templates st
-            WHERE st.system_key = 'CASH_RESERVE'
-            RETURNING id
-        ),
-        unalloc_strategy AS (
-            INSERT INTO public.strategies (portfolio_id, template_id, strategy_name, rules_config, human_philosophy, strategy_share_pct, is_active)
-            SELECT new_portfolio.id, st.id, st.template_name, st.rules_config, st.human_philosophy, 90.00, true
-            FROM new_portfolio, public.strategy_templates st
-            WHERE st.system_key = 'UNALLOCATED'
-            RETURNING id
+            RETURNING id, template_id
         )
-        SELECT new_portfolio.id AS portfolio_id, cash_strategy.id AS cash_strategy_id, unalloc_strategy.id AS unalloc_strategy_id
-        FROM new_portfolio, cash_strategy, unalloc_strategy;
+        SELECT
+            new_portfolio.id AS portfolio_id,
+            (SELECT a.id FROM all_strategies a JOIN public.strategy_templates st ON a.template_id = st.id
+                WHERE st.system_key = 'CASH_RESERVE') AS cash_strategy_id,
+            (SELECT a.id FROM all_strategies a JOIN public.strategy_templates st ON a.template_id = st.id
+                WHERE st.system_key = 'UNALLOCATED') AS unalloc_strategy_id
+        FROM new_portfolio;
     """
 
     result = await asyncio.to_thread(db_sys.execute_query, sql_create)
@@ -268,7 +282,7 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
     cash_id = int(row["cash_strategy_id"])
     unalloc_id = int(row["unalloc_strategy_id"])
 
-    logging.info(f"✅ [СОЗДАНИЕ ПОРТФЕЛЯ]: Портфель #{p_id} создан (Кэш/Резерв #{cash_id}, Неопределенная #{unalloc_id}).")
+    logging.info(f"✅ [СОЗДАНИЕ ПОРТФЕЛЯ]: Портфель #{p_id} создан (Кэш/Резерв #{cash_id}, Неопределенная #{unalloc_id}, + 3 пассивные содержательные стратегии).")
 
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
@@ -277,7 +291,8 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
         f"✅ **Портфель успешно создан!**\n\n"
         f"🆔 Портфель: #{p_id}\n"
         f"💰 Кэш/Резерв: #{cash_id} (10%)\n"
-        f"📥 Неопределенная стратегия: #{unalloc_id} (90%)",
+        f"📥 Неопределенная стратегия: #{unalloc_id} (90%)\n"
+        f"😴 Револьверная/Консервативное накопление/Трендовая — добавлены пассивными (0%), включите вручную по мере надобности",
         parse_mode="Markdown",
         reply_markup=builder.as_markup()
     )

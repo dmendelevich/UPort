@@ -327,11 +327,13 @@ class TickerEvaluator:
 
         # Классифицируем по system_key, т.к. strategies.id — сквозной автоинкремент по
         # всей БД и не привязан к порядковому номеру стратегии внутри портфеля.
+        # is_screening_active = false -- пассивная стратегия (см. Claude/BACKLOG.md п.9,
+        # 2026-07-31), не подбираем под неё новых кандидатов, пока не включена.
         sql_strat = f"""
             SELECT s.id, s.rules_config, st.system_key
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {int(target_portfolio_id)} AND s.is_active = true;
+            WHERE s.portfolio_id = {int(target_portfolio_id)} AND s.is_active = true AND s.is_screening_active = true;
         """
         strat_rows = self.db.execute_query(sql_strat) or []
         clean_strat_rows = strat_rows if isinstance(strat_rows, list) else [strat_rows]

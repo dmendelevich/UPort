@@ -253,20 +253,24 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         strat_map = balances.get("strategies", {})
 
         # Короткие подписи ищутся по system_key -- один запрос на весь список,
-        # не по одному на стратегию.
+        # не по одному на стратегию. is_screening_active -- пассивные стратегии
+        # заводского набора (см. Claude/BACKLOG.md п.9, 2026-07-31) помечаются
+        # отдельно, чтобы 0%/0% не выглядело как баг.
         system_key_by_id = {}
+        screening_active_by_id = {}
         if strat_map:
             ids_str = ", ".join(str(int(sid)) for sid in strat_map.keys())
             key_rows = await asyncio.to_thread(
                 db_bot.execute_query,
                 f"""
-                    SELECT s.id, st.system_key FROM public.strategies s
+                    SELECT s.id, s.is_screening_active, st.system_key FROM public.strategies s
                     JOIN public.strategy_templates st ON s.template_id = st.id
                     WHERE s.id IN ({ids_str});
                 """
             )
             key_rows = key_rows if isinstance(key_rows, list) else ([key_rows] if key_rows else [])
             system_key_by_id = {int(r["id"]): r.get("system_key") for r in key_rows if r}
+            screening_active_by_id = {int(r["id"]): bool(r.get("is_screening_active")) for r in key_rows if r}
 
         if strat_map:
             for s_id, s in strat_map.items():
@@ -275,10 +279,12 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
                 actual_pct = (current_usd / total_capital * 100.0) if total_capital > 0 else 0.0
                 system_key = system_key_by_id.get(int(s_id))
                 short_name = SHORT_STRATEGY_LABELS.get(system_key, s['strategy_name'])
+                is_screening_active = screening_active_by_id.get(int(s_id), True)
                 button_text = generate_strategy_button_text(
                     name=short_name,
                     target_pct=target_pct,
-                    actual_pct=actual_pct
+                    actual_pct=actual_pct,
+                    icon="🎯" if is_screening_active else "😴"
                 )
                 builder.row(types.InlineKeyboardButton(
                     text=button_text,

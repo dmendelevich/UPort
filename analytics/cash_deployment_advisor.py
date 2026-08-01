@@ -27,11 +27,14 @@ class CashDeploymentAdvisor:
         return (row or {}).get("short_name")
 
     def _get_strategies_with_keys(self, portfolio_id: int) -> list:
+        # is_screening_active = false -- пассивная стратегия (заводской набор шаблонов,
+        # см. Claude/BACKLOG.md п.9, 2026-07-31): не предлагаем в неё докупку, пока
+        # пользователь сам её не включит. is_active отдельно -- жива ли строка вообще.
         sql = f"""
             SELECT s.id, s.strategy_name, s.strategy_share_pct, s.rules_config, tpl.system_key
             FROM public.strategies s
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            WHERE s.portfolio_id = {int(portfolio_id)} AND s.is_active = true;
+            WHERE s.portfolio_id = {int(portfolio_id)} AND s.is_active = true AND s.is_screening_active = true;
         """
         rows = self.db.execute_query(sql) or []
         return rows if isinstance(rows, list) else [rows]
