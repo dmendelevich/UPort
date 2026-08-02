@@ -141,7 +141,8 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     # 🧮 ВЕКТОРНЫЙ РАСЧЕТ ИНДИКАТОРОВ PANDAS (СБРОС ИНДЕКСОВ ДЛЯ ЗАЩИТЫ ПАМЯТИ)
                     history_series = pd.Series(hist['Close'].values).reset_index(drop=True)
 
-                    ema_20 = float(history_series.ewm(span=20, adjust=False).mean().iloc[-1])
+                    ema_20_series = history_series.ewm(span=20, adjust=False).mean()
+                    ema_20 = float(ema_20_series.iloc[-1])
                     sma_50 = float(history_series.tail(50).mean())
                     sma_100 = float(history_series.tail(100).mean())
                     sma_200 = float(history_series.tail(200).mean())
@@ -188,6 +189,19 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     else:
                         daily_volatility_pct = None
 
+                    # Подтверждённый слом тренда (settings.TREND_REVERSAL_CONFIRM_DAYS,
+                    # см. Claude/12_investment_goal_and_mechanisms_roadmap.md) -- знаковая длина
+                    # серии закрытий по одну сторону от EMA20, из той же ema_20_series, что и
+                    # снимок EMA20 выше -- отдельной истории хранить не нужно.
+                    above_ema = (history_series > ema_20_series).values
+                    streak_days = 1
+                    for is_above in above_ema[-2::-1]:
+                        if is_above == above_ema[-1]:
+                            streak_days += 1
+                        else:
+                            break
+                    ema20_streak_days = streak_days if above_ema[-1] else -streak_days
+
                     # Долгосрочный ценовой тренд (позиция цены относительно SMA100/SMA200) --
                     # НЕ инвестиционная рекомендация конкретной стратегии (та считается отдельно
                     # в analytics/analytics_utils.py). Значения намеренно не BUY/SELL, чтобы не
@@ -215,6 +229,7 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     pct1m_sql = f"{pct_1m:.2f}"
                     pct1y_sql = f"{pct_1y:.2f}"
                     volatility_sql = f"{daily_volatility_pct:.4f}" if daily_volatility_pct is not None else "NULL"
+                    streak_sql = f"{ema20_streak_days}"
 
                     # 🔥 АТОМАРНЫЙ UPDATE СТРОКИ В СУБД (БЕЗ ЗАТИРАНИЯ ДАТЫ ОТЧЕТОВ)
                     sql_update_yhoo = f"""
@@ -236,6 +251,7 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                             signal_pct_1m = {pct1m_sql},
                             signal_pct_1y = {pct1y_sql},
                             signal_daily_volatility_pct = {volatility_sql},
+                            signal_ema20_streak_days = {streak_sql},
                             signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
                             fb_market = 'YAHOO_GLOBAL', 
                             fb_exchange = 'YAHOO_GLOBAL'

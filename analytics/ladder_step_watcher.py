@@ -2,6 +2,7 @@ import logging
 import os
 import requests
 
+import settings
 from analytics.analytics_utils import expected_step_quantity
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -29,7 +30,7 @@ class LadderStepWatcher:
             SELECT op.id AS pipeline_id, op.strategy_id, op.current_step, op.target_quantity,
                    op.ticker_id, op.listing_id, op.portfolio_id, op.step_ready_notified_at,
                    t.symbol, s.strategy_name, port.name AS portfolio_name, u.telegram_id,
-                   t.signal_rsi, t.signal_macd,
+                   t.signal_rsi, t.signal_macd, t.signal_ema20_streak_days,
                    a.avg_price, l.last_price
             FROM public.order_pipelines op
             JOIN public.tickers t ON op.ticker_id = t.id
@@ -90,7 +91,15 @@ class LadderStepWatcher:
                 threshold_price = avg_price * (1 - float(price_drop_pct) / 100.0)
                 price_ok = last_price > 0 and last_price <= threshold_price
 
-            condition_met = rsi_ok and price_ok
+            # Подтверждённый разворот (settings.TREND_REVERSAL_CONFIRM_DAYS) -- не только
+            # "перепродано и просело" (RSI/price_drop выше), но и "уже видно, что перестало
+            # падать", см. Claude/12_investment_goal_and_mechanisms_roadmap.md (MU-кейс).
+            reversal_ok = True
+            if conditions.get("require_confirmed_reversal"):
+                streak = row.get("signal_ema20_streak_days")
+                reversal_ok = streak is not None and int(streak) >= settings.TREND_REVERSAL_CONFIRM_DAYS
+
+            condition_met = rsi_ok and price_ok and reversal_ok
 
         if not condition_met:
             return None

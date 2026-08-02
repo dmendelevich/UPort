@@ -1,5 +1,7 @@
 import datetime
 
+import settings
+
 
 class PositionExitEvaluator:
     """
@@ -41,14 +43,18 @@ class PositionExitEvaluator:
                 a.id AS asset_id, a.portfolio_id, a.listing_id, a.quantity, a.avg_price, a.position_opened_at,
                 lt.id AS ticker_id, lt.symbol, lt.current_price,
                 lt.return_on_equity, lt.debt_to_equity, lt.pe_trailing,
-                lt.signal_rsi, lt.signal_macd, lt.signal_ema_20, lt.signal_sma_50,
+                lt.signal_rsi, lt.signal_macd, lt.signal_ema_20, lt.signal_sma_50, lt.signal_ema20_streak_days,
                 s.id AS strategy_id, s.strategy_name, s.rules_config,
-                tpl.system_key
+                tpl.system_key, op.id AS active_entry_pipeline_id
             FROM public.assets a
             JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
             JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
             JOIN public.strategies s ON sa.strategy_id = s.id
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
+            LEFT JOIN public.order_pipelines op
+                ON op.portfolio_id = a.portfolio_id AND op.listing_id = a.listing_id
+               AND op.strategy_id = s.id AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+               AND op.target_quantity > 0
             WHERE a.portfolio_id = {int(portfolio_id)} AND a.quantity > 0;
         """
         rows = self.db.execute_query(sql) or []
@@ -158,24 +164,45 @@ class PositionExitEvaluator:
         if pe_trailing_raw is not None and float(pe_trailing_raw) < 0:
             reasons.append("компания в убытке (P/E отрицательный)")
 
-        if not reasons:
-            return None
+        if reasons:
+            return self._build_alert(
+                pos, "SELL",
+                "Фундаментал сломался: " + "; ".join(reasons) + ". Рекомендация: ликвидировать позицию.",
+                {
+                    "roe": float(roe_raw) if roe_raw is not None else None,
+                    "debt_to_equity": float(debt_to_equity_raw) if debt_to_equity_raw is not None else None,
+                    "pe_trailing": float(pe_trailing_raw) if pe_trailing_raw is not None else None,
+                },
+            )
 
-        return self._build_alert(
-            pos, "SELL",
-            "Фундаментал сломался: " + "; ".join(reasons) + ". Рекомендация: ликвидировать позицию.",
-            {
-                "roe": float(roe_raw) if roe_raw is not None else None,
-                "debt_to_equity": float(debt_to_equity_raw) if debt_to_equity_raw is not None else None,
-                "pe_trailing": float(pe_trailing_raw) if pe_trailing_raw is not None else None,
-            },
-        )
+        # "Сдаться": лесенка ещё не докуплена (есть незавершённый план входа) и подтверждённого
+        # разворота (settings.TREND_REVERSAL_CONFIRM_DAYS) так и не случилось дольше
+        # tactic_give_up_days -- см. Claude/12_investment_goal_and_mechanisms_roadmap.md (MU-кейс:
+        # купили на отскок, отскока нет, ждать вечно бессмысленно, даже если фундаментал в порядке).
+        if pos.get("active_entry_pipeline_id"):
+            rules = pos.get("rules_config") or {}
+            give_up_days = int(self._get_rule_value(rules, "tactic_give_up_days", 30))
+            days_held = self._days_since(pos.get("position_opened_at"))
+            streak = pos.get("signal_ema20_streak_days")
+            reversal_confirmed = streak is not None and int(streak) >= settings.TREND_REVERSAL_CONFIRM_DAYS
+
+            if days_held >= give_up_days and not reversal_confirmed:
+                return self._build_alert(
+                    pos, "SELL",
+                    f"Лесенка не докуплена {days_held} дн. (лимит {give_up_days}), подтверждённого "
+                    f"разворота всё ещё нет — ставка не сыграла, сдаться и освободить капитал.",
+                    {"days_held": days_held, "give_up_days": give_up_days, "ema20_streak_days": streak},
+                    trigger_kind="calendar",
+                )
+
+        return None
 
     def _check_trend_exit(self, pos: dict):
         current_price = float(pos.get("current_price") or 0.0)
         ema20 = float(pos.get("signal_ema_20") or 0.0)
         sma50 = float(pos.get("signal_sma_50") or 0.0)
         rsi = float(pos.get("signal_rsi") or 0.0)
+        streak = pos.get("signal_ema20_streak_days")
         macd_val = str(pos.get("signal_macd") or "").strip()
         try:
             macd = float(macd_val) if macd_val else 0.0
@@ -183,12 +210,17 @@ class PositionExitEvaluator:
             macd = 0.0
 
         rsi_overheat = 80.0
-        metrics = {"current_price": current_price, "ema20": ema20, "sma50": sma50, "rsi": rsi, "macd": macd}
+        metrics = {"current_price": current_price, "ema20": ema20, "sma50": sma50, "rsi": rsi, "macd": macd, "ema20_streak_days": streak}
 
-        if current_price > 0 and ema20 > 0 and current_price < ema20:
+        # Подтверждённый слом (settings.TREND_REVERSAL_CONFIRM_DAYS дней подряд ниже EMA20),
+        # не сырое однодневное пересечение -- см. Claude/12_investment_goal_and_mechanisms_roadmap.md
+        # (живой пример VRTX/BA, где однодневный кросс ничего не значил, против MU/META, где
+        # серия уже устойчиво держится много дней).
+        if streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS:
             return self._build_alert(
                 pos, "SELL",
-                f"Цена ({current_price:.2f}) упала ниже EMA20 ({ema20:.2f}) — локальный слом тренда.",
+                f"Цена держится ниже EMA20 ({ema20:.2f}) уже {abs(int(streak))} торговых дней подряд "
+                f"(текущая {current_price:.2f}) — подтверждённый слом тренда.",
                 metrics,
             )
 
