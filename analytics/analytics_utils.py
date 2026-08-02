@@ -190,7 +190,7 @@ class TickerEvaluator:
     # evaluate_ticker_strategy.
     # -------------------------------------------------------------------------
 
-    def _score_revolver(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
+    def _score_revolver(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
         limit_turnover1 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 500000000.0)
         limit_rsi1 = self._get_rule_value(rules_config, "idea_rsi_oversold_num", 45.0)
         limit_buffer1 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
@@ -219,13 +219,25 @@ class TickerEvaluator:
         is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
         return {"metrics": m1, "is_compatible": is_compat1, "ranking_value": round(upside_pct, 2)}
 
-    def _score_conservative(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
-        limit_turnover2 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 20000000.0)
+    def _score_conservative(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
+        limit_turnover2 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 100000000.0)
         limit_buffer2 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
+        require_fcf2 = self._get_rule_value(rules_config, "idea_require_positive_fflow_bool", True)
+        limit_max_volatility2 = self._get_rule_value(rules_config, "idea_max_daily_volatility_pct", 5.0)
 
         turnover = float(f.get("daily_turnover_usd") or 0.0)
         price_to_sma200 = float(f.get("signal_price_to_sma200_pct") or 0.0)
         rsi = float(f.get("signal_rsi") or 0.0)
+        fcf = float(f.get("free_cash_flow") or 0.0)
+
+        # "Мировой лидер" -- членство в курируемом индексе (tickers.provenance), не биржа
+        # напрямую: биржевой фильтр (XNGS/XNYS/XNAS) не различал реального лидера от любой
+        # мелкой бумаги, торгующейся в США, см. Claude/12_investment_goal_and_mechanisms_roadmap.md
+        # (2026-08-02). MS_SP500 -- всегда; MS_FTSE100 (Лондон, exchange_mic='XLON') -- только
+        # если брокер портфеля умеет с ним нормально работать (us_only=False, сегодня T212;
+        # Freedom Broker плохо работает с английскими бумагами, us_only=True для FB).
+        provenance = f.get("provenance") or {}
+        is_leader = "MS_SP500" in provenance or (not us_only and "MS_FTSE100" in provenance)
 
         # NULL в фундаментальных полях = "неприменимо" (напр. commodity ETF без ROE/долга),
         # а не "0" -- иначе такие бумаги ложно проходили бы отбор. Тот же анти-паттерн уже
@@ -243,15 +255,18 @@ class TickerEvaluator:
         cagr_status, cagr_val = _na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
         growth_status, growth_val = _na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
         pe_status, pe_val = _na_or_check(f.get("pe_trailing"), lambda v: v > 0)
+        vol_status, vol_val = _na_or_check(f.get("signal_daily_volatility_pct"), lambda v: v <= limit_max_volatility2)
 
         m2 = {
-            "exchange_mic": {"status": "PASS" if str(f.get("exchange_mic")) in ["XNGS", "XNYS", "XNAS"] else "FAIL", "fact": f.get("exchange_mic"), "limit": "XNGS, XNYS, XNAS"},
+            "world_leader_index": {"status": "PASS" if is_leader else "FAIL", "fact": list(provenance.keys()), "limit": "MS_SP500" if us_only else "MS_SP500 или MS_FTSE100"},
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover2 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover2},
             "return_on_equity": {"status": roe_status, "fact": round(roe_val, 4) if roe_val is not None else None, "limit": "> 0.15"},
             "debt_to_equity": {"status": debt_status, "fact": round(debt_val, 4) if debt_val is not None else None, "limit": "< 1.5"},
             "revenue_cagr_3y": {"status": cagr_status, "fact": round(cagr_val, 4) if cagr_val is not None else None, "limit": "> 0.05"},
             "revenue_growth": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": "> 0.00"},
             "pe_trailing": {"status": pe_status, "fact": round(pe_val, 2) if pe_val is not None else None, "limit": "> 0"},
+            "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf2 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
+            "signal_daily_volatility_pct": {"status": vol_status, "fact": round(vol_val, 4) if vol_val is not None else None, "limit": f"<= {limit_max_volatility2}"},
             "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 < 0.00 else "FAIL", "fact": price_to_sma200, "limit": "< 0.00"},
             "signal_rsi": {"status": "PASS" if rsi > 35 else "FAIL", "fact": rsi, "limit": "> 35"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer2 else "WARNING", "fact": days_to_report, "limit": limit_buffer2}
@@ -261,7 +276,7 @@ class TickerEvaluator:
         rank2 = (roe_val / debt_val) if (roe_val is not None and debt_val) else (roe_val or 0.0)
         return {"metrics": m2, "is_compatible": is_compat2, "ranking_value": round(rank2, 4)}
 
-    def _score_trend(self, f: dict, rules_config: dict, days_to_report: int) -> dict:
+    def _score_trend(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
         limit_turnover3 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 100000000.0)
         limit_buffer3 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
 
@@ -303,12 +318,12 @@ class TickerEvaluator:
         }
 
     TICKER_FACTS_SQL_COLUMNS = """
-        id, symbol, company_name, sector, industry, exchange_mic,
+        id, symbol, company_name, sector, industry, exchange_mic, provenance,
         daily_turnover_usd, return_on_equity, debt_to_equity,
         revenue_cagr_3y, revenue_growth, pe_trailing, dividend_yield, free_cash_flow,
         current_price, target_mean_price, recommendation_mean, signal_next_report_date,
         signal_rsi, signal_macd, signal_ema_20, signal_sma_50, signal_sma_100, signal_sma_200,
-        signal_price_to_sma200_pct
+        signal_price_to_sma200_pct, signal_daily_volatility_pct
     """
 
     def evaluate_ticker_strategy(self, ticker_id: int, target_portfolio_id: int = 2) -> dict:
@@ -324,6 +339,17 @@ class TickerEvaluator:
         f = ticker_res[0] if isinstance(ticker_res, list) and len(ticker_res) > 0 else (ticker_res if isinstance(ticker_res, dict) else {})
         if not f or "id" not in f:
             return {"error": f"Ошибка распаковки структуры данных тикера ID={ticker_id}"}
+
+        # Freedom Broker (short_name='FB') плохо работает с английскими бумагами -- см.
+        # US_EXCHANGE_CODES выше и CashDeploymentAdvisor._get_broker_short_name (тот же
+        # запрос). Нужно и здесь (не только в screen_universe_for_strategy), раз паспорт
+        # тикера может оценивать совместимость с ЛЮБЫМ конкретным портфелем.
+        broker_row = self.db.execute_row(f"""
+            SELECT b.short_name FROM public.portfolios p
+            JOIN public.brokers b ON p.broker_id = b.id
+            WHERE p.id = {int(target_portfolio_id)};
+        """)
+        us_only = (broker_row or {}).get("short_name") == "FB"
 
         # Классифицируем по system_key, т.к. strategies.id — сквозной автоинкремент по
         # всей БД и не привязан к порядковому номеру стратегии внутри портфеля.
@@ -363,7 +389,7 @@ class TickerEvaluator:
                 continue
             sid = strategy_ids[key]
             conf = strategy_configs[key]
-            result = score_fn(f, conf, days_to_report)
+            result = score_fn(f, conf, days_to_report, us_only=us_only)
 
             evaluation_report["explain_map"][sid] = {
                 "strategy_name": strat_name,
@@ -427,7 +453,7 @@ class TickerEvaluator:
             if not f or "id" not in f:
                 continue
             days_to_report = self._calculate_days_to_report(f.get("signal_next_report_date"))
-            scored = score_fn(f, rules_config, days_to_report)
+            scored = score_fn(f, rules_config, days_to_report, us_only=us_only)
             if scored["is_compatible"]:
                 results.append({
                     "ticker_id": int(f["id"]),
