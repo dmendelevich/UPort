@@ -30,7 +30,7 @@ class LadderStepWatcher:
             SELECT op.id AS pipeline_id, op.strategy_id, op.current_step, op.target_quantity,
                    op.ticker_id, op.listing_id, op.portfolio_id, op.step_ready_notified_at,
                    t.symbol, s.strategy_name, port.name AS portfolio_name, u.telegram_id,
-                   t.signal_rsi, t.signal_macd, t.signal_ema20_streak_days,
+                   t.signal_rsi, t.signal_macd, t.signal_ema20_streak_days, t.signal_daily_volatility_pct,
                    a.avg_price, l.last_price
             FROM public.order_pipelines op
             JOIN public.tickers t ON op.ticker_id = t.id
@@ -84,10 +84,22 @@ class LadderStepWatcher:
             rsi = row.get("signal_rsi")
             max_rsi = conditions.get("max_rsi")
             price_drop_pct = conditions.get("price_drop_pct")
+            volatility_multiplier = conditions.get("volatility_multiplier")
 
             rsi_ok = (max_rsi is None) or (rsi is not None and float(rsi) <= float(max_rsi))
             price_ok = True
-            if price_drop_pct is not None and avg_price > 0:
+            # Гармошка (K1/K2, см. Claude/12_investment_goal_and_mechanisms_roadmap.md,
+            # 2026-08-02): порог просадки нормализован по собственной волатильности бумаги,
+            # а не фиксированный %, -- предпочитается price_drop_pct, если оба заданы.
+            if volatility_multiplier is not None and avg_price > 0:
+                daily_vol = row.get("signal_daily_volatility_pct")
+                if daily_vol is not None:
+                    drop_pct = float(daily_vol) * float(volatility_multiplier)
+                    threshold_price = avg_price * (1 - drop_pct / 100.0)
+                    price_ok = last_price > 0 and last_price <= threshold_price
+                else:
+                    price_ok = False  # ещё нет истории волатильности -- не гадаем
+            elif price_drop_pct is not None and avg_price > 0:
                 threshold_price = avg_price * (1 - float(price_drop_pct) / 100.0)
                 price_ok = last_price > 0 and last_price <= threshold_price
 
