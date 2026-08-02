@@ -119,15 +119,24 @@ class PositionExitEvaluator:
         profit_pct = (current_price - entry_price) / entry_price * 100.0
         rsi = float(pos.get("signal_rsi") or 0.0)
         days_held = self._days_since(pos.get("position_opened_at"))
-        metrics = {"profit_pct": round(profit_pct, 2), "rsi": rsi, "days_held": days_held}
+        streak = pos.get("signal_ema20_streak_days")
+        # "Жив" ли ещё импульс -- RSI (как раньше) ИЛИ подтверждённый рост по streak; "сломан" --
+        # подтверждённое падение. Один и тот же signal_ema20_streak_days, что и у слома тренда/
+        # входа Консервативной, см. Claude/12_investment_goal_and_mechanisms_roadmap.md.
+        momentum_alive = rsi > trend_protection_rsi or (streak is not None and int(streak) >= settings.TREND_REVERSAL_CONFIRM_DAYS)
+        momentum_broken = streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS
+        metrics = {"profit_pct": round(profit_pct, 2), "rsi": rsi, "days_held": days_held, "ema20_streak_days": streak}
 
+        # Револьверная — без усреднений вниз и без частичного выхода по замыслу (быстрый оборот
+        # капитала, тайм-лимит специально освобождает слот) -- решение всегда бинарное: либо
+        # продать целиком, либо перенести целиком в Трендовую (готовый механизм переноса).
         if profit_pct >= target_profit_pct:
             if rsi > trend_protection_rsi:
                 return self._build_alert(
                     pos, "HOLD",
-                    f"Цель +{target_profit_pct:.1f}% достигнута (факт {profit_pct:.1f}%), но RSI={rsi:.1f} "
-                    f"выше {trend_protection_rsi:.1f} — импульс ещё жив. Не продавай, придержи и рассмотри "
-                    f"перевод в Трендовую стратегию вручную.",
+                    f"Цель +{target_profit_pct:.1f}% достигнута (факт {profit_pct:.1f}%), импульс ещё жив "
+                    f"(RSI={rsi:.1f}) — не продавай, перенеси позицию ЦЕЛИКОМ в Трендовую и освободи слот "
+                    f"Револьверной.",
                     metrics,
                 )
             return self._build_alert(
@@ -137,7 +146,24 @@ class PositionExitEvaluator:
                 metrics,
             )
 
+        if momentum_broken:
+            return self._build_alert(
+                pos, "SELL",
+                f"Цель ещё не достигнута (факт {profit_pct:.1f}%), но подтверждённый слом тренда "
+                f"({abs(int(streak))} дн. подряд ниже EMA20) — ставка не отыгрывается, выходи раньше срока.",
+                metrics,
+            )
+
         if days_held >= time_limit_days:
+            if momentum_alive:
+                return self._build_alert(
+                    pos, "HOLD",
+                    f"Тайм-аут слота: {days_held} дн. (лимит {time_limit_days}), цель +{target_profit_pct:.1f}% "
+                    f"не достигнута (факт {profit_pct:.1f}%), но импульс ещё жив — перенеси ЦЕЛИКОМ в "
+                    f"Трендовую вместо продажи.",
+                    metrics,
+                    trigger_kind="calendar",
+                )
             return self._build_alert(
                 pos, "SELL",
                 f"Тайм-аут слота: {days_held} дн. с открытия позиции (лимит {time_limit_days}), цель "
