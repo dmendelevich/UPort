@@ -796,6 +796,25 @@ def render_digest_overview_text(data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_capital_summary_text(summary: dict, title: str) -> str:
+    """
+    Общий текстовый блок сводки капитала -- переиспользуется «Общей сводкой»
+    (реальный капитал) и «Тестовым капиталом» (портфели execution_mode='CONFIRM',
+    см. Claude/14_paper_portfolio.md), 2026-08-03. Разница только в заголовке и
+    в том, какие портфели агрегированы в summary -- сам блок один.
+    """
+    sign = summary.get("currency_sign", "$")
+    return (
+        f"{title}\n"
+        f"Расчет выполнен в вашей валюте: **{summary['base_currency']}**\n"
+        f"───────────────────\n"
+        f"📈 **Всего в акциях:** {sign}{summary['total_assets']:,.2f}\n"
+        f"💵 **Доступный кэш:**  {sign}{summary['total_cash']:,.2f}\n"
+        f"───────────────────\n"
+        f"Выберите срез портфеля для детального анализа:"
+    )
+
+
 def render_digest_section_text(data: dict, section_key: str) -> str:
     """Детальный текст одного раздела дайджеста -- см. render_digest_overview_text."""
     sec = data["sections"].get(section_key) or {"emoji": "", "label": section_key, "items": []}

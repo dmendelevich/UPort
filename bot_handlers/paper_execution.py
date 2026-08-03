@@ -18,6 +18,24 @@ def _system_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
 
 
+def _refresh_assets_value_sql(portfolio_id: int) -> str:
+    """
+    accounts.assets_value для реальных портфелей держит в актуальном состоянии
+    брокерский синк (sync_account_fb.py) -- у бумажного портфеля такого синка нет,
+    поэтому после каждой виртуальной сделки пересчитываем сами. Найдено 2026-08-03
+    при тестировании экрана «Тестовый капитал» -- без этого он показывал $0.00 по
+    акциям, хотя карточка портфеля (считает live через assets/listings) была верна.
+    """
+    return f"""
+        UPDATE public.accounts SET assets_value = (
+            SELECT COALESCE(SUM(a.quantity * l.last_price), 0)
+            FROM public.assets a JOIN public.listings l ON a.listing_id = l.id
+            WHERE a.portfolio_id = {int(portfolio_id)}
+        )
+        WHERE portfolio_id = {int(portfolio_id)} AND currency_id = 'USD';
+    """
+
+
 async def send_paper_buy_recommendations(db_instance, bot):
     """
     Фаза 2 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) -- по каждому
@@ -187,6 +205,7 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
         SELECT 1;
     """
     await asyncio.to_thread(db_sys.execute_query, sql)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
 
     logging.info(f"✅ [PaperExec]: Виртуально исполнено {quantity} шт {symbol} по ${price:,.2f} в '{strategy_name}' (портфель {p_id}).")
     try:
@@ -344,6 +363,7 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
         SELECT 1;
     """
     await asyncio.to_thread(db_sys.execute_query, sql)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
 
     logging.info(f"✅ [PaperExec]: Виртуально продано {quantity:g} шт {symbol} по ${price:,.2f} из '{strategy_name}' (портфель {p_id}), P&L ${pnl:,.2f}.")
     pnl_sign = "+" if pnl >= 0 else ""

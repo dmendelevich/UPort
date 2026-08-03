@@ -45,7 +45,14 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     """Экран Уровня 2: Детализация конкретного счета семьи (Интерфейс шторок Состав / Паспорт)."""
     p_id = callback_data.portfolio_id
     view = callback_data.sub_view or "assets"  # по умолчанию -- "Состав портфеля" (см. фидбек 2026-07-27)
-    
+
+    # Составной sub_view с происхождением (тот же приём, что у шторки алертов, см.
+    # tickers.py) -- "assets/test_capital" значит "пришли из 🧪 Тестового капитала",
+    # тогда кнопка "назад" должна вести туда, а не в реальную сводку по умолчанию.
+    origin = "summary"
+    if "/" in view:
+        view, origin = view.split("/", 1)
+
     print(f"\n💼 [ПОРТФЕЛЬ ТРИГГЕР]: Сборка аналитического паспорта для portfolio_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка аналитического паспорта...")
 
@@ -294,24 +301,27 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             report_text += "\n   *Активные стратегии в этом портфеле не найдены.*"
 
     # Динамический пульт шторки: переключатель вкладок через общий кубик-сборщик (см. Claude/BACKLOG.md #13)
+    # Происхождение (origin) переносится на КАЖДУЮ вкладку, иначе переключение вкладки
+    # потеряло бы, откуда пришли, и "назад" снова вело бы не туда.
     tabs = [
-        ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets")),
-        ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="passport")),
-        ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="strategies")),
+        ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"assets/{origin}")),
+        ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"passport/{origin}")),
+        ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"strategies/{origin}")),
     ]
 
-    tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)
+    tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=f"{view}/{origin}")
     for tab_row in tab_switch_markup.inline_keyboard:
         builder.row(*tab_row)
 
-    # Блок навигации назад
-    # Вытаскиваем переключатели вкладок портфеля, а нижний блок генерируем через универсальный пульт
+    # Блок навигации назад -- по умолчанию в реальную сводку, но если пришли из
+    # 🧪 Тестового капитала, ведём обратно туда (BACKLOG.md, стандартизация 2026-08-03).
     tabs_markup = builder.as_markup()
-    
-    # Создаем универсальную навигационную клавиатуру
+
+    back_action = "show_test_summary" if origin == "test_capital" else "show_summary"
+    back_text = "🔙 К тестовому капиталу" if origin == "test_capital" else "🔙 К общей сводке"
     reply_markup = generate_nav_back_keyboard(
-        one_step_back_text="🔙 К общей сводке",
-        full_back_callback=MenuAction(action="show_summary").pack()
+        one_step_back_text=back_text,
+        full_back_callback=MenuAction(action=back_action).pack()
     )
     
     # Объединяем кнопки вкладок и кнопки универсального возврата UPort

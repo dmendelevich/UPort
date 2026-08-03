@@ -548,14 +548,28 @@ class Database:
     # === СЕМЕЙНАЯ СВОДКА ===
 
     def get_family_summary(self, telegram_id: int) -> dict:
+        """Собирает общую сводку РЕАЛЬНОГО капитала семьи (портфели с реальным брокером)."""
+        return self._aggregate_capital_summary(telegram_id, "p.broker_id IS NOT NULL")
+
+    def get_test_capital_summary(self, telegram_id: int) -> dict:
         """
-        Собирает общую сводку капитала семьи в транзитных USD и переводит в валюту пользователя.
+        Сводка ВИРТУАЛЬНОГО (бумажного) капитала -- портфели execution_mode='CONFIRM'
+        (см. Claude/14_paper_portfolio.md). Та же агрегация, что и у реального капитала,
+        просто другой набор портфелей -- намеренно НЕ смешиваются в одном экране.
+        """
+        return self._aggregate_capital_summary(telegram_id, "p.execution_mode = 'CONFIRM'")
+
+    def _aggregate_capital_summary(self, telegram_id: int, portfolio_filter_sql: str) -> dict:
+        """
+        Общий агрегатор капитала (транзитные USD -> валюта смотрящего) -- переиспользуется
+        и реальной, и тестовой сводкой (BACKLOG.md, стандартизация экрана «Тестовый капитал»,
+        2026-08-03). portfolio_filter_sql -- сырое SQL-условие на алиас `p` (portfolios).
         """
         user_sql = f"SELECT id, base_currency FROM public.users WHERE telegram_id = {telegram_id};"
         user_res = self.execute_query(user_sql)
         if not user_res or not isinstance(user_res, list):
             return {}
-        
+
         current_user = user_res[0]
         user_id = current_user['id']
         base_curr = current_user['base_currency'] or "USD"
@@ -568,16 +582,14 @@ class Database:
         rate_user_res = self.execute_query(rate_user_sql)
         user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res else 1.0
 
-        accounts_sql = """
+        accounts_sql = f"""
             SELECT
                 acc.user_id, acc.portfolio_id, acc.broker_id, acc.cash_available, acc.assets_value,
                 p.name as portfolio_name, COALESCE(r.rate, 1.0) as to_usd_rate
             FROM public.accounts acc
             LEFT JOIN public.portfolios p ON acc.portfolio_id = p.id
             LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
-            -- Портфели без реального брокера (execution_mode='CONFIRM', см. Claude/14_paper_portfolio.md) --
-            -- виртуальные тестовые деньги, не часть реального капитала семьи.
-            WHERE p.broker_id IS NOT NULL;
+            WHERE {portfolio_filter_sql};
         """
         all_accounts = self.execute_query(accounts_sql)
         if not isinstance(all_accounts, list):

@@ -163,6 +163,7 @@ def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
+    builder.row(types.InlineKeyboardButton(text="🧪 Тестовый капитал", callback_data=MenuAction(action="show_test_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
     builder.row(types.InlineKeyboardButton(text="📅 Утренний дайджест", callback_data=MenuAction(action="show_digest_focus").pack()))
     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))

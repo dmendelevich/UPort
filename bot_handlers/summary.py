@@ -9,6 +9,7 @@ from aiogram.exceptions import TelegramBadRequest
 from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_main_menu_keyboard
+from bot_handlers.bot_screens import format_capital_summary_text
 
 # Инициализируем изолированный роутер модуля
 router = Router()
@@ -116,17 +117,7 @@ async def process_summary_callback(callback: types.CallbackQuery):
         )
         return
         
-    sign = summary.get("currency_sign", "$")
-    
-    text = (
-        f"📊 **Сводка семейного капитала**\n"
-        f"Расчет выполнен в вашей валюте: **{summary['base_currency']}**\n"
-        f"───────────────────\n"
-        f"📈 **Всего в акциях:** {sign}{summary['total_assets']:,.2f}\n"
-        f"💵 **Доступный кэш:**  {sign}{summary['total_cash']:,.2f}\n"
-        f"───────────────────\n"
-        f"Выберите срез портфеля для детального анализа:"
-    )
+    text = format_capital_summary_text(summary, "📊 **Сводка семейного капитала**")
 
     builder = InlineKeyboardBuilder()
 
@@ -166,6 +157,54 @@ async def process_summary_callback(callback: types.CallbackQuery):
     final_builder = InlineKeyboardBuilder.from_markup(portfolios_markup)
     final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
     
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+
+
+@router.callback_query(MenuAction.filter(F.action == "show_test_summary"))
+async def process_test_summary_callback(callback: types.CallbackQuery):
+    """
+    Экран «Тестовый капитал» -- сводка ВИРТУАЛЬНЫХ портфелей (execution_mode='CONFIRM',
+    см. Claude/14_paper_portfolio.md), стандартизирован по образцу «Общей сводки
+    капитала» (2026-08-03) -- общий текстовый блок (format_capital_summary_text),
+    но без кнопки «Счета»: у бумажного портфеля один простой виртуальный счёт без
+    деления на торговый/накопительный по разным валютам -- экран «Счета» здесь
+    не имеет смысла, только кнопки портфелей.
+    """
+    await callback.answer("Запрашиваю тестовый капитал...")
+
+    summary = await asyncio.to_thread(db_bot.get_test_capital_summary, callback.from_user.id)
+    if not summary or not summary.get("portfolios"):
+        fallback_markup = generate_nav_back_keyboard(
+            one_step_back_text="📱 В главное меню",
+            full_back_callback=MenuAction(action="main_menu").pack()
+        )
+        await callback.message.edit_text(
+            "🧪 Тестовых портфелей пока нет.",
+            reply_markup=fallback_markup
+        )
+        return
+
+    text = format_capital_summary_text(summary, "🧪 **Тестовый капитал**")
+
+    builder = InlineKeyboardBuilder()
+    for p in summary["portfolios"]:
+        icon = "👤" if p["is_owner"] else "💼"
+        builder.row(types.InlineKeyboardButton(
+            text=f"{icon} {p['name']}",
+            # sub_view="assets/test_capital" -- составной sub_view с происхождением
+            # (тот же приём, что уже применяется для шторки алертов, см. tickers.py),
+            # чтобы карточка портфеля знала вести "назад" сюда, а не в реальную сводку.
+            callback_data=MenuAction(action="view_portfolio", portfolio_id=p['id'], sub_view="assets/test_capital").pack()
+        ))
+
+    portfolios_markup = builder.as_markup()
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="📱 В главное меню",
+        full_back_callback=MenuAction(action="main_menu").pack()
+    )
+    final_builder = InlineKeyboardBuilder.from_markup(portfolios_markup)
+    final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
+
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
 
 
