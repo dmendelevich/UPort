@@ -574,7 +574,10 @@ class Database:
                 p.name as portfolio_name, COALESCE(r.rate, 1.0) as to_usd_rate
             FROM public.accounts acc
             LEFT JOIN public.portfolios p ON acc.portfolio_id = p.id
-            LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD';
+            LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
+            -- Портфели без реального брокера (execution_mode='CONFIRM', см. Claude/14_paper_portfolio.md) --
+            -- виртуальные тестовые деньги, не часть реального капитала семьи.
+            WHERE p.broker_id IS NOT NULL;
         """
         all_accounts = self.execute_query(accounts_sql)
         if not isinstance(all_accounts, list):
