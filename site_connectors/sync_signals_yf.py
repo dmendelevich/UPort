@@ -49,7 +49,7 @@ def sync_global_yahoo_signals(single_ticker_id=None):
     active_rows = db_sys.execute_query(sql_get_universe)
     if not active_rows:
         logging.warning("⚠️ Инструментов для обработки в Universe СУБД не обнаружено.")
-        return
+        return {"processed": 0, "errors": 0}
 
     total_tickers = len(active_rows)
     logging.info(f"📊 В обойму глобального конвейера зашло: {total_tickers} акций. Запуск пакетных эшелонов...")
@@ -270,6 +270,11 @@ def sync_global_yahoo_signals(single_ticker_id=None):
     print("\n" + "="*120)
     print(f"🏁 [GLOBAL YAHOO CONVEYER COMPLETE]: Успешно наполнено: {total_updated} из {total_tickers} акций!")
     print("="*120 + "\n")
+
+    # Честная статистика выполнения (Claude/BACKLOG.md, п.25, 2026-08-03) -- errors считает
+    # ЛЮБУЮ причину незавершения (сбой пакетной загрузки эшелона, сбой расчёта по одному
+    # тикеру, пропуск из-за короткой истории) как единое "не обновилось", не различая причину.
+    return {"processed": total_tickers, "errors": total_tickers - total_updated}
 
 if __name__ == "__main__":
     # Запуск глобального экспресс-конвейера

@@ -36,7 +36,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
     
     if not fb_client:
         logging.error("❌ Критическая ошибка: Не удалось собрать фабричный клиент брокера. Скрипт остановлен.")
-        return
+        return {"processed": 0, "errors": 1}
         
     # 2. УНИВЕРСАЛЬНАЯ СЕЛЕКЦИЯ: Выгребаем либо один целевой фонд, либо все активные из листингов
     # Полностью очищено от старых костылей provenance и asset_metadata
@@ -52,14 +52,18 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
     
     if not active_etfs:
         logging.warning("info: Целевых фондов ETF для раскрытия в СУБД прямо сейчас не обнаружено.")
-        return
+        return {"processed": 0, "errors": 0}
 
     total_etfs = len(active_etfs)
     logging.info(f"📊 Обнаружено живых целей для раскрытия: {total_etfs} шт. Запуск конвейера...")
     print("-" * 95)
 
     processed_count = 0
-    
+    # Честная статистика выполнения (Claude/BACKLOG.md, п.25, 2026-08-03) -- на уровне ФОНДА
+    # (не отдельного компонента холдинга внутри него -- сбой легализации одного компонента
+    # уже изолирован и не мешает раскрыть остальной фонд, не в счёт "ошибок фонда").
+    error_count = 0
+
     # 3. ЛИНЕЙНЫЙ ЦИКЛ РАСКРЫТИЯ СТРУКТУРЫ ФОНДОВ
     for etf in active_etfs:
         processed_count += 1
@@ -69,6 +73,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         
         if not yahoo_symbol:
             logging.warning(f"⏩ [ФОНД {processed_count}/{total_etfs}] '{symbol}' (ID={t_id}) не имеет Yahoo-тикера в карте имен. Пропуск.")
+            error_count += 1
             continue
             
         logging.info(f"🧱 [ФОНД {processed_count}/{total_etfs}]: Разбор {symbol} (Yahoo-ключ: {yahoo_symbol}, ID={t_id})...")
@@ -92,6 +97,7 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
 
             if not holdings_data:
                 logging.warning(f"   ⚠️ Не удалось извлечь внутренние холдинги для фонда {symbol}.")
+                error_count += 1
                 await asyncio.sleep(1.5)
                 continue
 
@@ -169,14 +175,20 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
             logging.info(f"   ✅ Структура фонда {symbol} успешно раскрыта. Компоненты связаны.")
 
         except Exception as fund_err:
+            error_count += 1
             logging.error(f"❌ Ошибка декомпозиции на фонде {symbol}: {fund_err}")
-            
+
         # Пауза 1.5 секунды между фондами для защиты лимитов IP
         await asyncio.sleep(1.5)
 
     print("\n" + "="*95)
-    print("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Процесс Лаборатории ETF успешно отработал!")
+    if error_count > 0:
+        print(f"🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА С ОШИБКАМИ]: {error_count} из {total_etfs} фондов не раскрылись.")
+    else:
+        print("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Процесс Лаборатории ETF успешно отработал!")
     print("="*95 + "\n")
+
+    return {"processed": total_etfs, "errors": error_count}
 
 
 # ─── МЕХАНИЗМ АВТОНОМНОГО ВЫЗОВА СТАНДАРТНОГО КРОНА ───

@@ -73,19 +73,30 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
 
     if not tickers_data or not isinstance(tickers_data, list):
         logging.info("ℹ️ [Yahoo Fundamentals]: На сегодняшнюю ночь плановых или постотчетных бумаг не обнаружено. Отдыхаем.")
-        return
+        return {"processed": 0, "errors": 0}
 
     logging.info(f"📊 [Yahoo Fundamentals]: В работу взято {len(tickers_data)} бумаг(и). Инициализация парсера...")
+
+    # Честная статистика выполнения (см. Claude/BACKLOG.md, п.25, 2026-08-03) -- раньше
+    # цикл логировал "успешно завершено" безусловно, даже если часть тикеров внутри
+    # батча тихо упала (try/except на уровне отдельного тикера, чтобы одна плохая бумага
+    # не валила весь пакет). processed = сколько бумаг вообще пытались обновить,
+    # errors = сколько из них НЕ обновились ни по какой причине (исключение, отсутствие
+    # YAHOO-кода, пустой info-профиль от Yahoo).
+    processed_count = 0
+    error_count = 0
 
     for row in tickers_data:
         t_id = row['id']
         pure_symbol = row['symbol']
-        
+        processed_count += 1
+
         # 🔥 ИСПРАВЛЕНО: Вместо fb_ticker и локальных замен точек берем зрячий yahoo_symbol из JSONB-карты
         yf_symbol = row.get('yahoo_symbol') or pure_symbol
-        
+
         if not yf_symbol or str(yf_symbol).strip().upper() == "UNSUPPORTED":
             logging.warning(f"   ⚠️ Пропуск {pure_symbol}: В ticker_name_map отсутствует валидный YAHOO-код.")
+            error_count += 1
             continue
             
         try:
@@ -96,6 +107,7 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
             
             if not info or not isinstance(info, dict):
                 logging.warning(f"   ⚠️ Yahoo не вернул info-профиль для {yf_symbol}")
+                error_count += 1
                 continue
 
             # Безопасный перевод сущностей в SQL-формат
@@ -196,9 +208,15 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
             time.sleep(1.5)
             
         except Exception as e:
+            error_count += 1
             logging.error(f"❌ Ошибка сбора фундаментальных данных для {pure_symbol}: {e}")
-            
-    logging.info("🏁 [Yahoo Fundamentals]: Ночной цикл анализа рынка успешно завершен.")
+
+    if error_count > 0:
+        logging.warning(f"🏁 [Yahoo Fundamentals]: Цикл завершён С ОШИБКАМИ: {error_count} из {processed_count} бумаг не обновились.")
+    else:
+        logging.info(f"🏁 [Yahoo Fundamentals]: Ночной цикл анализа рынка успешно завершен ({processed_count} из {processed_count}).")
+
+    return {"processed": processed_count, "errors": error_count}
 
 if __name__ == "__main__":
     # Локальный запуск из консоли

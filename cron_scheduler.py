@@ -188,7 +188,7 @@ async def run_daily_job_once(db_instance, job_name: str, coro_factory):
     """)
 
     try:
-        await coro_factory()
+        result = await coro_factory()
     except Exception as e:
         error_text = str(e).replace("'", "''")[:2000]
         await asyncio.to_thread(db_instance.execute_query, f"""
@@ -200,11 +200,24 @@ async def run_daily_job_once(db_instance, job_name: str, coro_factory):
         """)
         raise
     else:
+        # Честная статистика (Claude/BACKLOG.md, п.25, 2026-08-03): раньше "упало ли всё
+        # целиком" (долетело исключение) был единственным различием -- частичный сбой внутри
+        # успешно завершившегося вызова (часть тикеров в батче тихо упала) не был виден.
+        # coro_factory может вернуть {"processed": N, "errors": K} (переводится постепенно,
+        # не все синхронизаторы ещё дают эту структуру) -- если errors>0, пишем PARTIAL,
+        # иначе (в т.ч. старое поведение "вернул None") -- SUCCESS, как раньше.
+        status = "SUCCESS"
+        error_note = "NULL"
+        if isinstance(result, dict) and int(result.get("errors") or 0) > 0:
+            status = "PARTIAL"
+            note_text = f"{result['errors']} из {result.get('processed', '?')} не обработалось".replace("'", "''")
+            error_note = f"'{note_text}'"
+
         await asyncio.to_thread(db_instance.execute_query, f"""
             UPDATE public.cron_job_runs
             SET last_finished_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
-                last_status = 'SUCCESS',
-                last_error_message = NULL
+                last_status = '{status}',
+                last_error_message = {error_note}
             WHERE job_name = '{job_name}';
         """)
 
