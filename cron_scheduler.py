@@ -17,6 +17,7 @@ from site_connectors.trigger_etf_look_through import run_etf_look_through_decomp
 from site_connectors.sync_signals_yf import sync_global_yahoo_signals
 from utils import was_us_market_open_yesterday
 from analytics.daily_digest import assemble_portfolio_digest_data
+from analytics.portfolio_inspector import PortfolioInspector
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
 from bot_handlers.paper_execution import send_paper_buy_recommendations
@@ -163,6 +164,41 @@ async def send_daily_digests(db_instance, bot):
             logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен {len(recipients)} получателям.")
         except Exception as e:
             logging.error(f"❌ [Digest]: Не удалось собрать/отправить дайджест по портфелю {p['name']} (ID: {p_id}): {e}")
+
+
+async def snapshot_portfolio_values(db_instance):
+    """
+    Фаза 3 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) -- суточный снимок
+    NAV в portfolio_value_history, нужен для измерения доходности через год (сравнение
+    с S&P500 и с целевыми ~15% годовых). Функция и таблица сделаны портфель-агностично
+    (переиспользуемый механизм, не одноразовый хак под «ПБум») -- если понадобится
+    измерять эффективность и реальных портфелей (roadmap п.9,
+    12_investment_goal_and_mechanisms_roadmap.md), достаточно убрать фильтр по
+    execution_mode ниже, переписывать не придётся. Пока сознательно ограничено только
+    CONFIRM-портфелями -- эта тема не про реальные П10/П136.
+    """
+    portfolios = await asyncio.to_thread(
+        db_instance.execute_query,
+        "SELECT id, name FROM public.portfolios WHERE execution_mode = 'CONFIRM';"
+    )
+    portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
+
+    for p in portfolios:
+        p_id = int(p["id"])
+        try:
+            inspector = PortfolioInspector(db_instance, p_id)
+            total_value = await asyncio.to_thread(inspector.calculate_total_capital)
+            await asyncio.to_thread(
+                db_instance.execute_query,
+                f"""
+                    INSERT INTO public.portfolio_value_history (portfolio_id, snapshot_date, total_value)
+                    VALUES ({p_id}, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, {float(total_value)})
+                    ON CONFLICT (portfolio_id, snapshot_date) DO UPDATE SET total_value = EXCLUDED.total_value;
+                """
+            )
+            logging.info(f"📸 [NAV Snapshot]: '{p['name']}' (ID: {p_id}) -- ${float(total_value):,.2f}")
+        except Exception as e:
+            logging.error(f"❌ [NAV Snapshot]: Не удалось снять снимок для '{p['name']}' (ID: {p_id}): {e}")
 
 # === ПЕРСИСТЕНТНАЯ ЗАЩИТА "УМНЫХ БУДИЛЬНИКОВ" ОТ ПОВТОРНОГО СРАБАТЫВАНИЯ ===
 
@@ -368,6 +404,11 @@ async def digest_clock_loop(db_instance, bot):
                     await run_daily_job_once(
                         db_instance, "paper_buy_recommendations",
                         lambda: send_paper_buy_recommendations(db_instance, bot)
+                    )
+                    # Фаза 3 -- суточный снимок NAV для измерения доходности.
+                    await run_daily_job_once(
+                        db_instance, "portfolio_value_snapshot",
+                        lambda: snapshot_portfolio_values(db_instance)
                     )
         except Exception as e:
             logging.error(f"❌ [Digest Clock Error]: {e}")
