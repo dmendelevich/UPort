@@ -50,8 +50,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     (см. Claude/BACKLOG.md), кнопка-заглушка.
 
     Протухание уже выставленных приказов/алертов -- см. analytics/order_alert_staleness.py
-    (п.5 БЭКЛОГА, 2026-07-30). Сознательно НЕ входит: подавление/пометка рекомендаций
-    «Купить»/«Продать» при уже существующем активном приказе -- отдельная тема.
+    (п.5 БЭКЛОГА, 2026-07-30). Пометка рекомендаций «Купить»/«Продать»/TRIM/TOP_UP при уже
+    существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
         f"SELECT name FROM public.portfolios WHERE id = {int(portfolio_id)};"
@@ -73,10 +73,29 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
     ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
 
+    # Пометка "уже есть активный приказ" (закрывает вторую половину BACKLOG.md п.5,
+    # 2026-08-03) -- по факту существования приказа в нужную сторону на этом тикере, не
+    # точное совпадение количества/цены с конкретным планом (это отдельная, более глубокая
+    # задача). Помечаем, не скрываем -- "система только советует", у уже стоящего приказа
+    # может быть другое количество/причина, прятать рекомендацию рискованно.
+    active_orders_rows = db_instance.execute_query(f"""
+        SELECT o.oper, l.ticker_id
+        FROM public.orders o
+        JOIN public.listings l ON o.listing_id = l.id
+        WHERE o.portfolio_id = {int(portfolio_id)} AND o.status = 'active';
+    """)
+    active_orders_rows = active_orders_rows if isinstance(active_orders_rows, list) else ([active_orders_rows] if active_orders_rows else [])
+    active_buy_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) in (1, 2)}
+    active_sell_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) == 3}
+
+    def order_note(ticker_id, direction_set):
+        return " ⚠️ уже есть активный приказ" if ticker_id in direction_set else ""
+
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
     schedule_items = [
         {
-            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }
@@ -84,7 +103,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     ]
     signal_items = [
         {
-            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }
@@ -113,7 +133,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
     signal_items += [
         {
-            "text": f"{ACTION_BADGES['BUY']} {r['strategy_name']}: {r['reason']}",
+            "text": f"{ACTION_BADGES['BUY']} {r['strategy_name']}: {r['reason']}"
+                    + order_note(r["ticker_id"], active_buy_ticker_ids),
             "label": r["symbol"],
             "ticker_id": r["ticker_id"],
         }
@@ -125,7 +146,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     rebalance_alerts = PortfolioRebalancer(db_instance).evaluate_portfolio(portfolio_id)
     signal_items += [
         {
-            "text": f"{ACTION_BADGES['TRIM']} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + order_note(a["ticker_id"], active_sell_ticker_ids if a["recommendation"] == "TRIM" else active_buy_ticker_ids),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }
@@ -144,7 +166,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         JOIN public.strategies s ON s.id = op.strategy_id
         JOIN public.listings l ON l.id = op.listing_id
         JOIN public.strategy_tactics st ON st.strategy_id = op.strategy_id AND st.step_number = op.current_step
-        WHERE op.portfolio_id = {int(portfolio_id)} AND op.step_ready_notified_at IS NOT NULL;
+        WHERE op.portfolio_id = {int(portfolio_id)} AND op.step_ready_notified_at IS NOT NULL
+          AND op.pending_broker_order_id IS NULL;
     """)
     ladder_rows = ladder_rows if isinstance(ladder_rows, list) else ([ladder_rows] if ladder_rows else [])
     for step in ladder_rows:
