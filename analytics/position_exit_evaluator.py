@@ -1,6 +1,7 @@
 import datetime
 
 import settings
+from analytics.analytics_utils import conservative_fundamental_break_reasons
 
 
 class PositionExitEvaluator:
@@ -175,22 +176,12 @@ class PositionExitEvaluator:
         return None
 
     def _check_conservative_exit(self, pos: dict):
-        # NULL в фундаментальных полях означает "не применимо" (напр. ETF без ROE/долга),
-        # а не "ноль" -- отсутствующий показатель просто пропускает свою проверку,
-        # а не превращается в ложное "фундаментал сломался".
-        roe_raw = pos.get("return_on_equity")
-        debt_to_equity_raw = pos.get("debt_to_equity")
-        pe_trailing_raw = pos.get("pe_trailing")
-
-        reasons = []
-        if roe_raw is not None and float(roe_raw) < 0.10:
-            reasons.append(f"ROE упал до {float(roe_raw) * 100:.1f}% (порог 10%)")
-        if debt_to_equity_raw is not None and float(debt_to_equity_raw) > 2.0:
-            reasons.append(f"Долг/Капитал вырос до {float(debt_to_equity_raw):.2f} (порог 2.0)")
-        if pe_trailing_raw is not None and float(pe_trailing_raw) < 0:
-            reasons.append("компания в убытке (P/E отрицательный)")
+        reasons = conservative_fundamental_break_reasons(pos)
 
         if reasons:
+            roe_raw = pos.get("return_on_equity")
+            debt_to_equity_raw = pos.get("debt_to_equity")
+            pe_trailing_raw = pos.get("pe_trailing")
             return self._build_alert(
                 pos, "SELL",
                 "Фундаментал сломался: " + "; ".join(reasons) + ". Рекомендация: ликвидировать позицию.",

@@ -3,7 +3,7 @@ import os
 import requests
 
 import settings
-from analytics.analytics_utils import expected_step_quantity
+from analytics.analytics_utils import expected_step_quantity, conservative_fundamental_break_reasons
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
@@ -29,12 +29,14 @@ class LadderStepWatcher:
         sql = """
             SELECT op.id AS pipeline_id, op.strategy_id, op.current_step, op.target_quantity,
                    op.ticker_id, op.listing_id, op.portfolio_id, op.step_ready_notified_at,
-                   t.symbol, s.strategy_name, port.name AS portfolio_name, u.telegram_id,
+                   t.symbol, s.strategy_name, tpl.system_key, port.name AS portfolio_name, u.telegram_id,
                    t.signal_rsi, t.signal_macd, t.signal_ema20_streak_days, t.signal_daily_volatility_pct,
+                   t.return_on_equity, t.debt_to_equity, t.pe_trailing,
                    a.avg_price, l.last_price
             FROM public.order_pipelines op
             JOIN public.tickers t ON op.ticker_id = t.id
             JOIN public.strategies s ON op.strategy_id = s.id
+            JOIN public.strategy_templates tpl ON s.template_id = tpl.id
             JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
             JOIN public.listings l ON l.id = op.listing_id
             JOIN public.portfolios port ON port.id = op.portfolio_id
@@ -57,6 +59,14 @@ class LadderStepWatcher:
     def _evaluate_row(self, row: dict):
         strat_id = int(row["strategy_id"])
         curr_step = int(row["current_step"])
+
+        # Не докупать по лесенке, если фундаментал уже сломан -- та же проверка, что
+        # PositionExitEvaluator._check_conservative_exit использует для полного выхода
+        # (BACKLOG.md п.36, 2026-08-03): раньше эти две проверки не знали друг про друга,
+        # система могла одновременно сказать "продавай, фундаментал сломан" и "докупай,
+        # шаг лесенки готов" по одной и той же бумаге.
+        if row.get("system_key") == "CONSERVATIVE_ACCUMULATION" and conservative_fundamental_break_reasons(row):
+            return None
 
         tactic = self.db.execute_row(f"""
             SELECT budget_share_pct, trigger_conditions

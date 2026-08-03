@@ -23,6 +23,32 @@ def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:
     return sign * max(1, round(abs(raw_step_qty)))
 
 
+def conservative_fundamental_break_reasons(f: dict) -> list:
+    """
+    Единый источник правды "фундаментал Консервативной сломан" -- переиспользуется
+    PositionExitEvaluator._check_conservative_exit (полный выход) и
+    LadderStepWatcher._evaluate_row (2026-08-03: раньше эти две проверки не знали
+    друг про друга -- система могла в одном дайджесте одновременно сказать "продавай,
+    фундаментал сломан" и "докупай, шаг лесенки готов", см. Claude/BACKLOG.md п.36).
+    NULL в поле = "неприменимо" (напр. ETF без ROE/долга), не "0" -- отсутствующий
+    показатель просто пропускает свою проверку, не превращается в ложный PASS/FAIL.
+    Возвращает список причин (человекочитаемых), пустой список = не сломан.
+    """
+    reasons = []
+    roe_raw = f.get("return_on_equity")
+    debt_to_equity_raw = f.get("debt_to_equity")
+    pe_trailing_raw = f.get("pe_trailing")
+
+    if roe_raw is not None and float(roe_raw) < 0.10:
+        reasons.append(f"ROE упал до {float(roe_raw) * 100:.1f}% (порог 10%)")
+    if debt_to_equity_raw is not None and float(debt_to_equity_raw) > 2.0:
+        reasons.append(f"Долг/Капитал вырос до {float(debt_to_equity_raw):.2f} (порог 2.0)")
+    if pe_trailing_raw is not None and float(pe_trailing_raw) < 0:
+        reasons.append("компания в убытке (P/E отрицательный)")
+
+    return reasons
+
+
 def _get_fx_rate(db_instance, from_currency: str, to_currency: str) -> float:
     """
     Курс FX БЕЗ учёта currencies.multiplier -- чистое отношение валют. `currency_rates`
