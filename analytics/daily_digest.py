@@ -70,7 +70,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
     # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
     # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
-    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️"}
+    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️", "TOP_UP": "📥"}
 
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
     schedule_items = [
