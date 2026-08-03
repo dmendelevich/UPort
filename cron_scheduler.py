@@ -19,6 +19,7 @@ from utils import was_us_market_open_yesterday
 from analytics.daily_digest import assemble_portfolio_digest_data
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
+from bot_handlers.paper_execution import send_paper_buy_recommendations
 
 
 
@@ -360,6 +361,13 @@ async def digest_clock_loop(db_instance, bot):
                     await run_daily_job_once(
                         db_instance, "daily_digest",
                         lambda: send_daily_digests(db_instance, bot)
+                    )
+                    # Фаза 2 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) --
+                    # тот же суточный ритм, что и дайджест, отдельный job_name для
+                    # независимого отслеживания в cron_job_runs.
+                    await run_daily_job_once(
+                        db_instance, "paper_buy_recommendations",
+                        lambda: send_paper_buy_recommendations(db_instance, bot)
                     )
         except Exception as e:
             logging.error(f"❌ [Digest Clock Error]: {e}")
