@@ -116,11 +116,14 @@ def run_database_janitor(db_instance):
 
 async def send_daily_digests(db_instance, bot):
     """
-    v0: собирает дайджест по каждому реальному портфелю и шлёт ВСЕ сообщения
-    админу, независимо от реального владельца портфеля -- сознательное решение
-    на период отладки (см. BACKLOG.md). Переключение на реального владельца
-    портфеля -- будущая доработка настроек.
+    Дайджест по каждому портфелю уходит реальному владельцу портфеля (если у
+    владельца уже включена доставка -- пока явно только owner_id 1/2, см.
+    Claude/BACKLOG.md, сын ещё не готов) и дублируется админу. Если владелец
+    портфеля сам админ (owner_id=1) -- дедуп по chat_id, сообщение уходит
+    только один раз, не дважды в один чат.
     """
+    OWNERS_WITH_DIGEST_DELIVERY = (1, 2)  # временный явный список -- расширить, когда сын онбордингнут
+
     admin_row = await asyncio.to_thread(
         db_instance.execute_row,
         "SELECT telegram_id FROM public.users WHERE is_admin = true LIMIT 1;"
@@ -132,18 +135,31 @@ async def send_daily_digests(db_instance, bot):
 
     portfolios = await asyncio.to_thread(
         db_instance.execute_query,
-        "SELECT id, name FROM public.portfolios ORDER BY id;"
+        "SELECT id, name, owner_id FROM public.portfolios ORDER BY id;"
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 
     for p in portfolios:
         p_id = int(p["id"])
+        owner_id = p.get("owner_id")
+
+        recipients = {admin_telegram_id}
+        if owner_id in OWNERS_WITH_DIGEST_DELIVERY:
+            owner_row = await asyncio.to_thread(
+                db_instance.execute_row,
+                f"SELECT telegram_id FROM public.users WHERE id = {int(owner_id)};"
+            )
+            owner_telegram_id = (owner_row or {}).get("telegram_id")
+            if owner_telegram_id:
+                recipients.add(owner_telegram_id)
+
         try:
             data = await asyncio.to_thread(assemble_portfolio_digest_data, db_instance, p_id)
             text = render_digest_overview_text(data)
             keyboard = generate_digest_toc_keyboard(p_id, data["sections"])
-            await bot.send_message(chat_id=admin_telegram_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
-            logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен.")
+            for chat_id in recipients:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
+            logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен {len(recipients)} получателям.")
         except Exception as e:
             logging.error(f"❌ [Digest]: Не удалось собрать/отправить дайджест по портфелю {p['name']} (ID: {p_id}): {e}")
 
