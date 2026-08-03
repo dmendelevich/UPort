@@ -116,6 +116,7 @@ class CashDeploymentAdvisor:
                 "system_key": strat_row.get("system_key"),
                 "rules_config": strat_row.get("rules_config") or {},
                 "slack_usd": slack,
+                "ideal_budget_usd": ideal_budget,
                 "pct_underfunded": slack / ideal_budget,
             })
 
@@ -136,8 +137,18 @@ class CashDeploymentAdvisor:
             if remaining_pool <= 0:
                 break
 
-            max_asset_pct = float(cand["rules_config"].get("portfolio_max_asset_pct") or 5.0)
-            target_slot = min(cand["slack_usd"], remaining_pool, total_capital * max_asset_pct / 100.0)
+            # Размер слота -- по умолчанию потолок от ОБЩЕГО капитала портфеля (старое
+            # поведение, всё ещё в силе для Револьверной/Трендовой). Консервативная
+            # переведена на новое правило (Claude/13_portfolio_construction_and_rebalancing_rules.md,
+            # 2026-08-03): слот = % от ЦЕЛЕВОГО бюджета САМОЙ стратегии, не от портфеля --
+            # само масштабируется с капиталом, не нуждается в пересмотре.
+            slot_pct_of_strategy = cand["rules_config"].get("tactic_slot_pct_of_strategy")
+            if slot_pct_of_strategy is not None:
+                slot_cap = cand["ideal_budget_usd"] * float(slot_pct_of_strategy) / 100.0
+            else:
+                max_asset_pct = float(cand["rules_config"].get("portfolio_max_asset_pct") or 5.0)
+                slot_cap = total_capital * max_asset_pct / 100.0
+            target_slot = min(cand["slack_usd"], remaining_pool, slot_cap)
             if target_slot <= 0:
                 continue
 

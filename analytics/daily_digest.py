@@ -3,6 +3,7 @@ import datetime
 from analytics.position_exit_evaluator import PositionExitEvaluator
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.portfolio_inspector import PortfolioInspector
+from analytics.portfolio_rebalancer import PortfolioRebalancer
 from analytics.analytics_utils import expected_step_quantity
 from analytics.order_alert_staleness import evaluate_portfolio_staleness
 
@@ -69,7 +70,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
     # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
     # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
-    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰"}
+    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️"}
 
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
     schedule_items = [
@@ -116,6 +117,18 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "ticker_id": r["ticker_id"],
         }
         for r in cash_recs if r["status"] == "CANDIDATE_FOUND"
+    ]
+
+    # Подрезка перевешенных позиций (Claude/13_portfolio_construction_and_rebalancing_rules.md,
+    # 2026-08-03) -- сегодня только Консервативная, см. PortfolioRebalancer.
+    rebalance_alerts = PortfolioRebalancer(db_instance).evaluate_portfolio(portfolio_id)
+    signal_items += [
+        {
+            "text": f"{ACTION_BADGES['TRIM']} {a['symbol']} ({a['strategy_name']}): {a['reason']}",
+            "label": a["symbol"],
+            "listing_id": a["listing_id"],
+        }
+        for a in rebalance_alerts
     ]
 
     # Готовность следующего шага лесенки -- рыночно-зависимая проверка, решается на цикле
