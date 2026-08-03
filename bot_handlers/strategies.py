@@ -228,15 +228,8 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
             pass
         return
 
-    broker_row = await asyncio.to_thread(
-        db_bot.execute_row,
-        f"""
-            SELECT b.short_name FROM public.portfolios p
-            JOIN public.brokers b ON p.broker_id = b.id
-            WHERE p.id = {int(p_id)};
-        """
-    )
-    us_only = (broker_row or {}).get("short_name") == "FB"
+    evaluator = TickerEvaluator(db_instance=db_bot)
+    us_only = await asyncio.to_thread(evaluator.resolve_us_only, p_id)
 
     held_rows = await asyncio.to_thread(
         db_bot.execute_query,
@@ -250,7 +243,6 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
     held_rows = held_rows if isinstance(held_rows, list) else ([held_rows] if held_rows else [])
     held_ids = {int(r["ticker_id"]) for r in held_rows if r}
 
-    evaluator = TickerEvaluator(db_instance=db_bot)
     results = await asyncio.to_thread(
         evaluator.screen_universe_for_strategy, s_id, held_ids, us_only
     )

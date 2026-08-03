@@ -56,12 +56,15 @@ class FreedomBrokerSyncManager:
                 
                 portfolio_id = None
                 if account_type == "trade":
-                    p_sql = f"SELECT id FROM portfolios WHERE owner_id = {user_id} LIMIT 1"
+                    # Фильтр по broker_id обязателен: у владельца может быть больше одного портфеля
+                    # (например, бумажный портфель с broker_id=NULL) -- без фильтра LIMIT 1 без ORDER BY
+                    # мог бы непредсказуемо приписать реальные деньги брокера чужому портфелю.
+                    p_sql = f"SELECT id FROM portfolios WHERE owner_id = {user_id} AND broker_id = {broker_id} ORDER BY id LIMIT 1"
                     p_rows = self.db.execute_query(p_sql)
                     if p_rows and len(p_rows) > 0:
                         portfolio_id = p_rows[0]['id']
                     else:
-                        p_insert = f"INSERT INTO portfolios (owner_id, name) VALUES ({user_id}, 'Основной')"
+                        p_insert = f"INSERT INTO portfolios (owner_id, name, broker_id) VALUES ({user_id}, 'Основной', {broker_id})"
                         self.db.execute_query(p_insert)
                         p_rows_retry = self.db.execute_query(p_sql)
                         portfolio_id = p_rows_retry[0]['id'] if p_rows_retry else None

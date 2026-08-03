@@ -17,15 +17,6 @@ class CashDeploymentAdvisor:
         self.db = db_instance
         self.evaluator = TickerEvaluator(db_instance=db_instance)
 
-    def _get_broker_short_name(self, portfolio_id: int) -> str:
-        row = self.db.execute_row(f"""
-            SELECT b.short_name
-            FROM public.portfolios p
-            JOIN public.brokers b ON p.broker_id = b.id
-            WHERE p.id = {int(portfolio_id)};
-        """)
-        return (row or {}).get("short_name")
-
     def _get_strategies_with_keys(self, portfolio_id: int) -> list:
         # is_screening_active = false -- пассивная стратегия (заводской набор шаблонов,
         # см. Claude/BACKLOG.md п.9, 2026-07-31): не предлагаем в неё докупку, пока
@@ -125,8 +116,7 @@ class CashDeploymentAdvisor:
 
         candidates.sort(key=lambda c: c["pct_underfunded"], reverse=True)
 
-        broker_short_name = self._get_broker_short_name(portfolio_id)
-        us_only = (broker_short_name == "FB")
+        us_only = self.evaluator.resolve_us_only(portfolio_id)
 
         held_ids = self._get_held_ticker_ids(portfolio_id)
 

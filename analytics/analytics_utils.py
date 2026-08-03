@@ -160,6 +160,25 @@ class TickerEvaluator:
         self.global_rules_types = {}
         self._load_rules_vocabulary_types()
 
+    def resolve_us_only(self, portfolio_id: int) -> bool:
+        """
+        US-only зависит от брокера портфеля -- Freedom Broker (short_name='FB') сегодня
+        не размещает неамериканские бумаги. Портфель без реального брокера (broker_id
+        IS NULL -- например, бумажный портфель, см. Claude/14_paper_portfolio.md) по
+        умолчанию тоже считается US-only, осознанный выбор, не "как повезёт" (решено
+        2026-08-03). Единая точка вместо трёх независимых копий одной проверки
+        (BACKLOG.md, Трек C, п.53).
+        """
+        broker_row = self.db.execute_row(f"""
+            SELECT b.short_name FROM public.portfolios p
+            JOIN public.brokers b ON p.broker_id = b.id
+            WHERE p.id = {int(portfolio_id)};
+        """)
+        short_name = (broker_row or {}).get("short_name")
+        if short_name is None:
+            return True
+        return short_name == "FB"
+
     def _load_rules_vocabulary_types(self):
         """
         🔒 ВНУТРЕННИЙ МЕТОД: Кэширует типы данных из analitic_rules_dictionary для конвертации.
@@ -366,16 +385,7 @@ class TickerEvaluator:
         if not f or "id" not in f:
             return {"error": f"Ошибка распаковки структуры данных тикера ID={ticker_id}"}
 
-        # Freedom Broker (short_name='FB') плохо работает с английскими бумагами -- см.
-        # US_EXCHANGE_CODES выше и CashDeploymentAdvisor._get_broker_short_name (тот же
-        # запрос). Нужно и здесь (не только в screen_universe_for_strategy), раз паспорт
-        # тикера может оценивать совместимость с ЛЮБЫМ конкретным портфелем.
-        broker_row = self.db.execute_row(f"""
-            SELECT b.short_name FROM public.portfolios p
-            JOIN public.brokers b ON p.broker_id = b.id
-            WHERE p.id = {int(target_portfolio_id)};
-        """)
-        us_only = (broker_row or {}).get("short_name") == "FB"
+        us_only = self.resolve_us_only(target_portfolio_id)
 
         # Классифицируем по system_key, т.к. strategies.id — сквозной автоинкремент по
         # всей БД и не привязан к порядковому номеру стратегии внутри портфеля.
