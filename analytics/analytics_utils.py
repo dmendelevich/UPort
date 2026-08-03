@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import datetime
+import settings
 
 # "Содержательные" стратегии -- в них реально покупаются/продаются бумаги по торговой
 # логике. Кэш/Резерв и Неопределённая -- служебные "карманы" портфеля, без входа/выхода
@@ -254,11 +255,22 @@ class TickerEvaluator:
         tgt_price = float(f.get("target_mean_price") or 0.0)
         upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
 
+        # Вход и выход Револьверной раньше не сверялись друг с другом -- RSI<45 не отличает
+        # "только начало падать" от "уже N дней подряд подтверждённо падает без разворота",
+        # а именно это второе условие -- то же самое, по которому _check_revolver_exit решает
+        # "ставка не отыгрывается, сдавайся раньше срока". Итог: система могла купить бумагу
+        # в момент, когда та уже удовлетворяла своему же условию немедленной продажи (живой
+        # случай MU в «ПБум», 2026-08-03). Порог -- тот же TREND_REVERSAL_CONFIRM_DAYS, что и
+        # на выходе, для согласованности.
+        streak = f.get("signal_ema20_streak_days")
+        momentum_broken = streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS
+
         m1 = {
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover1 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover1},
             "idea_rsi_oversold_num": {"status": "PASS" if rsi < limit_rsi1 else "FAIL", "fact": rsi, "limit": limit_rsi1},
             "speculative_catalyst": {"status": "PASS" if (macd_numeric > 0 or (0 < rec_mean <= 2.0)) else "FAIL", "fact": f"MACD: {macd_val}, Rec: {rec_mean}", "limit": "MACD > 0 ИЛИ Rec <= 2.0"},
             "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf1 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
+            "trend_not_confirmed_broken": {"status": "FAIL" if momentum_broken else "PASS", "fact": streak, "limit": f"> -{settings.TREND_REVERSAL_CONFIRM_DAYS}"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
         }
         is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
@@ -368,7 +380,7 @@ class TickerEvaluator:
         revenue_cagr_3y, revenue_growth, pe_trailing, dividend_yield, free_cash_flow,
         current_price, target_mean_price, recommendation_mean, signal_next_report_date,
         signal_rsi, signal_macd, signal_ema_20, signal_sma_50, signal_sma_100, signal_sma_200,
-        signal_price_to_sma200_pct, signal_daily_volatility_pct
+        signal_price_to_sma200_pct, signal_daily_volatility_pct, signal_ema20_streak_days
     """
 
     def evaluate_ticker_strategy(self, ticker_id: int, target_portfolio_id: int = 2) -> dict:
