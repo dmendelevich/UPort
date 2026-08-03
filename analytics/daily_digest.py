@@ -1,5 +1,6 @@
 import datetime
 
+import settings
 from analytics.position_exit_evaluator import PositionExitEvaluator
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.portfolio_inspector import PortfolioInspector
@@ -70,7 +71,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
     # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
     # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
-    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️", "TOP_UP": "📥"}
+    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
 
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
     schedule_items = [
@@ -184,6 +185,38 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "label": item["symbol"],
             "listing_id": item["listing_id"],
         })
+
+    # Ежемесячный пересмотр фиксированных слотов Р/Т (settings.MONTHLY_SLOT_REVIEW_DAY,
+    # Claude/13_portfolio_construction_and_rebalancing_rules.md) -- только факты, ничего
+    # не меняет сам, решение (поднять сумму или копить число слотов) -- за пользователем.
+    if datetime.date.today().day == settings.MONTHLY_SLOT_REVIEW_DAY:
+        review_rows = db_instance.execute_query(f"""
+            SELECT s.id AS strategy_id, s.strategy_name, s.rules_config,
+                   (SELECT COUNT(*) FROM public.strategy_assets sa
+                     WHERE sa.strategy_id = s.id AND sa.allocated_quantity > 0) AS position_count
+            FROM public.strategies s
+            JOIN public.strategy_templates tpl ON s.template_id = tpl.id
+            WHERE s.portfolio_id = {int(portfolio_id)} AND s.is_active = true
+              AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING');
+        """)
+        review_rows = review_rows if isinstance(review_rows, list) else ([review_rows] if review_rows else [])
+        for row in review_rows:
+            slot_fixed = (row.get("rules_config") or {}).get("tactic_slot_fixed_usd")
+            if slot_fixed is None:
+                continue
+            bal = balances.get("strategies", {}).get(int(row["strategy_id"]))
+            if not bal:
+                continue
+            ideal_budget = float(bal.get("ideal_budget_usd") or 0.0)
+            pct_of_target = (float(bal.get("current_holdings_usd") or 0.0) / ideal_budget * 100.0) if ideal_budget > 0 else 0.0
+            schedule_items.append({
+                "text": (
+                    f"{ACTION_BADGES['REVIEW']} {row['strategy_name']}: слот ${float(slot_fixed):,.0f}, "
+                    f"{int(row['position_count'])} поз. держится, стратегия на {pct_of_target:.1f}% от цели. "
+                    f"Ежемесячный пересмотр — поднять слот или продолжать копить число позиций?"
+                ),
+                "label": row["strategy_name"],
+            })
 
     return {
         "portfolio_id": portfolio_id,

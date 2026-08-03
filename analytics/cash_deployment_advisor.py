@@ -137,13 +137,21 @@ class CashDeploymentAdvisor:
             if remaining_pool <= 0:
                 break
 
-            # Размер слота -- по умолчанию потолок от ОБЩЕГО капитала портфеля (старое
-            # поведение, всё ещё в силе для Револьверной/Трендовой). Консервативная
-            # переведена на новое правило (Claude/13_portfolio_construction_and_rebalancing_rules.md,
-            # 2026-08-03): слот = % от ЦЕЛЕВОГО бюджета САМОЙ стратегии, не от портфеля --
-            # само масштабируется с капиталом, не нуждается в пересмотре.
+            # Размер слота -- три варианта, приоритет сверху вниз (Claude/13_portfolio_
+            # construction_and_rebalancing_rules.md, 2026-08-03):
+            # 1) tactic_slot_fixed_usd -- фиксированная сумма (Револьверная $1000, Трендовая
+            #    $3000): число одновременно доступных качественных спекулятивных/трендовых
+            #    идей не растёт вместе с капиталом семьи, поэтому размер слота ФИКСИРОВАН, а
+            #    растёт число слотов. Пересматривается вручную на ежемесячном ритуале, не
+            #    автоматически (см. _monthly_slot_review_items в daily_digest.py).
+            # 2) tactic_slot_pct_of_strategy -- % от ЦЕЛЕВОГО бюджета САМОЙ стратегии
+            #    (Консервативная, 5%): само масштабируется с капиталом, пересмотр не нужен.
+            # 3) иначе -- старое поведение, потолок от ОБЩЕГО капитала портфеля.
+            slot_fixed_usd = cand["rules_config"].get("tactic_slot_fixed_usd")
             slot_pct_of_strategy = cand["rules_config"].get("tactic_slot_pct_of_strategy")
-            if slot_pct_of_strategy is not None:
+            if slot_fixed_usd is not None:
+                slot_cap = float(slot_fixed_usd)
+            elif slot_pct_of_strategy is not None:
                 slot_cap = cand["ideal_budget_usd"] * float(slot_pct_of_strategy) / 100.0
             else:
                 max_asset_pct = float(cand["rules_config"].get("portfolio_max_asset_pct") or 5.0)
