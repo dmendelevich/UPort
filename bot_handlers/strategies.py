@@ -38,6 +38,9 @@ METRIC_LABELS = {
     "moving_averages_fan": "Веер скользящих средних",
     "signal_macd": "MACD",
     "tactic_volume_surge_pct": "Всплеск объёма торгов",
+    "trend_not_confirmed_broken": "Подтверждённый слом тренда",
+    "world_leader_index": "Мировой лидер (индекс)",
+    "signal_daily_volatility_pct": "Дневная волатильность",
 }
 STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "N/A": "➖", "WARNING": "⚠️"}
 
@@ -312,7 +315,15 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
         db_bot.execute_row, f"SELECT broker_id FROM public.portfolios WHERE id = {int(p_id)};"
     )
     broker_id = int((broker_row or {}).get("broker_id") or 1)
-    l_id = await asyncio.to_thread(db_sys.ensure_listing, ticker_id=int(t_id), broker_id=broker_id, fb_client=None)
+    try:
+        l_id = await asyncio.to_thread(db_sys.ensure_listing, ticker_id=int(t_id), broker_id=broker_id, fb_client=None)
+    except ValueError:
+        # Брокер не торгует этим инструментом (например, OTIS -- живой случай 2026-08-03) --
+        # раньше падало необработанным исключением, экран молча не появлялся, без следа в
+        # логе (TelegramBadRequest из финального edit_text глушится ниже, а до него дело
+        # даже не доходило). Показываем карточку без футера "Привязать ордер"/"План",
+        # вместо падения.
+        l_id = 0
 
     symbol = report.get("symbol") or ""
 

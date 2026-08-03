@@ -314,8 +314,14 @@ class TickerEvaluator:
         pe_status, pe_val = _na_or_check(f.get("pe_trailing"), lambda v: v > 0)
         vol_status, vol_val = _na_or_check(f.get("signal_daily_volatility_pct"), lambda v: v <= limit_max_volatility2)
 
+        # Строка, не list(...) -- квадратные скобки сырого Python-списка ('[...]') ломают
+        # Telegram Markdown (парсер читает их как начало ссылки без пары "(url)" и роняет
+        # edit_text с TelegramBadRequest, которую process_view_idea_reason тихо глотает --
+        # экран просто не появлялся, без следа в логе. Живой баг, найден 2026-08-03.
+        provenance_fact = ", ".join(provenance.keys()) or "—"
+
         m2 = {
-            "world_leader_index": {"status": "PASS" if is_leader else "FAIL", "fact": list(provenance.keys()), "limit": "MS_SP500" if us_only else "MS_SP500 или MS_FTSE100"},
+            "world_leader_index": {"status": "PASS" if is_leader else "FAIL", "fact": provenance_fact, "limit": "MS_SP500" if us_only else "MS_SP500 или MS_FTSE100"},
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover2 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover2},
             "return_on_equity": {"status": roe_status, "fact": round(roe_val, 4) if roe_val is not None else None, "limit": "> 0.15"},
             "debt_to_equity": {"status": debt_status, "fact": round(debt_val, 4) if debt_val is not None else None, "limit": "< 1.5"},
