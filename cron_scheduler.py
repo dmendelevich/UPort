@@ -20,7 +20,7 @@ from analytics.daily_digest import assemble_portfolio_digest_data
 from analytics.portfolio_inspector import PortfolioInspector
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
-from bot_handlers.paper_execution import send_paper_buy_recommendations
+from bot_handlers.paper_execution import send_paper_buy_recommendations, send_paper_sell_recommendations
 
 
 
@@ -404,6 +404,10 @@ async def digest_clock_loop(db_instance, bot):
                     await run_daily_job_once(
                         db_instance, "paper_buy_recommendations",
                         lambda: send_paper_buy_recommendations(db_instance, bot)
+                    )
+                    await run_daily_job_once(
+                        db_instance, "paper_sell_recommendations",
+                        lambda: send_paper_sell_recommendations(db_instance, bot)
                     )
                     # Фаза 3 -- суточный снимок NAV для измерения доходности.
                     await run_daily_job_once(
