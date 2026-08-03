@@ -49,10 +49,10 @@
 1. `sync_account_fb.py:59` — `SELECT id FROM portfolios WHERE owner_id = {user_id} LIMIT 1` без `ORDER BY` → добавлен фильтр `broker_id` + `ORDER BY id`.
 2. Дедуп `us_only = (broker_short_name == "FB")` (`BACKLOG.md` №53) → `TickerEvaluator.resolve_us_only(portfolio_id)`, портфель без брокера получает `us_only=True` по умолчанию.
 
-**Фаза 1 — схема и создание портфеля:**
-3. Новая колонка `portfolios.execution_mode` (`DEFAULT 'ADVISORY'`, обратной совместимости не ломает).
-4. Новая таблица `portfolio_value_history`.
-5. Сама строка `portfolios` (бумажный, `owner_id=1`, `broker_id=NULL`, `execution_mode='CONFIRM'`) + бутстрап 5 стратегий + строка `accounts` со стартовым капиталом.
+**Фаза 1 — схема и создание портфеля. ✅ Готово и протестировано 2026-08-03, см. `BACKLOG.md` №57:**
+3. Новая колонка `portfolios.execution_mode` (`DEFAULT 'ADVISORY'`, обратной совместимости не ломает) — готово.
+4. Новая таблица `portfolio_value_history` — готово.
+5. Портфель «ПБум» (id=8, `owner_id=1`, `broker_id=NULL`, `execution_mode='CONFIRM'`) + 5 стратегий (Консервативная 50% / Трендовая 25% / Револьверная 15% / Кэш-Резерв 10% — все `is_screening_active=true` с первого дня, в отличие от стандартного бутстрапа нового портфеля, где содержательные стратегии стартуют пассивными; Неопределённая — 0%, не скринится, чистый буфер) + счёт `PAPER-8` на $50 000 — готово. Скрипт — [`add_paper_portfolio_infra.py`](../add_paper_portfolio_infra.py).
 
 **Фаза 2 — движок исполнения по подтверждению:**
 6. Новый модуль: прогон 4 советников по `CONFIRM`-портфелям, сборка сообщения с Да/Нет.
