@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .vscode/
 .claude/settings.local.json
+venv/
+uport_system.log
+uport_system.log.*.gz
