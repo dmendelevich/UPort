@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 
 from aiogram import Router, types, F
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database import db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import generate_confirm_keyboard
+from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.position_exit_evaluator import PositionExitEvaluator
 
@@ -16,6 +17,24 @@ router = Router()
 
 def _system_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
+
+
+def _back_keyboard(portfolio_id: int, listing_id: int = 0):
+    """
+    Клавиатура после исполнения/отказа/ошибки -- по просьбе пользователя 2026-08-04
+    (после "✅ Исполнено" некуда было вернуться, reply_markup=None). Если известен
+    listing_id -- ведёт на карточку бумаги (тот же паттерн, что и у самой кнопки
+    "Купить/Продать виртуально", см. BACKLOG.md №71); если нет (например, кандидат
+    так и не легализован до листинга) -- только в главное меню.
+    """
+    if listing_id:
+        return generate_nav_back_keyboard(
+            one_step_back_text="🔙 К карточке бумаги",
+            full_back_callback=MenuAction(action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id, sub_view="owner").pack()
+        )
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    return builder.as_markup()
 
 
 def _refresh_assets_value_sql(portfolio_id: int) -> str:
@@ -101,12 +120,17 @@ async def send_paper_buy_recommendations(db_instance, bot):
 
 
 @router.callback_query(MenuAction.filter(F.action == "paper_buy_no"))
-async def process_paper_buy_no(callback: types.CallbackQuery):
+async def process_paper_buy_no(callback: types.CallbackQuery, callback_data: MenuAction):
     """Отказ -- ничего не пишем в БД, отказ не запоминается: если условие всё ещё
     верно, кандидат просто появится снова на следующий день (как в обычном дайджесте)."""
     await callback.answer()
+    listing_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        f"SELECT id FROM public.listings WHERE ticker_id = {callback_data.ticker_id} AND broker_id = 1;"
+    )
+    l_id = int((listing_row or {}).get("id") or 0)
     try:
-        await callback.message.edit_text("❌ Отклонено.", reply_markup=None)
+        await callback.message.edit_text("❌ Отклонено.", reply_markup=_back_keyboard(callback_data.portfolio_id, l_id))
     except TelegramBadRequest:
         pass
 
@@ -134,8 +158,16 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
         None
     )
     if not match:
+        listing_row_chk = await asyncio.to_thread(
+            db_sys.execute_row,
+            f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+        )
+        l_id_chk = int((listing_row_chk or {}).get("id") or 0)
         try:
-            await callback.message.edit_text("⚠️ Условия изменились, кандидат больше не актуален.", reply_markup=None)
+            await callback.message.edit_text(
+                "⚠️ Условия изменились, кандидат больше не актуален.",
+                reply_markup=_back_keyboard(p_id, l_id_chk)
+            )
         except TelegramBadRequest:
             pass
         return
@@ -153,7 +185,10 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
             listing_id = await asyncio.to_thread(db_sys.ensure_listing, t_id, 1)
         except Exception as e:
             try:
-                await callback.message.edit_text(f"⚠️ Не удалось легализовать листинг {symbol}: {e}", reply_markup=None)
+                await callback.message.edit_text(
+                    f"⚠️ Не удалось легализовать листинг {symbol}: {e}",
+                    reply_markup=_back_keyboard(p_id)
+                )
             except TelegramBadRequest:
                 pass
             return
@@ -167,7 +202,10 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
 
     if price <= 0:
         try:
-            await callback.message.edit_text(f"⚠️ Не удалось получить цену {symbol}, попробуй позже.", reply_markup=None)
+            await callback.message.edit_text(
+                f"⚠️ Не удалось получить цену {symbol}, попробуй позже.",
+                reply_markup=_back_keyboard(p_id, listing_id)
+            )
         except TelegramBadRequest:
             pass
         return
@@ -212,7 +250,7 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
         await callback.message.edit_text(
             f"✅ Исполнено: {quantity} шт *{symbol}* по ${price:,.2f} (${spent:,.2f})",
             parse_mode="Markdown",
-            reply_markup=None
+            reply_markup=_back_keyboard(p_id, listing_id)
         )
     except TelegramBadRequest:
         pass
@@ -282,11 +320,14 @@ async def send_paper_sell_recommendations(db_instance, bot):
 
 
 @router.callback_query(MenuAction.filter(F.action == "paper_sell_no"))
-async def process_paper_sell_no(callback: types.CallbackQuery):
+async def process_paper_sell_no(callback: types.CallbackQuery, callback_data: MenuAction):
     """Отказ -- ничего не пишем в БД, отказ не запоминается (как и у покупки)."""
     await callback.answer()
     try:
-        await callback.message.edit_text("❌ Отклонено.", reply_markup=None)
+        await callback.message.edit_text(
+            "❌ Отклонено.",
+            reply_markup=_back_keyboard(callback_data.portfolio_id, callback_data.listing_id)
+        )
     except TelegramBadRequest:
         pass
 
@@ -317,7 +358,10 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
     )
     if not match:
         try:
-            await callback.message.edit_text("⚠️ Условия изменились, продажа больше не актуальна.", reply_markup=None)
+            await callback.message.edit_text(
+                "⚠️ Условия изменились, продажа больше не актуальна.",
+                reply_markup=_back_keyboard(p_id, l_id)
+            )
         except TelegramBadRequest:
             pass
         return
@@ -337,7 +381,10 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
 
     if price <= 0:
         try:
-            await callback.message.edit_text(f"⚠️ Не удалось получить цену {symbol}, попробуй позже.", reply_markup=None)
+            await callback.message.edit_text(
+                f"⚠️ Не удалось получить цену {symbol}, попробуй позже.",
+                reply_markup=_back_keyboard(p_id, l_id)
+            )
         except TelegramBadRequest:
             pass
         return
@@ -372,7 +419,7 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
             f"✅ Продано: {quantity:g} шт *{symbol}* по ${price:,.2f} (${proceeds:,.2f})\n"
             f"P&L: {pnl_sign}${pnl:,.2f} ({pnl_sign}{pnl_pct:.1f}%)",
             parse_mode="Markdown",
-            reply_markup=None
+            reply_markup=_back_keyboard(p_id, l_id)
         )
     except TelegramBadRequest:
         pass
