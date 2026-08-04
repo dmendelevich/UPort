@@ -23,6 +23,14 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
+# При LOG_LEVEL=DEBUG сторонние библиотеки (requests/urllib3 -- шлюз БД на каждый SQL-запрос,
+# aiohttp -- Telegram-поллинг) начинают печатать СВОИ построчные DEBUG-логи (например,
+# "Starting new HTTP connection" на каждый запрос к localhost:3000) -- их многие тысячи в час,
+# они забивают собой ту самую расследуемую проблему, ради которой DEBUG и включали. Глушим
+# явно, независимо от общего уровня -- DEBUG остаётся только для кода UPort.
+for _noisy_logger in ("urllib3", "requests", "aiohttp", "asyncio"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
 # Импортируем готовый инстанс шлюза СУБД (лишний класс Database удален)
 from database import db_sys
 
