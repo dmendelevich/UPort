@@ -323,6 +323,54 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         print(f"🎯 [ТИКЕР ПЛАН]: Сборка шторки плана для portfolio_id={p_id}, listing_id={l_id}")
         await callback.answer("Загрузка плана...")
 
+        # Бумажный портфель (execution_mode='CONFIRM') -- реального брокера нет, план
+        # входа/выхода через терминал + привязка ордера в принципе не могут завершиться
+        # (живой тупик, найден пользователем 2026-08-04: создал "План входа", а привязать
+        # приказ неоткуда). Вместо реальной ветки ниже -- прямая кнопка, переиспользующая
+        # ГОТОВЫЙ обработчик подтверждения (paper_execution.py), тот же action, что и у
+        # кнопки "Да" в ежедневном push, просто с другим спусковым крючком.
+        exec_mode_row = db_bot.execute_row(f"SELECT execution_mode FROM public.portfolios WHERE id = {p_id};")
+        if (exec_mode_row or {}).get("execution_mode") == "CONFIRM":
+            held_anywhere = db_bot.execute_row(f"""
+                SELECT sa.strategy_id FROM public.strategy_assets sa
+                JOIN public.assets a ON sa.asset_id = a.id
+                WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id} AND sa.allocated_quantity > 0
+                LIMIT 1;
+            """)
+            action_builder = InlineKeyboardBuilder()
+            if held_anywhere:
+                # Держится -- strategy_id из callback_data может быть 0 (например, пришли
+                # из "Состав портфеля", где контекст стратегии не передаётся), берём
+                # реальную стратегию-держателя из strategy_assets, а не из callback_data.
+                holder_strategy_id = int(held_anywhere["strategy_id"])
+                action_builder.row(types.InlineKeyboardButton(
+                    text="📤 Продать виртуально",
+                    callback_data=MenuAction(action="paper_sell_yes", portfolio_id=p_id, listing_id=l_id, strategy_id=holder_strategy_id).pack()
+                ))
+            else:
+                action_builder.row(types.InlineKeyboardButton(
+                    text="📥 Купить виртуально",
+                    callback_data=MenuAction(action="paper_buy_yes", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
+                ))
+            nav_kb = generate_nav_back_keyboard(
+                one_step_back_text="🔙 К карточке бумаги",
+                full_back_callback=MenuAction(
+                    action="view_ticker", portfolio_id=p_id, listing_id=l_id,
+                    ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
+                ).pack()
+            )
+            final_builder = InlineKeyboardBuilder.from_markup(action_builder.as_markup())
+            final_builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
+            try:
+                await callback.message.edit_text(
+                    header_text + "📋 **ПЛАН:**\n\n🧪 Это бумажный портфель — реального брокера нет, "
+                    "план через терминал не нужен. Подтверди действие напрямую:",
+                    parse_mode="Markdown", reply_markup=final_builder.as_markup()
+                )
+            except TelegramBadRequest:
+                pass
+            return
+
         plan_rows = db_bot.execute_query(f"""
             SELECT op.id, op.strategy_id, s.strategy_name, s.rules_config,
                    op.current_step, op.target_quantity, op.initial_entry_price,
