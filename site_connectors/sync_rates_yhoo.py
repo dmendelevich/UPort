@@ -17,7 +17,7 @@ def sync_rates(db_instance):
     ВЫВЕРЕНО: Сохраняет оригинальный регистр кода (напр. GBp) для связей FK в СУБД.
     СТАНДАРТ: Фиксация времени строго по правилам UPort UTC TIMESTAMP(0).
     """
-    logging.info("📡 [Yahoo Forex]: Сбор реально используемых валют из СУБД...")
+    logging.debug("📡 [Yahoo Forex]: Сбор реально используемых валют из СУБД...")
     
     # 🔥 ЖЕЛЕЗНЫЙ ТРОЙНОЙ ШЛЮЗ UPORT: собираем валюты из паспортов, планируемых ордеров и накопительных сейфов
     sql_used_currencies = """
@@ -33,18 +33,23 @@ def sync_rates(db_instance):
     db_res = db_instance.execute_query(sql_used_currencies)   
 
     if not db_res:
-        logging.info("ℹ️ [Yahoo Forex]: Используемых дополнительных валют в СУБД не обнаружено. Обновление не требуется.")
-        return
+        logging.debug("ℹ️ [Yahoo Forex]: Используемых дополнительных валют в СУБД не обнаружено. Обновление не требуется.")
+        return {"processed": 0, "errors": 0}
 
     # Извлекаем оригинальные коды валют прямо из базы (сохраняя регистр, например 'GBp')
     currencies_to_update = [row['currency_id'].strip() for row in db_res]
-    logging.info(f"📊 [Yahoo Forex]: Запуск точечного обновления для пар: {currencies_to_update} к USD")
+    logging.debug(f"📊 [Yahoo Forex]: Запуск точечного обновления для пар: {currencies_to_update} к USD")
+
+    # Честная статистика (Claude/BACKLOG.md №28/74) -- та же логика, что уже применена
+    # к остальным синхронизаторам: построчное "успешно" по каждой паре не несёт смысла
+    # (курсы валют почти всегда штатно обновляются), важен только итог цикла.
+    error_count = 0
 
     for code in currencies_to_update:
         try:
             # 🛡️ РАЗДЕЛЯЕМ РЕГИСТРЫ: Для Yahoo всегда UPPER, для базы — оригинал (code)
             code_for_yahoo = code.upper()
-            logging.info(f"   • Запрос курса {code_for_yahoo} -> USD...")
+            logging.debug(f"   • Запрос курса {code_for_yahoo} -> USD...")
             
             # ФИНАНСОВЫЙ МАППИНГ: Переводим архивный код RUR в понятный для Yahoo RUB
             yf_code = "RUB" if code_for_yahoo == "RUR" else code_for_yahoo
@@ -80,14 +85,20 @@ def sync_rates(db_instance):
                 """
             
             db_instance.execute_query(sql_write)
-            logging.info(f"   ✅ Пара {code} -> USD успешно сохранена в СУБД. Курс: {rate:.6f}")
-            
+            logging.debug(f"   ✅ Пара {code} -> USD успешно сохранена в СУБД. Курс: {rate:.6f}")
+
         except Exception as e:
+            error_count += 1
             logging.error(f"   ❌ Ошибка обработки валютной пары {code}: {e}")
-            
+
         time.sleep(0.5) # Защитная пауза от блокировок Yahoo
 
-    logging.info("🏁 [Yahoo Forex]: Синхронизация валютных курсов завершена.")
+    if error_count > 0:
+        logging.warning(f"🏁 [Yahoo Forex]: Синхронизация завершена С ОШИБКАМИ: {error_count} из {len(currencies_to_update)} пар не обновились.")
+    else:
+        logging.debug(f"🏁 [Yahoo Forex]: Синхронизация валютных курсов завершена, {len(currencies_to_update)} пар.")
+
+    return {"processed": len(currencies_to_update), "errors": error_count}
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

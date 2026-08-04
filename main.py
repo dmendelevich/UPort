@@ -24,11 +24,12 @@ logging.basicConfig(
 )
 
 # При LOG_LEVEL=DEBUG сторонние библиотеки (requests/urllib3 -- шлюз БД на каждый SQL-запрос,
-# aiohttp -- Telegram-поллинг) начинают печатать СВОИ построчные DEBUG-логи (например,
-# "Starting new HTTP connection" на каждый запрос к localhost:3000) -- их многие тысячи в час,
-# они забивают собой ту самую расследуемую проблему, ради которой DEBUG и включали. Глушим
-# явно, независимо от общего уровня -- DEBUG остаётся только для кода UPort.
-for _noisy_logger in ("urllib3", "requests", "aiohttp", "asyncio"):
+# aiohttp -- Telegram-поллинг, yfinance/peewee -- каждый запрос котировок/фундаментала трассирует
+# вход-выход в каждую свою функцию и SQL к своему локальному SQLite-кэшу) начинают печатать
+# СВОИ построчные DEBUG-логи -- их многие тысячи в час, забивают собой ту самую расследуемую
+# проблему, ради которой DEBUG и включали (замерено: 7 валютных пар дают почти 400 строк чужого
+# шума). Глушим явно, независимо от общего уровня -- DEBUG остаётся только для кода UPort.
+for _noisy_logger in ("urllib3", "requests", "aiohttp", "asyncio", "yfinance", "peewee"):
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 # Импортируем готовый инстанс шлюза СУБД (лишний класс Database удален)
