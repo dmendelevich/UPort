@@ -193,6 +193,10 @@ async def send_paper_buy_recommendations(db_instance, bot):
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 
+    # Честная статистика (Claude/BACKLOG.md №28) -- раньше эта функция возвращала None
+    # безусловно, даже если для части портфелей рекомендации не посчитались/не отправились.
+    error_count = 0
+
     for p in portfolios:
         p_id = int(p["id"])
         p_name = p["name"]
@@ -205,6 +209,7 @@ async def send_paper_buy_recommendations(db_instance, bot):
         chat_id = (owner_row or {}).get("telegram_id")
         if not chat_id:
             logging.warning(f"⚠️ [PaperExec]: У владельца портфеля '{p_name}' (ID: {p_id}) нет telegram_id -- некому отправить подтверждение.")
+            error_count += 1
             continue
 
         try:
@@ -212,6 +217,7 @@ async def send_paper_buy_recommendations(db_instance, bot):
             recommendations = await asyncio.to_thread(advisor.evaluate_deployment, p_id)
         except Exception as e:
             logging.error(f"❌ [PaperExec]: Не удалось посчитать рекомендации для '{p_name}' (ID: {p_id}): {e}")
+            error_count += 1
             continue
 
         for rec in recommendations:
@@ -241,6 +247,9 @@ async def send_paper_buy_recommendations(db_instance, bot):
                 logging.info(f"✅ [PaperExec]: Рекомендация {symbol} для '{p_name}' отправлена на подтверждение.")
             except Exception as e:
                 logging.error(f"❌ [PaperExec]: Не удалось отправить рекомендацию {symbol} для '{p_name}': {e}")
+                error_count += 1
+
+    return {"processed": len(portfolios), "errors": error_count}
 
 
 @router.callback_query(MenuAction.filter(F.action == "paper_buy_no"))
@@ -463,6 +472,9 @@ async def send_paper_sell_recommendations(db_instance, bot):
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 
+    # Честная статистика (Claude/BACKLOG.md №28) -- см. тот же принцип в send_paper_buy_recommendations
+    error_count = 0
+
     for p in portfolios:
         p_id = int(p["id"])
         p_name = p["name"]
@@ -475,6 +487,7 @@ async def send_paper_sell_recommendations(db_instance, bot):
         chat_id = (owner_row or {}).get("telegram_id")
         if not chat_id:
             logging.warning(f"⚠️ [PaperExec]: У владельца портфеля '{p_name}' (ID: {p_id}) нет telegram_id -- некому отправить подтверждение.")
+            error_count += 1
             continue
 
         try:
@@ -482,6 +495,7 @@ async def send_paper_sell_recommendations(db_instance, bot):
             alerts = await asyncio.to_thread(evaluator.evaluate_portfolio_exits, p_id)
         except Exception as e:
             logging.error(f"❌ [PaperExec]: Не удалось посчитать рекомендации на выход для '{p_name}' (ID: {p_id}): {e}")
+            error_count += 1
             continue
 
         for alert in alerts:
@@ -510,6 +524,9 @@ async def send_paper_sell_recommendations(db_instance, bot):
                 logging.info(f"✅ [PaperExec]: Рекомендация продажи {symbol} для '{p_name}' отправлена на подтверждение.")
             except Exception as e:
                 logging.error(f"❌ [PaperExec]: Не удалось отправить рекомендацию продажи {symbol} для '{p_name}': {e}")
+                error_count += 1
+
+    return {"processed": len(portfolios), "errors": error_count}
 
 
 @router.callback_query(MenuAction.filter(F.action == "paper_sell_no"))

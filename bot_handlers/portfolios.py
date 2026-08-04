@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
@@ -53,7 +54,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     if "/" in view:
         view, origin = view.split("/", 1)
 
-    print(f"\n💼 [ПОРТФЕЛЬ ТРИГГЕР]: Сборка аналитического паспорта для portfolio_id = {p_id}, вкладка = '{view}'")
+    logging.debug(f"💼 [ПОРТФЕЛЬ]: Сборка аналитического паспорта для portfolio_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка аналитического паспорта...")
 
     # Мультивалютность: та же схема, что у карточек тикера/стратегии -- всё выводим в
@@ -81,7 +82,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     # 1. Вызываем модуль аудитора для расчета рисков и соответствия стратегии
     passport = await asyncio.to_thread(generate_portfolio_passport, p_id, db_bot)
     if not passport:
-        print(f"❌ [ПОРТФЕЛЬ ОШИБКА]: Не удалось сгенерировать паспорт для id = {p_id}")
+        logging.error(f"❌ [ПОРТФЕЛЬ]: Не удалось сгенерировать паспорт для id = {p_id}")
         await callback.message.edit_text("❌ Ошибка генерации паспорта портфеля.", reply_markup=generate_main_menu_keyboard())
         return
 
@@ -251,7 +252,6 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         )
 
     elif view == "strategies":
-        print("🎯 [ПОРТФЕЛЬ]: Рендеринг списка активных стратегий...")
         report_text += "🎯 **Активные стратегии портфеля:**"
 
         inspector = await asyncio.to_thread(PortfolioInspector, db_bot, p_id)
@@ -328,7 +328,6 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     final_builder = InlineKeyboardBuilder.from_markup(tabs_markup)
     final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
 
-    print("🖥️ [ПОРТФЕЛЬ]: Отправляю собранную шторку в Telegram...")
     try:
         await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())        
     except TelegramBadRequest:

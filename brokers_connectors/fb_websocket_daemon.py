@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
@@ -28,20 +29,20 @@ async def listen_freedom_broker(owner_prefix: str, account_type: str, account_nu
 
     # Если ключей в .env нет, мягко выходим (актуально для накопительного счета жены)
     if not api_key or not api_secret:
-        print(f"ℹ️ [WS {owner_prefix}]: Ключи для контура {mode_label} отсутствуют в .env. Слушатель пропущен.")
+        logging.info(f"ℹ️ [WS {owner_prefix}]: Ключи для контура {mode_label} отсутствуют в .env. Слушатель пропущен.")
         return
 
-    print(f"🧠 [WS {owner_prefix} {mode_label}]: Инициализация ядра для счета {account_number}...")
+    logging.info(f"🧠 [WS {owner_prefix} {mode_label}]: Инициализация ядра для счета {account_number}...")
     core_config = Core(public=api_key, private=api_secret)
     core_config.DOMAIN = "tradernet.kz"
 
     while True:
         try:
-            print(f"🔌 [WS {owner_prefix} {mode_label}]: Подключение к {core_config.websocket_url}...")
-            
+            logging.debug(f"🔌 [WS {owner_prefix} {mode_label}]: Подключение к {core_config.websocket_url}...")
+
             async with TradernetWebsocket(core_config) as ws_client:
-                print(f"✅ [WS {owner_prefix} {mode_label}]: Соединение успешно установлено!")
-                
+                logging.info(f"✅ [WS {owner_prefix} {mode_label}]: Соединение установлено.")
+
                 portfolio_stream = ws_client.portfolio()
                 orders_stream = ws_client.orders()
 
@@ -50,23 +51,23 @@ async def listen_freedom_broker(owner_prefix: str, account_type: str, account_nu
 
                 async def read_portfolio():
                     async for update in portfolio_stream:
-                        print(f"🟢 [WS {owner_prefix} {mode_label}]: Изменение портфеля! Вызов sync_manager...")
+                        # Реальное движение по счёту -- значимое событие, остаётся на INFO
+                        logging.info(f"🟢 [WS {owner_prefix} {mode_label}]: Изменение портфеля! Синхронизирую с БД...")
                         # Оборачиваем в замок: следующий поток не зайдет, пока текущий не завершит транзакцию в БД
                         async with sync_lock:
                             await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
-                        print(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по портфелю.")
+                        logging.info(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по портфелю.")
 
                 async def read_orders():
                     async for update in orders_stream:
-                        print(f"🔵 [WS {owner_prefix} {mode_label}]: ...")
+                        logging.info(f"🔵 [WS {owner_prefix} {mode_label}]: Изменение по ордерам! Синхронизирую с БД...")
                         # Используем тот же самый замок для синхронизации ордеров
                         async with sync_lock:
                             await asyncio.to_thread(sync_manager.sync_by_account_number, account_number)
-                        print(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по ордерам.")
+                        logging.info(f"🚀 [WS {owner_prefix} {mode_label}]: База данных актуализирована по ордерам.")
 
                 await asyncio.gather(read_portfolio(), read_orders())
 
         except Exception as conn_error:
-            print(f"⚠️ [WS {owner_prefix} {mode_label} DISCONNECT]: {conn_error}")
-            print(f"⏳ [WS {owner_prefix} {mode_label}]: Переподключение через 10 секунд...")
+            logging.warning(f"⚠️ [WS {owner_prefix} {mode_label} DISCONNECT]: {conn_error}. Переподключение через 10 секунд...")
             await asyncio.sleep(10)

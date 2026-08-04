@@ -101,7 +101,7 @@ async def process_yahoo_sync_callback(callback: types.CallbackQuery, state: FSMC
                 )
         except Exception as send_err:
             # На случай, если пользователь за эти 30 секунд уже ушел в другое меню и закрыл окно
-            print(f"Не удалось отредактировать статус-сообщение: {send_err}")
+            logging.warning(f"⚠️ [Settings]: Не удалось отредактировать статус-сообщение: {send_err}")
 
     # Запускаем фоновую корутину без await, чтобы она крутилась независимо
     asyncio.create_task(run_and_report())

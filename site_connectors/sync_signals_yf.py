@@ -17,13 +17,8 @@ import utils
 import config
 import settings
 
-# Настраиваем логирование для контроля пакетного прогресса в реальном времени
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 def sync_global_yahoo_signals(single_ticker_id=None):
-    print("\n" + "="*120)
-    print("🌅 [UPort GLOBAL YAHOO CONVEYER v1.0]: Глобальный пакетный экспресс-скоринг (100% Yahoo Finance)...")
-    print("="*120)
+    logging.info("🌅 [UPort GLOBAL YAHOO CONVEYER v1.0]: Глобальный пакетный экспресс-скоринг (100% Yahoo Finance)...")
 
     # 🔥 ШАГ 1: КЭШИРОВАНИЕ КУРСОВ ВАЛЮТ ДЛЯ ПЕРЕСЧЕТА ОБОР ТОВ В USD
     logging.info("💸 Загружаю актуальные курсы валют из public.currency_rates для пересчета оборотов в USD...")
@@ -267,15 +262,18 @@ def sync_global_yahoo_signals(single_ticker_id=None):
             time.sleep(config.PAUSE_SIGNALS_SEC)
             logging.info(f"   ✅ [ЭШЕЛОН №{echelon_idx} ЗАВЕРШЕН]: Накопительный итог: {total_updated} шт.")
 
-    print("\n" + "="*120)
-    print(f"🏁 [GLOBAL YAHOO CONVEYER COMPLETE]: Успешно наполнено: {total_updated} из {total_tickers} акций!")
-    print("="*120 + "\n")
-
     # Честная статистика выполнения (Claude/BACKLOG.md, п.25, 2026-08-03) -- errors считает
     # ЛЮБУЮ причину незавершения (сбой пакетной загрузки эшелона, сбой расчёта по одному
     # тикеру, пропуск из-за короткой истории) как единое "не обновилось", не различая причину.
-    return {"processed": total_tickers, "errors": total_tickers - total_updated}
+    errors = total_tickers - total_updated
+    if errors > 0:
+        logging.warning(f"🏁 [GLOBAL YAHOO CONVEYER]: Завершено С ОШИБКАМИ: {errors} из {total_tickers} акций не обновились.")
+    else:
+        logging.info(f"🏁 [GLOBAL YAHOO CONVEYER]: Успешно наполнено {total_updated} из {total_tickers} акций.")
+    return {"processed": total_tickers, "errors": errors}
 
 if __name__ == "__main__":
-    # Запуск глобального экспресс-конвейера
+    # Локальный запуск из консоли -- при импорте в живой процесс (cron_scheduler) уровень/формат
+    # задаёт main.py централизованно (Claude/BACKLOG.md №28), этот вызов там уже не сработает
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     sync_global_yahoo_signals()

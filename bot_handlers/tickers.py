@@ -31,12 +31,8 @@ router = Router()
 async def process_view_ticker(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """Экран Уровня 3: Детализация конкретной бумаги с глубоким дебагом."""
     
-    # 🧪 КРИТИЧЕСКИЙ ДЕБАГ №1: Смотрим, что физически прилетело из кнопки Telegram
-    print(f"\n📥 [ДЕБАГ КЛИКА ТИКЕРА]: Сработал хэндлер!")
-    print(f"   • callback_data: {callback_data}")
-    print(f"   • Считанный portfolio_id: {callback_data.portfolio_id}")
-    print(f"   • Считанный sub_view: {callback_data.sub_view}")
-    
+    logging.debug(f"📥 [ТИКЕР]: callback_data: {callback_data}")
+
     # Безопасно проверяем наличие полей в объекте фабрики
     l_id = 0
     if hasattr(callback_data, 'listing_id'):
@@ -61,7 +57,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         if len(parts) > 1:
             alerts_origin = parts[1]
 
-    print(f"   • Итоговые переменные после парсинга: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
+    logging.debug(f"📥 [ТИКЕР]: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
 
     # 1. РЕЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ТИКЕРА И ПЛОЩАДКИ БРОКЕРА
     if l_id > 0:
@@ -72,13 +68,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             JOIN public.tickers t ON l.ticker_id = t.id
             WHERE l.id = {l_id};
         """
-        print(f"   • 📡 [ДЕБАГ SQL]: Отправляю запрос по листингу {l_id}...")
         # 🔥 РЕФАКТОРИНГ: Заменяем на execute_row, убирая кашу проверок на списки/словари
         l_row = db_bot.execute_row(listing_sql)
-        print(f"   • [ДЕБАГ СУБД ОТВЕТ]: {l_row}")
-        
+
         if not l_row:
-            print("   • ❌ СУБД вернула пустоту для этого l_id!")
+            logging.warning(f"⚠️ [ТИКЕР]: СУБД не нашла листинг l_id={l_id} (дохлая ссылка в кнопке).")
             await callback.answer("❌ Листинг актива не найден в СУБД.", show_alert=True)
             return
 
@@ -87,7 +81,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         broker_symbol = l_row['broker_symbol']
         last_price = float(l_row['last_price'] or 0)
         currency_id = l_row['currency_id']
-        print(f"   • ✅ УСПЕШНО РАСПАРСЕНО: {pure_symbol} (ID: {t_id})")
     else:
         # Сценарий Б: Вход по текстовому поиску чистого глобального тикера из Телеграм
         t_name = callback_data.ticker_name.strip().upper()
@@ -108,7 +101,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             
             # Если шлюз не смог распознать или легализовать бумагу — прерываем обработку
             if not l_id:
-                print(f"⚠️ [TG BOT]: Не удалось легализовать символ '{t_name}' через ядро СУБД.")
+                logging.warning(f"⚠️ [ТИКЕР]: Не удалось легализовать символ '{t_name}' через ядро СУБД.")
                 return
             
             # Извлекаем созданные/найденные параметры
@@ -121,11 +114,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             l_res = db_bot.execute_query(listing_sql)
             
         except Exception as err:
-            print(f"❌ [КАСКАДНЫЙ ПОИСК ОШИБКА]: Инструмент {t_name} не найден на мировых биржах: {err}")
+            logging.error(f"❌ [ТИКЕР]: Инструмент {t_name} не найден на мировых биржах: {err}")
             await callback.answer(f"❌ Ошибка: тикер '{t_name}' не найден в СУБД и СУП брокера.", show_alert=True)
             return
 
-    print(f"\n📈 [ТИКЕР ТРИГГЕР]: Рендеринг карточки `{pure_symbol}` (ID: {t_id}) | Портфель: {p_id} | Вкладка: {view}")
     await callback.answer(f"Анализ {pure_symbol}...")
 
     # Мультивалютность (BACKLOG.md #30): вся денежная информация выводится в
@@ -173,7 +165,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # 🔥 НОВЫЙ КОНТУР v1.0: ПРЯМОЙ ПЕРЕХВАТ И РЕНДЕРИНГ ШТОРКИ "СПИСОК АЛЕРТОВ"
     # =========================================================================
     if view == "alerts":
-        print(f"🎯 [ТИКЕР АЛЕРТЫ]: Сборка изолированной шторки алертов для listing_id = {l_id}")
         await callback.answer("Загрузка радара алертов...")
         
         # Вытаскиваем все алерты тикера через наше новое реляционное ядро
@@ -218,7 +209,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
             )
 
-        print("🖥️ [ТИКЕР АЛЕРТЫ]: Отправляю изолированную шторку в Telegram...")
         try:
             await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
         except TelegramBadRequest:
@@ -230,7 +220,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # 🔥 ШТОРКА "СПИСОК ОРДЕРОВ" (Блок 5 стандарта body, симметрично шторке алертов выше)
     # =========================================================================
     if view == "orders":
-        print(f"🎯 [ТИКЕР ОРДЕРА]: Сборка изолированной шторки ордеров для ticker_id = {t_id}")
         await callback.answer("Загрузка активных приказов...")
 
         sql_live_orders = f"""
@@ -305,7 +294,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             ).pack()
         )
 
-        print("🖥️ [ТИКЕР ОРДЕРА]: Отправляю изолированную шторку в Telegram...")
         try:
             await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
         except TelegramBadRequest:
@@ -320,7 +308,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # только то, что реально уже есть в данных.
     # =========================================================================
     if view == "plan":
-        print(f"🎯 [ТИКЕР ПЛАН]: Сборка шторки плана для portfolio_id={p_id}, listing_id={l_id}")
         await callback.answer("Загрузка плана...")
 
         # Бумажный портфель (execution_mode='CONFIRM') -- реального брокера нет, план
@@ -524,7 +511,6 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         final_builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
         nav_markup = final_builder.as_markup()
 
-        print("🖥️ [ТИКЕР ПЛАН]: Отправляю шторку плана в Telegram...")
         try:
             await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=nav_markup)
         except TelegramBadRequest:
@@ -644,13 +630,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         back_text=back_text, back_callback=back_callback, watchlist_removable=watchlist_removable
     )
 
-    print("🖥️ [ТИКЕР]: Отправляю карточку акции в Telegram...")
-
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
     except TelegramBadRequest as e:
-        print(f"⚠️ Ошибка редактирования шторки тикера: {e}")
-        pass
+        logging.warning(f"⚠️ [ТИКЕР]: Ошибка редактирования шторки тикера: {e}")
 
 
 @router.callback_query(MenuAction.filter(F.action == "stop_price_alert"))

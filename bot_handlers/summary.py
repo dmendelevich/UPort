@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -65,7 +66,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             is_admin = str(user_row.get('is_admin')).lower() in ('true', '1', 't')   
 
     except Exception as e:
-        print(f"⚠️ Ошибка определения прав и ID пользователя при старте: {e}")
+        logging.error(f"⚠️ [Summary]: Ошибка определения прав и ID пользователя при старте: {e}")
 
     # 🔥 ЗАПИРАЕМ В ПАМЯТЬ: Сохраняем и флаг админа, и внутренний user_db_id текущей сессии
     await state.update_data(user_db_id=user_db_id, is_admin=is_admin)

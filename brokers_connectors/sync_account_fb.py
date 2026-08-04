@@ -39,7 +39,7 @@ class FreedomBrokerSyncManager:
             
             # АВТОМАТИЧЕСКОЕ СОЗДАНИЕ: Если таблица accounts пуста, генерируем базовую структуру
             if not acc_data or len(acc_data) == 0:
-                print(f"♻️ [Sync Manager]: Счет {account_number} не найден в accounts. Автоматическое создание...")
+                logging.info(f"♻️ [Sync Manager]: Счет {account_number} не найден в accounts. Автоматическое создание...")
                 
                 is_deposit = account_number.startswith("D")
                 look_num = account_number[1:] if is_deposit else account_number
@@ -332,7 +332,7 @@ class FreedomBrokerSyncManager:
                     )
 
             except Exception as o_err:
-                print(f"⚠️ Предупреждение: Не удалось обновить слепок приказов: {o_err}")
+                logging.warning(f"⚠️ [Sync Manager]: Не удалось обновить слепок приказов: {o_err}")
 
             return {
                 "owner_name": owner_name,
@@ -346,15 +346,9 @@ class FreedomBrokerSyncManager:
             # Находим самый финал функции и дописываем блок перехвата:
             
         except Exception as crash_err:
-            # 🔥 СНАЙПЕРСКИЙ ВЫВОД: Печатаем точный номер строки падения в терминал!
-            print("\n🚨🚨🚨 [КРИТИЧЕСКИЙ СБОЙ ВНУТРИ SYNC_BY_ACCOUNT_NUMBER] 🚨🚨🚨")
-            print(f"Тип ошибки: {type(crash_err)}")
-            print(f"Сообщение: {crash_err}")
-            print("Полный трейсбэк ошибки (Ищи номер строки здесь):")
-            print(traceback.format_exc())
-            
-            # Также пишем в официальный логгер, чтобы строка не потерялась
-            logging.error(f"🚨 [КРАШ ЯДРА СИНХРОНИЗАЦИИ]: {crash_err}\n{traceback.format_exc()}")
+            # print()-дубликат этой же ошибки убран (Claude/BACKLOG.md №28) -- logging.error
+            # ниже уже несёт тип ошибки, сообщение и полный трейсбэк, второй раз печатать незачем.
+            logging.error(f"🚨 [КРАШ ЯДРА SYNC_BY_ACCOUNT_NUMBER]: {crash_err}\n{traceback.format_exc()}")
             
             # Пробрасываем ошибку дальше, чтобы веб-сокет знал о падении
             raise crash_err

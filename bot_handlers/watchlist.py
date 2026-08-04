@@ -25,7 +25,6 @@ router = Router()
 @router.callback_query(MenuAction.filter(F.action == "show_watchlist_focus"))
 async def process_watchlist_focus_menu(callback: types.CallbackQuery):
     """Шаг 2: Экран выбора фокуса исследования."""
-    print(f"\n🔬 [WATCHLIST]: Запрос меню выбора фокуса для user_id = {callback.from_user.id}")
     await callback.answer("Загрузка радаров исследования...")
 
     sql_portfolios = """
@@ -67,7 +66,6 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
     p_id = callback_data.portfolio_id
     view = callback_data.sub_view or "assets"
     
-    print(f"\n🔬 [WATCHLIST]: Сборка шторки для p_id = {p_id}, вкладка = '{view}'")
     await callback.answer("Сборка паспорта исследования...")
 
     p_sql = f"""
@@ -204,7 +202,6 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
         callback_data=MenuAction(action="main_menu").pack()
     ))
 
-    print("🖥️ [WATCHLIST]: Отправляю обновленную шторку в Telegram...")
         
     try:
         await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
@@ -249,7 +246,7 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
     if len(user_portfolios) == 1:
         p_row = user_portfolios[0] if isinstance(user_portfolios, list) else user_portfolios
         target_p_id = int(p_row["id"])
-        print(f"🧬 [WATCHLIST SMART ROUTE]: Моно-портфель обнаружен. Авто-выбор portfolio_id = {target_p_id}")
+        logging.debug(f"🧬 [WATCHLIST]: Моно-портфель обнаружен. Авто-выбор portfolio_id = {target_p_id}")
         
         await execute_watchlist_fixation(callback.message, target_p_id, t_id, origin=callback_data.sub_view)
         return
@@ -314,7 +311,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
         p_row = p_data[0] if p_data and isinstance(p_data, list) else (p_data if isinstance(p_data, dict) else {})
         target_broker_id = int(p_row["broker_id"]) if p_row and p_row.get("broker_id") else 1
 
-        print(f"🧱 [WATCHLIST FIX v2]: Легализация листинга для T_ID={ticker_id} (Portfolio: {portfolio_id}, Broker: {target_broker_id})...")
+        logging.debug(f"🧱 [WATCHLIST]: Легализация листинга для T_ID={ticker_id} (Portfolio: {portfolio_id}, Broker: {target_broker_id})...")
         
         # 3. 🔥 ВЫЗЫВАЕМ НАШ НОВЫЙ ИЗОЛИРОВАННЫЙ МЕТОД ЛИСТИНГОВ (Без захода в паспортистку!)
         # Метод сам зряче проверит кэш, найдет имя брокера и снимет котировку последней сделки.
@@ -348,7 +345,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
             success_markup = builder.as_markup()
 
         await message.edit_text(f"✅ Добавлено: **{yahoo_symbol}**", parse_mode="Markdown", reply_markup=success_markup)
-        print(f"🏁 [WATCHLIST FIX COMPLETE]: Бумага {yahoo_symbol} успешно прописана в СУБД.")
+        logging.info(f"🏁 [WATCHLIST]: Бумага {yahoo_symbol} добавлена в список наблюдения (портфель {portfolio_id}).")
 
     except ValueError as val_err:
         # Перехватываем наш кастомный шлагбаум безопасности ("Этот инструмент не торгуется...")

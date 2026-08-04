@@ -15,8 +15,6 @@ sys.path.append(str(Path(__file__).parent.parent.resolve()))
 # ВНИМАНИЕ: Изменили импорт с settings на config, так как ядро UPort v10.0 использует config.py
 import config
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # 🔥 ИСПРАВЛЕНО: Добавили аргумент single_symbol для обработки одиночных новичков из ТГ в реальном времени
 def sync_fundamentals(db_instance, single_ticker_id=None):
     """
@@ -219,6 +217,8 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
     return {"processed": processed_count, "errors": error_count}
 
 if __name__ == "__main__":
-    # Локальный запуск из консоли
+    # Локальный запуск из консоли -- при импорте в живой процесс (cron_scheduler) уровень/формат
+    # задаёт main.py централизованно (Claude/BACKLOG.md №28), этот вызов там уже не сработает
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     from database import db_sys
     sync_fundamentals(db_sys)

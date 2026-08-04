@@ -15,21 +15,11 @@ from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
 import utils
 
-# Настройка логирования для крона и фоновых вызовов
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
 async def run_etf_look_through_decomposition(target_ticker_id=None):
-    print("\n" + "="*95)
     if target_ticker_id:
         logging.info(f"🔬 [UPort LAB]: Старт ТОЧЕЧНОЙ мгновенной декомпозиции фонда ID={target_ticker_id}...")
     else:
         logging.info("🔬 [UPort LAB]: Старт ПЛАНОВОЙ пакетной декомпозиции Лаборатории ETF...")
-    print("="*95)
-    
     # 1. ФАБРИКА СВЯЗЕЙ БРОКЕРА: Собираем ровно ОДИН живой клиент на старте процесса
     logging.info("Factory: Инициализирую системный транспорт Freedom Broker на ключах Boss...")
     fb_client = FreedomBrokerClient.create_for_user(user_id=1, db_instance=db_sys)
@@ -56,7 +46,6 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
 
     total_etfs = len(active_etfs)
     logging.info(f"📊 Обнаружено живых целей для раскрытия: {total_etfs} шт. Запуск конвейера...")
-    print("-" * 95)
 
     processed_count = 0
     # Честная статистика выполнения (Claude/BACKLOG.md, п.25, 2026-08-03) -- на уровне ФОНДА
@@ -181,12 +170,10 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         # Пауза 1.5 секунды между фондами для защиты лимитов IP
         await asyncio.sleep(1.5)
 
-    print("\n" + "="*95)
     if error_count > 0:
-        print(f"🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА С ОШИБКАМИ]: {error_count} из {total_etfs} фондов не раскрылись.")
+        logging.warning(f"🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА С ОШИБКАМИ]: {error_count} из {total_etfs} фондов не раскрылись.")
     else:
-        print("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Процесс Лаборатории ETF успешно отработал!")
-    print("="*95 + "\n")
+        logging.info("🏁 [ДЕКОМПОЗИЦИЯ ЗАВЕРШЕНА]: Процесс Лаборатории ETF успешно отработал.")
 
     return {"processed": total_etfs, "errors": error_count}
 
@@ -197,4 +184,7 @@ async def main_forced_trigger():
     await run_etf_look_through_decomposition(target_ticker_id=None)
 
 if __name__ == "__main__":
+    # Локальный запуск из консоли -- при импорте в живой процесс (cron_scheduler) уровень/формат
+    # задаёт main.py централизованно (Claude/BACKLOG.md №28), этот вызов там уже не сработает
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     asyncio.run(main_forced_trigger())

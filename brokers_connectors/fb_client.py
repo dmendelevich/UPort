@@ -2,6 +2,7 @@ import hmac
 import hashlib
 import json
 import time
+import logging
 import requests
 import os
 
@@ -20,39 +21,41 @@ class FreedomBrokerClient:
         🏭 Унифицированная фабрика для автоматического создания клиента по user_id.
         Сам ходит в базу за префиксом и вытягивает ключи из загруженного .env.
         """
-        print(f"🏭 [FB CLIENT FACTORY]: Сборка клиента для пользователя ID: {user_id}...")
-        
+        # Фабрика дёргается на каждый цикл синхронизации алертов/котировок (каждые 5-15 минут) --
+        # рутинная сборка на DEBUG, реальные проблемы (пользователь/ключи не найдены) на WARNING.
+        logging.debug(f"🏭 [FB CLIENT FACTORY]: Сборка клиента для пользователя ID: {user_id}...")
+
         # 1. Запрашиваем префикс пользователя из базы данных через f-строку (безопасно для int)
         sql = f"SELECT prefix FROM public.users WHERE id = {int(user_id)} LIMIT 1;"
         user_rows = db_instance.execute_query(sql)
-        
+
         # Проверяем, что база вернула непустой список
         if not user_rows or len(user_rows) == 0:
-            print(f"⚠️ [FACTORY WARNING]: Пользователь с ID {user_id} не найден в БД.")
+            logging.warning(f"⚠️ [FB CLIENT FACTORY]: Пользователь с ID {user_id} не найден в БД.")
             return None
-            
+
         # Извлекаем первую строку-словарь из полученного списка
         user_row = user_rows[0]
-        
+
         prefix = user_row.get('prefix')
         if not prefix:
-            print(f"⚠️ [FACTORY WARNING]: У пользователя ID {user_id} отсутствует текстовый prefix.")
+            logging.warning(f"⚠️ [FB CLIENT FACTORY]: У пользователя ID {user_id} отсутствует текстовый prefix.")
             return None
-            
+
         prefix_upper = prefix.upper().strip()
-        
+
         # 2. Формируем имена переменных и забираем ключи из памяти процесса (.env)
         api_key_env = f"FB_{prefix_upper}_API_KEY"
         api_secret_env = f"FB_{prefix_upper}_API_SECRET"
-        
+
         public_key = os.getenv(api_key_env)
         private_key = os.getenv(api_secret_env)
-        
+
         if not public_key or not private_key:
-            print(f"⚠️ [FACTORY WARNING]: В .env не найдены ключи {api_key_env} или {api_secret_env}.")
+            logging.warning(f"⚠️ [FB CLIENT FACTORY]: В .env не найдены ключи {api_key_env} или {api_secret_env}.")
             return None
-            
-        print(f"✅ [FACTORY SUCCESS]: Клиент для префикса {prefix_upper} успешно собран.")
+
+        logging.debug(f"✅ [FB CLIENT FACTORY]: Клиент для префикса {prefix_upper} успешно собран.")
         return cls(public_key=public_key, private_key=private_key)
 
     def execute(self, command: str, params: dict = None) -> dict:
@@ -186,7 +189,7 @@ class FreedomBrokerClient:
         📡 ИНСТРУМЕНТ 3: Запрос списка текущих ценовых алертов из Freedom Broker API.
         Метод реализует вызов команды 'getAlertsList' на базе внутреннего шлюза self.execute.
         """
-        print(f"📡 [FB CLIENT API]: Запрашиваю список алертов у брокера для тикера: {ticker or 'ВСЕ'}")
+        logging.debug(f"📡 [FB CLIENT API]: Запрашиваю список алертов у брокера для тикера: {ticker or 'ВСЕ'}")
         
         # Собираем параметры согласно вашей спецификации и ТЗ
         params = {}
@@ -199,7 +202,7 @@ class FreedomBrokerClient:
             
             # Проверяем общие критические ошибки API из документации
             if isinstance(raw_response, dict) and "code" in raw_response and "errMsg" in raw_response:
-                print(f"🚨 [API ALERTS ERROR]: Сбой метода ФБ! Код {raw_response['code']}: {raw_response['errMsg']}")
+                logging.error(f"🚨 [FB CLIENT API]: Сбой getAlertsList! Код {raw_response['code']}: {raw_response['errMsg']}")
                 return []
                 
             # Извлекаем массив алертов
@@ -211,13 +214,13 @@ class FreedomBrokerClient:
             # Страхуемся от точечных ошибок по конкретным инструментам ("Instrument not found")
             if isinstance(alerts_list, list) and len(alerts_list) > 0:
                 if isinstance(alerts_list, dict) and "error" in alerts_list:
-                    print(f"⚠️ [API ALERTS WARNING]: Брокер вернул ошибку: {alerts_list['error']}")
+                    logging.warning(f"⚠️ [FB CLIENT API]: Брокер вернул ошибку по алертам: {alerts_list['error']}")
                     return []
                     
             return alerts_list if isinstance(alerts_list, list) else []
             
         except Exception as api_err:
-            print(f"❌ [FB CLIENT CRITICAL EXCEPTION]: Не удалось забрать алерты по API: {api_err}")
+            logging.error(f"❌ [FB CLIENT API]: Не удалось забрать алерты по API: {api_err}")
             return []
 
     def get_quotes(self, tickers) -> dict | float:
@@ -238,7 +241,7 @@ class FreedomBrokerClient:
             raw_response = self.execute(command="getStockQuotesJson", params={"tickers": tickers_list})
             
             if isinstance(raw_response, dict) and "code" in raw_response and "errMsg" in raw_response:
-                print(f"🚨 [API QUOTES ERROR]: Сбой метода ФБ! Код {raw_response['code']}: {raw_response['errMsg']}")
+                logging.error(f"🚨 [FB CLIENT API]: Сбой getStockQuotesJson! Код {raw_response['code']}: {raw_response['errMsg']}")
                 return 0.0 if is_single else {}
                 
             result_node = raw_response.get("result", {}) if isinstance(raw_response, dict) else {}
@@ -277,5 +280,5 @@ class FreedomBrokerClient:
             return parsed_quotes
 
         except Exception as e:
-            print(f"❌ [FB CLIENT CRITICAL EXCEPTION] Сбой метода get_quotes: {e}")
+            logging.error(f"❌ [FB CLIENT API]: Сбой метода get_quotes: {e}")
             return 0.0 if is_single else {}

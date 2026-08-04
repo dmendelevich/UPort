@@ -452,7 +452,7 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
 
     if ticker_id > 0:
         logging.info(f"🏁 [UPort GATEWAY COMPLETE]: Паспорт для '{symbol_uport}' зафиксирован.")
-        print(f"📌 [PASSPORT SUMMARY] {raw_string}: {json.dumps(ticker_name_map, ensure_ascii=False)}")
+        logging.debug(f"📌 [PASSPORT SUMMARY] {raw_string}: {json.dumps(ticker_name_map, ensure_ascii=False)}")
         return ticker_id
 
     return None
@@ -483,7 +483,9 @@ def manage_provenance(db_instance, ticker_id: int, source_key: str, action: str 
             END
             WHERE id = {int(ticker_id)};
         """
-        logging.info(f"💾 [PROVENANCE]: Попытка фиксации метки '{source_key_clean}' для ticker_id = {ticker_id}")
+        # На DEBUG (Claude/BACKLOG.md №28) -- вызывается на КАЖДЫЙ тикер при каждой синхронизации
+        # алертов/вотчлиста, а SQL ниже и так no-op, если метка уже стоит (WHEN ... ? THEN provenance)
+        logging.debug(f"💾 [PROVENANCE]: Попытка фиксации метки '{source_key_clean}' для ticker_id = {ticker_id}")
 
     elif action_clean == "remove":
         sql_manage = f"""
@@ -491,7 +493,7 @@ def manage_provenance(db_instance, ticker_id: int, source_key: str, action: str 
             SET provenance = COALESCE(provenance, '{{}}'::jsonb) - '{source_key_clean}'
             WHERE id = {int(ticker_id)};
         """
-        logging.info(f"🧹 [PROVENANCE]: Команда удаления метки '{source_key_clean}' для ticker_id = {ticker_id}")
+        logging.debug(f"🧹 [PROVENANCE]: Команда удаления метки '{source_key_clean}' для ticker_id = {ticker_id}")
         
     else:
         logging.error(f"❌ [PROVENANCE ERROR]: Передана неподдерживаемая операция: '{action}'")

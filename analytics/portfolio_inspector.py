@@ -84,25 +84,25 @@ class PortfolioInspector:
         """
         💸 ГЛОБАЛЬНЫЙ ДЕНЕЖНЫЙ КОТЕЛ (С ПОШАГОВОЙ ОТЛАДКОЙ)
         Рассчитывает полную рыночную стоимость портфеля в USD цент в цент.
-        Выводит промежуточные результаты в консоль для поиска расхождения в $1,200.
+        Пошаговый разбор -- на DEBUG (Claude/BACKLOG.md №27/28): вызывается по несколько раз за
+        один дайджест/подтверждение сделки, раньше безусловно печатался в лог через print().
         """
-        print("\n ─── [СТАРТ ОТЛАДКИ CALCULATE_TOTAL_CAPITAL] ───")
+        logging.debug(" ─── [СТАРТ ОТЛАДКИ CALCULATE_TOTAL_CAPITAL] ───")
         total_cash_usd = 0.0
-        
+
         # 1. Шаг А: Пошаговый разбор кэша со счетов брокера
-        print(" 💰 Разбор доступного кэша по аккаунтам в СУБД:")
         for acc in self.raw_accounts:
             acc_num = acc.get("account_number")
             acc_type = acc.get("account_type")
             cash_val = float(acc.get("cash_available") or 0.0)
             curr = acc.get("currency_id", "USD")
-            
+
             cash_usd = convert_to_base_currency(self.db, cash_val, from_currency=curr)
             total_cash_usd += cash_usd
-            print(f"   • Счет {acc_num} ({acc_type}) | Факт в СУБД: {cash_val} {curr} -> В базовых USD: ${cash_usd:,.2f}")
-            
-        print(f" 🟩 [ИТОГ ПО КЭШУ]: Общий свободный кэш портфеля = ${total_cash_usd:,.2f}")
-            
+            logging.debug(f"   • Счет {acc_num} ({acc_type}) | Факт в СУБД: {cash_val} {curr} -> В базовых USD: ${cash_usd:,.2f}")
+
+        logging.debug(f" 🟩 [ИТОГ ПО КЭШУ]: Общий свободный кэш портфеля = ${total_cash_usd:,.2f}")
+
         # 2. Шаг Б: Пошаговый разбор рыночной стоимости акций из VIEW
         sql_market_assets = f"""
             SELECT COALESCE(SUM(se.exposure_usd), 0.0) AS total_market_assets_usd
@@ -121,13 +121,12 @@ class PortfolioInspector:
             row = {}
             
         total_assets_market_usd = float(row.get("total_market_assets_usd") or 0.0)
-        print(f" 📈 [ИТОГ ПО АКЦИЯМ]: Стоимость всех ценных бумаг из VIEW = ${total_assets_market_usd:,.2f}")
-            
+        logging.debug(f" 📈 [ИТОГ ПО АКЦИЯМ]: Стоимость всех ценных бумаг из VIEW = ${total_assets_market_usd:,.2f}")
+
         # 3. Шаг В: Финальное сложение
         total_capital = total_cash_usd + total_assets_market_usd
-        print(f" 🟪 [ФИНАЛЬНЫЙ СУММАРНЫЙ КАПИТАЛ]: ${total_cash_usd:,.2f} + ${total_assets_market_usd:,.2f} = ${total_capital:,.2f}")
-        print(" ─── [КОНЕЦ ОТЛАДКИ CALCULATE_TOTAL_CAPITAL] ───\n")
-        
+        logging.debug(f" 🟪 [ФИНАЛЬНЫЙ СУММАРНЫЙ КАПИТАЛ]: ${total_cash_usd:,.2f} + ${total_assets_market_usd:,.2f} = ${total_capital:,.2f}")
+
         return round(total_capital, 2)
 
 

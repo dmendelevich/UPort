@@ -11,82 +11,78 @@ sys.path.append(str(Path(__file__).parent.parent))
 from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
 
-# Настройка логирования для крона
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
 def sync_all_broker_alerts():
-    logging.info("📡 [UPort ALERTS WORKER]: Старт контура синхронизации алертов Freedom Broker...")
-    
+    # Честная статистика цикла (Claude/BACKLOG.md №28) -- раньше в конце безусловно писалось
+    # "успешно отработал", даже если внутри цикла по портфелям что-то не задалось. Построчная
+    # возня по каждому алерту/портфелю ушла на DEBUG -- по умолчанию не пишется, видна только
+    # при LOG_LEVEL=DEBUG в .env; на INFO остаётся один итог цикла в конце.
+    portfolios_ok = 0
+    portfolios_failed = 0    # реальная проблема (нет владельца в БД)
+    portfolios_skipped = 0   # ожидаемый пропуск (брокер ещё не подключен -- напр. BACKLOG.md №8, портфель сына)
+    alerts_seen = 0
+    alerts_errors = 0
+
     # 1. Выгребаем только те портфели, которые работают через Freedom Broker (broker_id = 1)
     # Прямо из реляции узнаем user_id (owner_id) для заполнения поля created_by_user_id
     portfolios_sql = """
-        SELECT id AS portfolio_id, name AS portfolio_name, owner_id AS user_id 
-        FROM public.portfolios 
+        SELECT id AS portfolio_id, name AS portfolio_name, owner_id AS user_id
+        FROM public.portfolios
         WHERE broker_id = 1;
     """
     try:
         portfolios_list = db_sys.execute_query(portfolios_sql)
     except Exception as db_err:
-        logging.error(f"❌ Критический сбой при запросе портфелей из БД: {db_err}")
-        return
+        logging.error(f"❌ [SYNC ALERTS]: Критический сбой при запросе портфелей из БД: {db_err}")
+        return {"processed": 0, "errors": 1}
 
     if not portfolios_list:
-        logging.info("💡 Активных портфелей Freedom Broker в базе UPort не найдено.")
-        return
+        logging.debug("💡 Активных портфелей Freedom Broker в базе UPort не найдено.")
+        return {"processed": 0, "errors": 0}
 
     # 2. Бежим циклом по каждому портфелю Freedom Broker отдельно
     for port in portfolios_list:
         portfolio_id = port['portfolio_id']
         portfolio_name = port['portfolio_name']
         user_id = port['user_id']
-        
+
         if not user_id:
             logging.warning(f"⚠️ У портфеля '{portfolio_name}' (ID: {portfolio_id}) не указан владелец. Пропуск.")
+            portfolios_failed += 1
             continue
-            
-        logging.info(f"💼 Обработка портфеля: '{portfolio_name}' (ID: {portfolio_id}), Владелец ID: {user_id}")
-        
+
+        logging.debug(f"💼 Обработка портфеля: '{portfolio_name}' (ID: {portfolio_id}), Владелец ID: {user_id}")
+
         # Вызываем нашу новую фабрику. Она сама сходит в базу за префиксом и заберет ключи из .env
         fb_client = FreedomBrokerClient.create_for_user(user_id=user_id, db_instance=db_sys)
         if not fb_client:
-            logging.warning(f"⏩ Пропускаю синхронизацию портфеля '{portfolio_name}', так как клиент не собран.")
+            logging.debug(f"⏩ Пропускаю синхронизацию портфеля '{portfolio_name}', так как клиент не собран (брокер ещё не подключен).")
+            portfolios_skipped += 1
             continue
-            
+
         # Запрашиваем у брокера массив алертов для данного пользователя
         broker_alerts = fb_client.get_active_alerts()
-        
+        portfolios_ok += 1
+
         # Заводим изолированный список для сбора живых ID алертов конкретно этого портфеля
         synced_alert_ids = []
-        
+
         if not broker_alerts:
-            logging.info(f"🕊️ На стороне брокера нет алертов для портфеля '{portfolio_name}'.")
+            logging.debug(f"🕊️ На стороне брокера нет алертов для портфеля '{portfolio_name}'.")
         else:
-            logging.info(f"📥 Получено {len(broker_alerts)} алертов от брокера. Начинаю построчный разбор...")
-            
+            logging.debug(f"📥 Получено {len(broker_alerts)} алертов от брокера. Начинаю построчный разбор...")
+
             # Построчный разбор массива алертов
             for b_al in broker_alerts:
                 b_alert_id = b_al.get('id')
                 b_ticker = b_al.get('ticker')
-                
+
                 if not b_alert_id or not b_ticker:
                     continue
-                    
+
                 b_alert_id = int(b_alert_id)
                 b_ticker = str(b_ticker).upper().strip()
+                alerts_seen += 1
 
-                # ─── ВРЕМЕННЫЙ ДИАГНОСТИЧЕСКИЙ ПЕРЕХВАТ СЫРЫХ ДАННЫХ БРОКЕРА ───
-                if b_ticker == "RKLB.US":
-                    logging.info(
-                        f"📡 [RAW FB ALERT DATA] Найдена RKLB! "
-                        f"broker_alert_id: {b_alert_id} | "
-                        f"Сырое поле deleted: 【 {b_al.get('deleted')} 】 | "
-                        f"Сырое поле triggered: 【 {b_al.get('triggered')} 】"
-                    )
-                
                 # 🛑 ФИЛЬТР УДАЛЕННЫХ (Каноническое правило из официальной документации ФБ)
                 if str(b_al.get('deleted')).strip() == '1':
                     continue
@@ -122,11 +118,12 @@ def sync_all_broker_alerts():
                 # Если тикер абсолютно неизвестен глобальной системе — безопасно пропускаем
                 if not al_ticker_id:
                     logging.warning(f"⚠️ Тикер {b_ticker} отсутствует в системе UPort. Алерт #{b_alert_id} пропущен.")
+                    alerts_errors += 1
                     continue
 
                 # Если листинг для Freedom Broker (broker_id = 1) еще не заведен — создаем его честно
                 if not al_listing_id:
-                    logging.info(f"🔍 Листинг для {b_ticker} у брокера FB не найден. Запрашиваю спецификацию...")
+                    logging.debug(f"🔍 Листинг для {b_ticker} у брокера FB не найден. Запрашиваю спецификацию...")
                     
                     # Отправляем запрос к API за реальной спецификацией бумаги
                     sec_info = fb_client.get_security_info(b_ticker)
@@ -148,9 +145,10 @@ def sync_all_broker_alerts():
                         if new_listing_rows:
                             # Извлекаем сгенерированный базой id нового листинга
                             al_listing_id = int(new_listing_rows[0]['id'])
-                            logging.info(f"✅ Создан новый листинг ID: {al_listing_id} для {b_ticker} ({b_currency})")
+                            logging.info(f"✅ [SYNC ALERTS]: Создан новый листинг ID: {al_listing_id} для {b_ticker} ({b_currency})")
                     except Exception as l_err:
                         logging.error(f"❌ Не удалось создать листинг для {b_ticker}: {l_err}")
+                        alerts_errors += 1
                         continue
 
                 # Если листинг теперь гарантированно есть — прописываем его в фокус стратегии портфеля
@@ -277,7 +275,7 @@ def sync_all_broker_alerts():
                         WHERE id = {row_id};
                     """
                     db_sys.execute_query(sql_update_alert)
-                    logging.info(f"📝 [SYNC ALERTS]: Точечно обновлен алерт #{b_alert_id} (ID строки: {row_id}, Активен: {uport_active})")
+                    logging.debug(f"📝 [SYNC ALERTS]: Точечно обновлен алерт #{b_alert_id} (ID строки: {row_id}, Активен: {uport_active})")
                 else:
                     # ➕ ВЕТКА INSERT: Абсолютно новый живой алерт на рынке.
                     # Берем чистый, следующий по порядку ID без холостого выжигания.
@@ -300,7 +298,7 @@ def sync_all_broker_alerts():
                         );
                     """
                     db_sys.execute_query(sql_insert_alert)
-                    logging.info(f"➕ [SYNC ALERTS]: Впервые создан паспорт алерта #{b_alert_id} для {b_ticker}")
+                    logging.info(f"➕ [SYNC ALERTS]: Впервые создан алерт #{b_alert_id} для {b_ticker} (портфель '{portfolio_name}')")
 
         # ─── ШАГ 5: СЛУЖБА ПАКЕТНОГО ГАШЕНИЯ УДАЛЕННЫХ АЛЕРТОВ (БЕЗ КОСТЫЛЕЙ) ───
         # Переводим статус в false строго для тех алертов, которые инвестор физически стер в терминале брокера
@@ -317,9 +315,10 @@ def sync_all_broker_alerts():
             """
             try:
                 db_sys.execute_query(sql_deactivate_removed)
-                logging.info(f"🧹 [SYNC ALERTS]: Выполнена пакетная деактивация удаленных алертов для портфеля ID {portfolio_id}")
+                logging.debug(f"🧹 [SYNC ALERTS]: Выполнена пакетная деактивация удаленных алертов для портфеля ID {portfolio_id}")
             except Exception as clean_err:
                 logging.error(f"❌ Ошибка пакетной деактивации (NOT IN) для portfolio_id {portfolio_id}: {clean_err}")
+                alerts_errors += 1
         else:
             # Если у брокера стало ноль активных алертов, тотально выключаем все записи этого портфеля
             sql_deactivate_all = f"""
@@ -331,13 +330,25 @@ def sync_all_broker_alerts():
             """
             try:
                 db_sys.execute_query(sql_deactivate_all)
-                logging.info(f"🧹 [SYNC ALERTS]: Тотально выключены все алерты для портфеля ID {portfolio_id} (0 на бирже)")
+                logging.debug(f"🧹 [SYNC ALERTS]: Тотально выключены все алерты для портфеля ID {portfolio_id} (0 на бирже)")
             except Exception as clean_all_err:
                 logging.error(f"❌ Ошибка тотального выключения для portfolio_id {portfolio_id}: {clean_all_err}")
+                alerts_errors += 1
 
-        logging.info(f"✅ Синхронизация портфеля '{portfolio_name}' успешно завершена.\n")
+        logging.debug(f"✅ [SYNC ALERTS]: Синхронизация портфеля '{portfolio_name}' завершена.")
 
-    logging.info("⚡ [UPort ALERTS WORKER]: Общий контур синхронизации алертов успешно отработал.")
+    if portfolios_failed > 0 or alerts_errors > 0:
+        logging.warning(
+            f"⚡ [SYNC ALERTS]: Цикл завершён с ошибками -- портфелей: {portfolios_ok} ок / {portfolios_failed} не удалось "
+            f"({portfolios_skipped} пропущено ожидаемо), алертов: {alerts_seen}, ошибок алертов: {alerts_errors}."
+        )
+    else:
+        logging.debug(f"⚡ [SYNC ALERTS]: Цикл завершён -- {portfolios_ok} портфелей, {alerts_seen} алертов, 0 ошибок.")
+
+    return {"processed": portfolios_ok + portfolios_failed, "errors": portfolios_failed + alerts_errors}
 
 if __name__ == "__main__":
+    # Локальный запуск из консоли -- при импорте в живой процесс (cron_scheduler) уровень/формат
+    # задаёт main.py централизованно (Claude/BACKLOG.md №28), этот вызов там уже не сработает
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     sync_all_broker_alerts()

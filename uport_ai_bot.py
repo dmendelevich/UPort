@@ -1,4 +1,5 @@
 import os
+import logging
 import asyncio
 from aiogram import Bot, Dispatcher, BaseMiddleware, types
 from aiogram.fsm.context import FSMContext
@@ -43,17 +44,19 @@ dp.include_routers(
 )
 
 async def main():
-    print("🤖 [UPort Бот]: Запуск службы Telegram-интерфейса...")
-    
+    """Автономный запуск только Telegram-бота (без cron/сокетов) -- живой процесс через
+    main.py этот путь не использует, оттуда напрямую берутся готовые bot/dp."""
+    logging.info("🤖 [UPort Бот]: Запуск службы Telegram-интерфейса...")
+
     # Сносим вебхуки и чистим застрявшую очередь сообщений на серверах Дурова
     await bot.delete_webhook(drop_pending_updates=True)
-    print("🧹 [UPort Бот]: Вебхуки очищены, очередь drop_pending_updates взведена.")
-    
+
     # Запуск прослушивания сети
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("\n👋 [UPort Бот]: Служба бота успешно остановлена.")
+        logging.info("👋 [UPort Бот]: Служба бота успешно остановлена.")

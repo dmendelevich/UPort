@@ -19,7 +19,7 @@ def sync_quotes_fb_autonomous():
     Самостоятельно собирает тикеры из СУБД (из JSON-карты), запрашивает API
     и обновляет last_price в public.listings по стандарту времени UPort.
     """
-    logging.info("📡 [REST FB]: Запуск автономной синхронизации котировок...")
+    logging.debug("📡 [REST FB]: Запуск автономной синхронизации котировок...")
 
     # 1. Извлекаем short_name брокера для динамического ключа в JSON
     sql_broker = "SELECT short_name FROM public.brokers WHERE id = 1 LIMIT 1;"
@@ -49,7 +49,10 @@ def sync_quotes_fb_autonomous():
 
     # Динамически собираем список тикеров для отправки одной пачкой брокеру
     tickers_list = [row['full_ticker'] for row in tickers_data]
-    logging.info(f"📡 [REST FB]: Запрос котировок getStockQuotesJson для пачки: {tickers_list}")
+    # Полный список тикеров -- на DEBUG (Claude/BACKLOG.md №28): сырой Python-список из
+    # ~150-200 тикеров в одну строку лога нечитаем даже для отладки, только счётчик на INFO.
+    logging.info(f"📡 [REST FB]: Запрос котировок getStockQuotesJson для пачки из {len(tickers_list)} тикеров.")
+    logging.debug(f"📡 [REST FB]: Полный список пачки: {tickers_list}")
 
     # 3. Сборка фабричного клиента по user_id=1 (для общих котировок)
     fb_client = FreedomBrokerClient.create_for_user(user_id=1, db_instance=db_sys)
@@ -77,29 +80,38 @@ def sync_quotes_fb_autonomous():
         # Мапим очищенный full_ticker на listing_id, полученный напрямую из БД
         listing_id_map = {row['full_ticker']: int(row['listing_id']) for row in tickers_data}
 
+        updated_count = 0
+        bad_price_count = 0
+
         for quote in result_array:
             ticker = quote.get("c")
             if not ticker or ticker not in listing_id_map:
                 continue
-                
+
             raw_price = quote.get("ltp")
-            
+
             # 🔥 ЖЕЛЕЗНЫЙ ЗАГРАДИТЕЛЬНЫЙ БАРЬЕР ОТ НУЛЕВЫХ И НАНО-ЦЕН БРОКЕРА
             if raw_price is not None and str(raw_price) != 'nan' and float(raw_price) > 0.0:
                 final_price = float(raw_price)
                 l_id = listing_id_map[ticker]
-                
+
                 # 🔥 СТАНДАРТ ВРЕМЕНИ UPORT — СТЕРИЛЬНЫЙ UTC ДО СЕКУНД TIMESTAMP(0)
                 sql_update_listing = f"""
-                    UPDATE public.listings 
-                    SET last_price = {final_price}, 
-                        last_updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) 
+                    UPDATE public.listings
+                    SET last_price = {final_price},
+                        last_updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
                     WHERE id = {l_id};
                 """
                 db_sys.execute_query(sql_update_listing)
-                # logging.info(f"   • {ticker:8} успешно актуализирован в listings: {final_price:.2f}")
+                updated_count += 1
             else:
+                bad_price_count += 1
                 logging.warning(f"   • {ticker:8} ⚠️ В пакете брокера отсутствует или некорректно значение ltp: {raw_price}")
+
+        if bad_price_count > 0:
+            logging.warning(f"📡 [REST FB]: Цикл завершён с ошибками -- обновлено {updated_count}, без цены {bad_price_count} из {len(tickers_list)}.")
+        else:
+            logging.debug(f"📡 [REST FB]: Цикл завершён -- обновлено {updated_count} из {len(tickers_list)}.")
 
     except Exception as e:
         logging.error(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")

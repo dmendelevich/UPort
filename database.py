@@ -47,11 +47,11 @@ class Database:
                     err_detail = response.json().get('detail', response.text)
                 except:
                     err_detail = response.text
-                print(f"🚨 [ШЛЮЗ КРИТИЧЕСКИЙ СБОЙ СУБД]: Код {response.status_code} на запрос: {sql_query[:50]}... | Текст ошибки: {err_detail}")
+                logging.error(f"🚨 [ШЛЮЗ]: Код {response.status_code} на запрос: {sql_query[:50]}... | Текст ошибки: {err_detail}")
                 return []
             return response.json()
         except Exception as e:
-            print(f"🚨 [ЯДРО ERROR]: Шлюз вернул исключение на запрос: {sql_query[:60]}... | Ошибка: {e}")
+            logging.error(f"🚨 [ШЛЮЗ]: Исключение на запрос: {sql_query[:60]}... | Ошибка: {e}")
             return []
 
     def execute_row(self, sql_query: str) -> dict:
@@ -110,7 +110,7 @@ class Database:
         # 3. СУП-ПЕРЕВОДЧИК ИМЕН (1 контролируемый запрос в сеть)
         if broker_id == 1 and fb_client is not None:
             try:
-                print(f"📡 [Ядро СУП]: Новый инструмент! Запрашиваю спецификацию Freedom Broker для '{broker_symbol_clean}'...")
+                logging.debug(f"📡 [Ядро СУП]: Новый инструмент! Запрашиваю спецификацию Freedom Broker для '{broker_symbol_clean}'...")
                 sec_info = fb_client.get_security_info(broker_symbol_clean)
                 if sec_info and isinstance(sec_info, dict) and "error" not in sec_info:
                     # 🔥 ИЗВЛЕКАЕМ МИРОВУЮ ИСТИНУ: забираем готовый глобальный тикер (напр. 'ANTO.L')
@@ -125,7 +125,7 @@ class Database:
                     if sec_info.get('currency'):
                         currency_id = str(sec_info['currency']).strip().upper()
             except Exception as sup_err:
-                print(f"⚠️ [Ядро СУП WARNING]: Ошибка СУП FB: {sup_err}")
+                logging.warning(f"⚠️ [Ядро СУП]: Ошибка СУП FB: {sup_err}")
 
         # 4. СИНХРОНИЗАЦИЯ СТЕРИЛЬНОГО СПРАВОЧНИКА TICKERS (3NF)
         self.ensure_currency(currency_id)
@@ -170,7 +170,7 @@ class Database:
                 task_data = {"id": int(ticker_id), "symbol": symbol, "suffix": "US", "full_ticker": broker_symbol_clean, "currency_id": currency_id, "broker_id": broker_id}
                 ETF_LOOK_THROUGH_QUEUE.put_nowait(task_data)
         except Exception as q_err:
-            print(f"⚠️ Предупреждение постановки {symbol} в ETF очередь: {q_err}")
+            logging.warning(f"⚠️ [ETF QUEUE]: Предупреждение постановки {symbol} в очередь: {q_err}")
 
         return int(ticker_id), int(listing_id)
 
@@ -193,7 +193,10 @@ class Database:
         symbol_clean = str(ticker_name_raw).strip().upper()
         role_clean = str(caller_role).strip().upper()
         
-        logging.info(f"🧱 [ЯДРО v3.0 START]: Входной запрос от [{role_clean}] для символа '{symbol_clean}'")
+        # Построчное подтверждение "нашли в кэше" опущено до DEBUG (Claude/BACKLOG.md №28) --
+        # эта функция дёргается на КАЖДЫЙ тикер при каждой синхронизации алертов/вотчлиста
+        # (счёт на тысячи вызовов в сутки), 99% из них -- обычное попадание в кэш, не событие.
+        logging.debug(f"🧱 [ЯДРО v3.0 START]: Входной запрос от [{role_clean}] для символа '{symbol_clean}'")
         
         ticker_id = None
         res_ticker = None
@@ -212,7 +215,7 @@ class Database:
         if res_ticker and isinstance(res_ticker, list) and len(res_ticker) > 0:
             row_t = res_ticker[0] if isinstance(res_ticker, list) else res_ticker
             ticker_id = int(row_t.get('id') if isinstance(row_t, dict) else row_t)
-            logging.info(f"🎯 [ЯДРО v3.0 КЭШ-Т] Справочник по матрице имен содержит '{symbol_clean}'. ticker_id = {ticker_id}")
+            logging.debug(f"🎯 [ЯДРО v3.0 КЭШ-Т] Справочник по матрице имен содержит '{symbol_clean}'. ticker_id = {ticker_id}")
 
         # ─── ШАГ 2: МИРОВАЯ ЛЕГАЛИЗАЦИЯ (ВЫЗОВ ПАСПОРТИСТКИ ДЛЯ РЕАЛЬНО НОВЫХ БУМАГ) ───
         # Если по кэшу ничего не нашли (или это торговый след брокера LST, где нужно дозаписать кодировки)
@@ -246,7 +249,7 @@ class Database:
             if res_listing and isinstance(res_listing, list) and len(res_listing) > 0:
                 row_l = res_listing[0] if isinstance(res_listing, list) else res_listing
                 listing_id = int(row_l.get('id') if isinstance(row_l, dict) else row_l)
-                logging.info(f"🎯 [ЯДРО v3.0 КЭШ-L]: Найден существующий листинг LST_ID = {listing_id}")
+                logging.debug(f"🎯 [ЯДРО v3.0 КЭШ-L]: Найден существующий листинг LST_ID = {listing_id}")
 
         # ─── ШАГ 4: АТОМАРНОЕ МЯГКОЕ СОЗДАНИЕ ЛИСТИНГА (СТРОГО ДЛЯ РОЛИ LST) ───
         if listing_id is None and role_clean == "LST" and broker_id is not None:
@@ -332,7 +335,10 @@ class Database:
                 WHERE id = {row_id};
             """
             self.execute_query(sql_update)
-            logging.info(f"📝 [WATCHLIST v2]: Бумага LST_ID={l_id} в портфеле ID={p_id} актуализирована по причине '{reason_clean}' (ID строки: {row_id}).")
+            # На DEBUG (Claude/BACKLOG.md №28) -- вызывается на каждый тикер при каждой синхронизации
+            # алертов/вотчлиста, для уже отслеживаемой бумаги это рутинное продление метки времени,
+            # не событие ("впервые добавлена" ниже -- другое дело, остаётся на INFO).
+            logging.debug(f"📝 [WATCHLIST v2]: Бумага LST_ID={l_id} в портфеле ID={p_id} актуализирована по причине '{reason_clean}' (ID строки: {row_id}).")
         else:
             # --- ВЕТКА INSERT: Абсолютно новая запись, заполняем стартовую колонку, остальные NULL ---
             columns_list = ["portfolio_id", "listing_id", "updated_at", target_column]
@@ -540,7 +546,7 @@ class Database:
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"Ошибка транзакции sync_portfolio_orders: {e}")
+            logging.error(f"❌ [sync_portfolio_orders]: Ошибка транзакции: {e}")
             raise e
         finally:
             conn.close()

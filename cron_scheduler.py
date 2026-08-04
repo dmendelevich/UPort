@@ -133,13 +133,19 @@ async def send_daily_digests(db_instance, bot):
     admin_telegram_id = (admin_row or {}).get("telegram_id")
     if not admin_telegram_id:
         logging.error("❌ [Digest]: Не найден telegram_id администратора -- дайджест некому отправить.")
-        return
+        return {"processed": 0, "errors": 1}
 
     portfolios = await asyncio.to_thread(
         db_instance.execute_query,
         "SELECT id, name, owner_id FROM public.portfolios ORDER BY id;"
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
+
+    # Честная статистика (Claude/BACKLOG.md №28) -- раньше run_daily_job_once видел только
+    # "долетело ли исключение до самой обёртки", а этот цикл проглатывал сбой по ОТДЕЛЬНОМУ
+    # портфелю через try/except внутри и всегда возвращал None (=SUCCESS), даже если часть
+    # дайджестов не собралась/не отправилась.
+    error_count = 0
 
     for p in portfolios:
         p_id = int(p["id"])
@@ -163,7 +169,10 @@ async def send_daily_digests(db_instance, bot):
                 await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
             logging.info(f"✅ [Digest]: Дайджест по портфелю {p['name']} (ID: {p_id}) отправлен {len(recipients)} получателям.")
         except Exception as e:
+            error_count += 1
             logging.error(f"❌ [Digest]: Не удалось собрать/отправить дайджест по портфелю {p['name']} (ID: {p_id}): {e}")
+
+    return {"processed": len(portfolios), "errors": error_count}
 
 
 async def snapshot_portfolio_values(db_instance):
@@ -183,6 +192,7 @@ async def snapshot_portfolio_values(db_instance):
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 
+    error_count = 0
     for p in portfolios:
         p_id = int(p["id"])
         try:
@@ -198,7 +208,10 @@ async def snapshot_portfolio_values(db_instance):
             )
             logging.info(f"📸 [NAV Snapshot]: '{p['name']}' (ID: {p_id}) -- ${float(total_value):,.2f}")
         except Exception as e:
+            error_count += 1
             logging.error(f"❌ [NAV Snapshot]: Не удалось снять снимок для '{p['name']}' (ID: {p_id}): {e}")
+
+    return {"processed": len(portfolios), "errors": error_count}
 
 # === ПЕРСИСТЕНТНАЯ ЗАЩИТА "УМНЫХ БУДИЛЬНИКОВ" ОТ ПОВТОРНОГО СРАБАТЫВАНИЯ ===
 
