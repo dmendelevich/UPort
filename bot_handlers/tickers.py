@@ -347,11 +347,26 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                     text="📤 Продать виртуально",
                     callback_data=MenuAction(action="paper_sell_yes", portfolio_id=p_id, listing_id=l_id, strategy_id=holder_strategy_id).pack()
                 ))
+                # "Всё равно продать" -- ручной форс-оверрайд совета системы (BACKLOG.md
+                # №73, по просьбе пользователя 2026-08-04): в реальном терминале брокера
+                # никто не мешает продать вопреки совету (например, срочно нужны деньги) --
+                # бумажный портфель должен уметь то же самое, отдельно от дисциплины Да/Нет.
+                action_builder.row(types.InlineKeyboardButton(
+                    text="🔴 Всё равно продать",
+                    callback_data=MenuAction(action="paper_sell_force_ask", portfolio_id=p_id, listing_id=l_id, strategy_id=holder_strategy_id).pack()
+                ))
             else:
                 action_builder.row(types.InlineKeyboardButton(
                     text="📥 Купить виртуально",
                     callback_data=MenuAction(action="paper_buy_yes", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
                 ))
+                # "Всё равно купить" -- только если известна стратегия (без неё непонятно,
+                # по какой формуле считать размер слота, см. CashDeploymentAdvisor.compute_slot_size).
+                if strategy_id > 0:
+                    action_builder.row(types.InlineKeyboardButton(
+                        text="🔴 Всё равно купить",
+                        callback_data=MenuAction(action="paper_buy_force_ask", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
+                    ))
             nav_kb = generate_nav_back_keyboard(
                 one_step_back_text="🔙 К карточке бумаги",
                 full_back_callback=MenuAction(

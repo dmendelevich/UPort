@@ -22,7 +22,7 @@ def _system_now() -> str:
 def _back_keyboard(portfolio_id: int, listing_id: int = 0):
     """
     Клавиатура после исполнения/отказа/ошибки -- по просьбе пользователя 2026-08-04
-    (после "✅ Исполнено" некуда было вернуться, reply_markup=None). Если известен
+    (после "✅ Исполнено" было некуда вернуться, reply_markup=None). Если известен
     listing_id -- ведёт на карточку бумаги (тот же паттерн, что и у самой кнопки
     "Купить/Продать виртуально", см. BACKLOG.md №71); если нет (например, кандидат
     так и не легализован до листинга) -- только в главное меню.
@@ -53,6 +53,130 @@ def _refresh_assets_value_sql(portfolio_id: int) -> str:
         )
         WHERE portfolio_id = {int(portfolio_id)} AND currency_id = 'USD';
     """
+
+
+async def _resolve_listing(t_id: int):
+    """
+    Возвращает (True, listing_id, price) или (False, error_text, listing_id=0).
+    Общая часть покупки (обычной и форс) -- легализует листинг у ФБ при
+    необходимости, проверяет, что цена реально получена (см. BACKLOG.md №59).
+    """
+    listing_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        f"SELECT id, last_price FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+    )
+    if not listing_row:
+        try:
+            listing_id = await asyncio.to_thread(db_sys.ensure_listing, t_id, 1)
+        except Exception as e:
+            return False, f"⚠️ Не удалось легализовать листинг: {e}", 0
+        listing_row = await asyncio.to_thread(
+            db_sys.execute_row,
+            f"SELECT id, last_price FROM public.listings WHERE id = {int(listing_id)};"
+        )
+
+    listing_id = int(listing_row["id"])
+    price = float(listing_row.get("last_price") or 0.0)
+    if price <= 0:
+        return False, "⚠️ Не удалось получить цену, попробуй позже.", listing_id
+    return True, listing_id, price
+
+
+async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, is_manual_override: bool):
+    """
+    Общая запись виртуальной покупки -- используется и подтверждённой
+    рекомендацией (paper_buy_yes), и ручным форс-оверрайдом (paper_buy_force_yes,
+    BACKLOG.md №73). Пишет напрямую в assets/strategy_assets/order_pipelines/
+    accounts -- НЕ через SyncStrategyAssetFB.distribute_asset_delta (та требует,
+    чтобы assets уже существовала, для первой покупки её ещё нет).
+    Возвращает (True, quantity, price, spent, listing_id) или (False, error_text, listing_id).
+    """
+    ok, listing_id_or_err, price_or_zero = await _resolve_listing(t_id)
+    if not ok:
+        return False, listing_id_or_err, price_or_zero
+    listing_id, price = listing_id_or_err, price_or_zero
+
+    quantity = max(1, round(amount / price))
+    spent = quantity * price
+    now = _system_now()
+    override_sql = "TRUE" if is_manual_override else "FALSE"
+
+    sql = f"""
+        WITH upsert_asset AS (
+            INSERT INTO public.assets (portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at)
+            VALUES ({p_id}, {listing_id}, {quantity}, {price}, 'USD', '{now}', '{now}')
+            ON CONFLICT (portfolio_id, listing_id) DO UPDATE SET
+                avg_price = (assets.quantity * assets.avg_price + EXCLUDED.quantity * EXCLUDED.avg_price) / (assets.quantity + EXCLUDED.quantity),
+                quantity = assets.quantity + EXCLUDED.quantity,
+                last_updated = EXCLUDED.last_updated
+            RETURNING id
+        ),
+        upsert_strategy_asset AS (
+            INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
+            SELECT id, {s_id}, {quantity}, '{now}' FROM upsert_asset
+            ON CONFLICT (asset_id, strategy_id) DO UPDATE SET
+                allocated_quantity = strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
+                last_updated_at = EXCLUDED.last_updated_at
+        ),
+        new_pipeline AS (
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price, is_manual_override)
+            VALUES ({p_id}, {listing_id}, {s_id}, {t_id}, 1, 'COMPLETED', {quantity}, {price}, {override_sql})
+        ),
+        updated_cash AS (
+            UPDATE public.accounts SET cash_available = cash_available - {spent}, last_updated = '{now}'
+            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
+        )
+        SELECT 1;
+    """
+    await asyncio.to_thread(db_sys.execute_query, sql)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
+    return True, quantity, price, spent, listing_id
+
+
+async def _execute_virtual_sell(p_id: int, l_id: int, s_id: int, ticker_id: int, asset_id: int, quantity: float, avg_price: float, is_manual_override: bool):
+    """
+    Общая запись виртуальной продажи -- используется и подтверждённой
+    рекомендацией (paper_sell_yes), и ручным форс-оверрайдом (paper_sell_force_yes,
+    BACKLOG.md №73). Полная продажа: DELETE из assets (каскадом уносит
+    strategy_assets, FK ON DELETE CASCADE -- та же конвенция, что sync_account_fb.py
+    для закрытых реальных позиций), запись order_pipelines с ОТРИЦАТЕЛЬНЫМ
+    target_quantity и pipeline_status='COMPLETED' (конвенция _record_retroactive_exit
+    из sync_strategy_asset_fb.py). Возвращает (True, price, proceeds, pnl, pnl_pct)
+    или (False, error_text).
+    """
+    price_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        f"SELECT l.last_price FROM public.listings l WHERE l.id = {l_id};"
+    )
+    price = float((price_row or {}).get("last_price") or 0.0)
+    if price <= 0:
+        return False, "⚠️ Не удалось получить цену, попробуй позже."
+
+    proceeds = quantity * price
+    pnl = (price - avg_price) * quantity
+    pnl_pct = ((price - avg_price) / avg_price * 100.0) if avg_price > 0 else 0.0
+    now = _system_now()
+    override_sql = "TRUE" if is_manual_override else "FALSE"
+
+    sql = f"""
+        WITH deleted_asset AS (
+            DELETE FROM public.assets WHERE id = {asset_id}
+        ),
+        new_pipeline AS (
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price, is_manual_override)
+            VALUES ({p_id}, {l_id}, {s_id}, {ticker_id}, 1, 'COMPLETED', {-quantity}, 0, {override_sql})
+        ),
+        updated_cash AS (
+            UPDATE public.accounts SET cash_available = cash_available + {proceeds}, last_updated = '{now}'
+            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
+        )
+        SELECT 1;
+    """
+    await asyncio.to_thread(db_sys.execute_query, sql)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
+    return True, price, proceeds, pnl, pnl_pct
 
 
 async def send_paper_buy_recommendations(db_instance, bot):
@@ -139,10 +263,9 @@ async def process_paper_buy_no(callback: types.CallbackQuery, callback_data: Men
 async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: MenuAction):
     """
     Подтверждение покупки -- перепроверяет условия заново (не исполняет старыми
-    числами из утреннего сообщения), при необходимости легализует листинг у ФБ
-    и пишет виртуальную сделку напрямую в assets/strategy_assets/order_pipelines/
-    accounts -- НЕ через SyncStrategyAssetFB.distribute_asset_delta (та требует,
-    чтобы assets уже существовала, для первой покупки её ещё нет).
+    числами из утреннего сообщения): кандидат должен всё ещё быть реальной
+    рекомендацией CashDeploymentAdvisor. Для покупки вопреки совету -- см.
+    paper_buy_force_yes (BACKLOG.md №73).
     """
     p_id = callback_data.portfolio_id
     s_id = callback_data.strategy_id
@@ -176,34 +299,68 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
     amount = float(match["step1_amount_usd"])
     strategy_name = match["strategy_name"]
 
-    listing_row = await asyncio.to_thread(
-        db_sys.execute_row,
-        f"SELECT id, last_price FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
-    )
-    if not listing_row:
+    result = await _execute_virtual_buy(p_id, s_id, t_id, amount, is_manual_override=False)
+    if not result[0]:
+        _, err_text, l_id_err = result
         try:
-            listing_id = await asyncio.to_thread(db_sys.ensure_listing, t_id, 1)
-        except Exception as e:
-            try:
-                await callback.message.edit_text(
-                    f"⚠️ Не удалось легализовать листинг {symbol}: {e}",
-                    reply_markup=_back_keyboard(p_id)
-                )
-            except TelegramBadRequest:
-                pass
-            return
-        listing_row = await asyncio.to_thread(
-            db_sys.execute_row,
-            f"SELECT id, last_price FROM public.listings WHERE id = {int(listing_id)};"
+            await callback.message.edit_text(err_text, reply_markup=_back_keyboard(p_id, l_id_err))
+        except TelegramBadRequest:
+            pass
+        return
+
+    _, quantity, price, spent, listing_id = result
+    logging.info(f"✅ [PaperExec]: Виртуально исполнено {quantity} шт {symbol} по ${price:,.2f} в '{strategy_name}' (портфель {p_id}).")
+    try:
+        await callback.message.edit_text(
+            f"✅ Исполнено: {quantity} шт *{symbol}* по ${price:,.2f} (${spent:,.2f})",
+            parse_mode="Markdown",
+            reply_markup=_back_keyboard(p_id, listing_id)
         )
+    except TelegramBadRequest:
+        pass
 
-    listing_id = int(listing_row["id"])
-    price = float(listing_row.get("last_price") or 0.0)
 
-    if price <= 0:
+@router.callback_query(MenuAction.filter(F.action == "paper_buy_force_ask"))
+async def process_paper_buy_force_ask(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Шаг подтверждения ручного форс-оверрайда покупки (BACKLOG.md №73, по просьбе
+    пользователя 2026-08-04) -- система явно предупреждает, что НЕ рекомендует
+    сделку, и показывает предпросмотр (сумма считается той же формулой слота,
+    что и обычная рекомендация, см. CashDeploymentAdvisor.compute_slot_size, но
+    без проверки "стратегия недофинансирована"), прежде чем позволить её сделать.
+    """
+    p_id = callback_data.portfolio_id
+    s_id = callback_data.strategy_id
+    t_id = callback_data.ticker_id
+
+    await callback.answer()
+
+    advisor = CashDeploymentAdvisor(db_sys)
+    amount = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
+
+    resolved = await _resolve_listing(t_id)
+    if not resolved[0]:
+        _, err_text, l_id_err = resolved
+        try:
+            await callback.message.edit_text(err_text, reply_markup=_back_keyboard(p_id, l_id_err))
+        except TelegramBadRequest:
+            pass
+        return
+    _, listing_id, price = resolved
+
+    cash_row = await asyncio.to_thread(
+        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+    )
+    cash_available = float((cash_row or {}).get("cash_available") or 0.0)
+    amount = min(amount, cash_available)
+
+    symbol_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT symbol FROM public.tickers WHERE id = {t_id};")
+    symbol = (symbol_row or {}).get("symbol", "?")
+
+    if amount <= 0:
         try:
             await callback.message.edit_text(
-                f"⚠️ Не удалось получить цену {symbol}, попробуй позже.",
+                f"⚠️ Не удалось посчитать сделку по {symbol} (нет свободного кэша или размера слота).",
                 reply_markup=_back_keyboard(p_id, listing_id)
             )
         except TelegramBadRequest:
@@ -211,44 +368,80 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
         return
 
     quantity = max(1, round(amount / price))
-    spent = quantity * price
-    now = _system_now()
-
-    sql = f"""
-        WITH upsert_asset AS (
-            INSERT INTO public.assets (portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at)
-            VALUES ({p_id}, {listing_id}, {quantity}, {price}, 'USD', '{now}', '{now}')
-            ON CONFLICT (portfolio_id, listing_id) DO UPDATE SET
-                avg_price = (assets.quantity * assets.avg_price + EXCLUDED.quantity * EXCLUDED.avg_price) / (assets.quantity + EXCLUDED.quantity),
-                quantity = assets.quantity + EXCLUDED.quantity,
-                last_updated = EXCLUDED.last_updated
-            RETURNING id
-        ),
-        upsert_strategy_asset AS (
-            INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
-            SELECT id, {s_id}, {quantity}, '{now}' FROM upsert_asset
-            ON CONFLICT (asset_id, strategy_id) DO UPDATE SET
-                allocated_quantity = strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
-                last_updated_at = EXCLUDED.last_updated_at
-        ),
-        new_pipeline AS (
-            INSERT INTO public.order_pipelines
-                (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price)
-            VALUES ({p_id}, {listing_id}, {s_id}, {t_id}, 1, 'COMPLETED', {quantity}, {price})
-        ),
-        updated_cash AS (
-            UPDATE public.accounts SET cash_available = cash_available - {spent}, last_updated = '{now}'
-            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
-        )
-        SELECT 1;
-    """
-    await asyncio.to_thread(db_sys.execute_query, sql)
-    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
-
-    logging.info(f"✅ [PaperExec]: Виртуально исполнено {quantity} шт {symbol} по ${price:,.2f} в '{strategy_name}' (портфель {p_id}).")
+    keyboard = generate_confirm_keyboard(
+        yes_text="✅ Да, всё равно",
+        yes_callback_packed=MenuAction(action="paper_buy_force_yes", portfolio_id=p_id, strategy_id=s_id, ticker_id=t_id).pack(),
+        no_text="❌ Нет",
+        no_callback_packed=MenuAction(action="paper_buy_force_no", portfolio_id=p_id, listing_id=listing_id, strategy_id=s_id).pack(),
+    )
     try:
         await callback.message.edit_text(
-            f"✅ Исполнено: {quantity} шт *{symbol}* по ${price:,.2f} (${spent:,.2f})",
+            f"⚠️ Система НЕ рекомендует эту покупку сейчас.\n\n"
+            f"Планируется: ~{quantity} шт *{symbol}* на ${amount:,.2f} по рынку (~${price:,.2f}/шт).\n\n"
+            f"Всё равно купить?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "paper_buy_force_no"))
+async def process_paper_buy_force_no(callback: types.CallbackQuery, callback_data: MenuAction):
+    await callback.answer()
+    try:
+        await callback.message.edit_text("❌ Отменено.", reply_markup=_back_keyboard(callback_data.portfolio_id, callback_data.listing_id))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "paper_buy_force_yes"))
+async def process_paper_buy_force_yes(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Исполнение форс-покупки -- в отличие от paper_buy_yes, НЕ проверяет
+    CashDeploymentAdvisor (условия "недофинансирована" специально нет, в этом и
+    смысл "Всё равно"). Пересчитывает сумму/цену заново (время прошло с экрана
+    подтверждения) и пишет is_manual_override=TRUE, чтобы через год отличить от
+    сделок по совету системы при измерении эффективности (BACKLOG.md №73).
+    """
+    p_id = callback_data.portfolio_id
+    s_id = callback_data.strategy_id
+    t_id = callback_data.ticker_id
+
+    await callback.answer("Исполняю...")
+
+    advisor = CashDeploymentAdvisor(db_sys)
+    amount = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
+    cash_row = await asyncio.to_thread(
+        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+    )
+    cash_available = float((cash_row or {}).get("cash_available") or 0.0)
+    amount = min(amount, cash_available)
+
+    symbol_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT symbol FROM public.tickers WHERE id = {t_id};")
+    symbol = (symbol_row or {}).get("symbol", "?")
+
+    if amount <= 0:
+        try:
+            await callback.message.edit_text(f"⚠️ Не удалось исполнить {symbol} -- нет свободного кэша.", reply_markup=_back_keyboard(p_id))
+        except TelegramBadRequest:
+            pass
+        return
+
+    result = await _execute_virtual_buy(p_id, s_id, t_id, amount, is_manual_override=True)
+    if not result[0]:
+        _, err_text, l_id_err = result
+        try:
+            await callback.message.edit_text(err_text, reply_markup=_back_keyboard(p_id, l_id_err))
+        except TelegramBadRequest:
+            pass
+        return
+
+    _, quantity, price, spent, listing_id = result
+    logging.info(f"🔴 [PaperExec]: ФОРС-покупка {quantity} шт {symbol} по ${price:,.2f} (портфель {p_id}), вопреки совету системы.")
+    try:
+        await callback.message.edit_text(
+            f"✅ Исполнено (вопреки совету): {quantity} шт *{symbol}* по ${price:,.2f} (${spent:,.2f})",
             parse_mode="Markdown",
             reply_markup=_back_keyboard(p_id, listing_id)
         )
@@ -336,12 +529,8 @@ async def process_paper_sell_no(callback: types.CallbackQuery, callback_data: Me
 async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: MenuAction):
     """
     Подтверждение продажи -- перепроверяет условия заново (цена могла отскочить,
-    рекомендация могла смениться на HOLD), затем полный выход: DELETE из assets
-    (каскадом уносит strategy_assets, FK ON DELETE CASCADE -- та же конвенция,
-    что уже использует sync_account_fb.py для закрытых реальных позиций), запись
-    order_pipelines с ОТРИЦАТЕЛЬНЫМ target_quantity и pipeline_status='COMPLETED'
-    (конвенция _record_retroactive_exit из sync_strategy_asset_fb.py), зачисление
-    выручки в accounts.cash_available.
+    рекомендация могла смениться на HOLD). Для продажи вопреки совету -- см.
+    paper_sell_force_yes (BACKLOG.md №73).
     """
     p_id = callback_data.portfolio_id
     l_id = callback_data.listing_id
@@ -372,51 +561,144 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
     asset_id = int(match["asset_id"])
     ticker_id = int(match["ticker_id"])
 
-    price_row = await asyncio.to_thread(
-        db_sys.execute_row,
-        f"SELECT a.avg_price, l.last_price FROM public.assets a JOIN public.listings l ON a.listing_id = l.id WHERE a.id = {asset_id};"
-    )
-    price = float((price_row or {}).get("last_price") or 0.0)
-    avg_price = float((price_row or {}).get("avg_price") or 0.0)
+    avg_price_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT avg_price FROM public.assets WHERE id = {asset_id};")
+    avg_price = float((avg_price_row or {}).get("avg_price") or 0.0)
 
-    if price <= 0:
+    result = await _execute_virtual_sell(p_id, l_id, s_id, ticker_id, asset_id, quantity, avg_price, is_manual_override=False)
+    if not result[0]:
         try:
-            await callback.message.edit_text(
-                f"⚠️ Не удалось получить цену {symbol}, попробуй позже.",
-                reply_markup=_back_keyboard(p_id, l_id)
-            )
+            await callback.message.edit_text(result[1], reply_markup=_back_keyboard(p_id, l_id))
         except TelegramBadRequest:
             pass
         return
 
-    proceeds = quantity * price
-    pnl = (price - avg_price) * quantity
-    pnl_pct = ((price - avg_price) / avg_price * 100.0) if avg_price > 0 else 0.0
-    now = _system_now()
-
-    sql = f"""
-        WITH deleted_asset AS (
-            DELETE FROM public.assets WHERE id = {asset_id}
-        ),
-        new_pipeline AS (
-            INSERT INTO public.order_pipelines
-                (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price)
-            VALUES ({p_id}, {l_id}, {s_id}, {ticker_id}, 1, 'COMPLETED', {-quantity}, 0)
-        ),
-        updated_cash AS (
-            UPDATE public.accounts SET cash_available = cash_available + {proceeds}, last_updated = '{now}'
-            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
-        )
-        SELECT 1;
-    """
-    await asyncio.to_thread(db_sys.execute_query, sql)
-    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
-
+    _, price, proceeds, pnl, pnl_pct = result
     logging.info(f"✅ [PaperExec]: Виртуально продано {quantity:g} шт {symbol} по ${price:,.2f} из '{strategy_name}' (портфель {p_id}), P&L ${pnl:,.2f}.")
     pnl_sign = "+" if pnl >= 0 else ""
     try:
         await callback.message.edit_text(
             f"✅ Продано: {quantity:g} шт *{symbol}* по ${price:,.2f} (${proceeds:,.2f})\n"
+            f"P&L: {pnl_sign}${pnl:,.2f} ({pnl_sign}{pnl_pct:.1f}%)",
+            parse_mode="Markdown",
+            reply_markup=_back_keyboard(p_id, l_id)
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "paper_sell_force_ask"))
+async def process_paper_sell_force_ask(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Шаг подтверждения ручного форс-оверрайда продажи (BACKLOG.md №73, по просьбе
+    пользователя 2026-08-04: "в реальной жизни я так и так смогу продать в
+    терминале, даже если это глупо") -- система явно предупреждает, что НЕ
+    рекомендует продажу, и показывает предпросмотр перед исполнением.
+    """
+    p_id = callback_data.portfolio_id
+    l_id = callback_data.listing_id
+    s_id = callback_data.strategy_id
+
+    await callback.answer()
+
+    asset_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        f"""
+            SELECT a.id AS asset_id, a.quantity, a.avg_price, l.last_price, l.ticker_id, t.symbol
+            FROM public.assets a
+            JOIN public.listings l ON a.listing_id = l.id
+            JOIN public.tickers t ON l.ticker_id = t.id
+            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id};
+        """
+    )
+    if not asset_row:
+        try:
+            await callback.message.edit_text("⚠️ Позиция уже не держится.", reply_markup=_back_keyboard(p_id, l_id))
+        except TelegramBadRequest:
+            pass
+        return
+
+    quantity = float(asset_row["quantity"])
+    price = float(asset_row.get("last_price") or 0.0)
+    symbol = asset_row["symbol"]
+    proceeds = quantity * price
+
+    keyboard = generate_confirm_keyboard(
+        yes_text="✅ Да, всё равно",
+        yes_callback_packed=MenuAction(action="paper_sell_force_yes", portfolio_id=p_id, listing_id=l_id, strategy_id=s_id).pack(),
+        no_text="❌ Нет",
+        no_callback_packed=MenuAction(action="paper_sell_force_no", portfolio_id=p_id, listing_id=l_id, strategy_id=s_id).pack(),
+    )
+    try:
+        await callback.message.edit_text(
+            f"⚠️ Система НЕ рекомендует продавать {symbol} сейчас.\n\n"
+            f"Планируется: {quantity:g} шт по ~${price:,.2f} (${proceeds:,.2f}).\n\n"
+            f"Всё равно продать?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "paper_sell_force_no"))
+async def process_paper_sell_force_no(callback: types.CallbackQuery, callback_data: MenuAction):
+    await callback.answer()
+    try:
+        await callback.message.edit_text("❌ Отменено.", reply_markup=_back_keyboard(callback_data.portfolio_id, callback_data.listing_id))
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "paper_sell_force_yes"))
+async def process_paper_sell_force_yes(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Исполнение форс-продажи -- в отличие от paper_sell_yes, НЕ проверяет
+    PositionExitEvaluator (условия SELL специально нет, в этом и смысл "Всё
+    равно"). Пишет is_manual_override=TRUE (BACKLOG.md №73).
+    """
+    p_id = callback_data.portfolio_id
+    l_id = callback_data.listing_id
+    s_id = callback_data.strategy_id
+
+    await callback.answer("Исполняю...")
+
+    asset_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        f"""
+            SELECT a.id AS asset_id, a.quantity, a.avg_price, l.ticker_id, t.symbol
+            FROM public.assets a
+            JOIN public.listings l ON a.listing_id = l.id
+            JOIN public.tickers t ON l.ticker_id = t.id
+            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id};
+        """
+    )
+    if not asset_row:
+        try:
+            await callback.message.edit_text("⚠️ Позиция уже не держится.", reply_markup=_back_keyboard(p_id, l_id))
+        except TelegramBadRequest:
+            pass
+        return
+
+    asset_id = int(asset_row["asset_id"])
+    quantity = float(asset_row["quantity"])
+    avg_price = float(asset_row.get("avg_price") or 0.0)
+    ticker_id = int(asset_row["ticker_id"])
+    symbol = asset_row["symbol"]
+
+    result = await _execute_virtual_sell(p_id, l_id, s_id, ticker_id, asset_id, quantity, avg_price, is_manual_override=True)
+    if not result[0]:
+        try:
+            await callback.message.edit_text(result[1], reply_markup=_back_keyboard(p_id, l_id))
+        except TelegramBadRequest:
+            pass
+        return
+
+    _, price, proceeds, pnl, pnl_pct = result
+    logging.info(f"🔴 [PaperExec]: ФОРС-продажа {quantity:g} шт {symbol} по ${price:,.2f} (портфель {p_id}), вопреки совету системы, P&L ${pnl:,.2f}.")
+    pnl_sign = "+" if pnl >= 0 else ""
+    try:
+        await callback.message.edit_text(
+            f"✅ Продано (вопреки совету): {quantity:g} шт *{symbol}* по ${price:,.2f} (${proceeds:,.2f})\n"
             f"P&L: {pnl_sign}${pnl:,.2f} ({pnl_sign}{pnl_pct:.1f}%)",
             parse_mode="Markdown",
             reply_markup=_back_keyboard(p_id, l_id)

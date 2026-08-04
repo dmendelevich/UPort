@@ -57,6 +57,47 @@ class CashDeploymentAdvisor:
         )
         return results[0] if results else None
 
+    def compute_slot_size(self, portfolio_id: int, strategy_id: int) -> float:
+        """
+        Целевой размер слота (шаг 1 лесенки) для стратегии -- та же формула, что и
+        в evaluate_deployment (tactic_slot_fixed_usd -> tactic_slot_pct_of_strategy ->
+        portfolio_max_asset_pct), но БЕЗ проверки, есть ли реально недофинансирование
+        (slack). Нужно для "Всё равно купить" -- ручного форс-оверрайда совета системы
+        (BACKLOG.md №73) -- там условия "стратегия недофинансирована" может не быть
+        вовсе (пользователь хочет купить, даже если стратегия уже на цели).
+        """
+        inspector = PortfolioInspector(self.db, portfolio_id)
+        balances = inspector.get_virtual_cash_balances()
+        total_capital = float(balances.get("total_capital_usd") or 0.0)
+        if total_capital <= 0:
+            return 0.0
+
+        strat_rows = self._get_strategies_with_keys(portfolio_id)
+        strat_row = next((r for r in strat_rows if int(r["id"]) == int(strategy_id)), None)
+        if not strat_row:
+            return 0.0
+        rules_config = strat_row.get("rules_config") or {}
+
+        bal = next(
+            (b for s_id, b in balances.get("strategies", {}).items() if int(s_id) == int(strategy_id)),
+            {}
+        )
+        ideal_budget_usd = float((bal or {}).get("ideal_budget_usd") or 0.0)
+
+        slot_fixed_usd = rules_config.get("tactic_slot_fixed_usd")
+        slot_pct_of_strategy = rules_config.get("tactic_slot_pct_of_strategy")
+        if slot_fixed_usd is not None:
+            slot_cap = float(slot_fixed_usd)
+        elif slot_pct_of_strategy is not None:
+            slot_cap = ideal_budget_usd * float(slot_pct_of_strategy) / 100.0
+        else:
+            max_asset_pct = float(rules_config.get("portfolio_max_asset_pct") or 5.0)
+            slot_cap = total_capital * max_asset_pct / 100.0
+
+        tactic = self._get_step1_tactic(strategy_id)
+        step1_share_pct = float(tactic.get("budget_share_pct") or 100.0)
+        return round(slot_cap * step1_share_pct / 100.0, 2)
+
     def evaluate_deployment(self, portfolio_id: int) -> list:
         """
         Главная точка входа. Возвращает список рекомендаций по размещению
