@@ -323,11 +323,12 @@ class FreedomBrokerSyncManager:
                             VALUES ({portfolio_id}, {ord_listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
                         """)
                     
-                    # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров
-                    from database import Database
-                    Database.sync_portfolio_orders(
-                        portfolio_id=portfolio_id, 
-                        account_number=account_number, 
+                    # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров.
+                    # Метод экземпляра (Claude/BACKLOG.md №81) -- раньше вызывался статикой
+                    # Database.sync_portfolio_orders(...) в обход роли/токена self.db.
+                    self.db.sync_portfolio_orders(
+                        portfolio_id=portfolio_id,
+                        account_number=account_number,
                         api_orders=active_orders_list
                     )
 

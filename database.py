@@ -1,7 +1,5 @@
 import os
 import requests
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 from pathlib import Path
 import asyncio
@@ -17,8 +15,8 @@ class Database:
         """
         Универсальный класс взаимодействия со шлюзом UPort AI Gateway.
         """
-        self.url = "http://localhost:3000/query"
-        
+        self.base_url = "http://localhost:3000"
+
         if role == "SYSTEM":
             self.token = os.getenv("UPORT_TOKEN_SYSTEM")
         elif role == "AI":
@@ -27,17 +25,22 @@ class Database:
             self.token = os.getenv("UPORT_TOKEN_BOT")
         else:
             raise ValueError(f"Неизвестная роль базы данных: {role}")
-            
+
         if not self.token:
             raise RuntimeError(f"Критическая ошибка: Токен для роли {role} не найден в .env.")
 
-    def execute_query(self, sql_query: str) -> list:
-        """Отправка SQL-запроса на шлюз с заголовком авторизации текущей роли."""
+    def execute_query(self, sql_query: str, params: tuple = None) -> list:
+        """
+        Отправка SQL-запроса на шлюз с заголовком авторизации текущей роли.
+        params -- параметризация через %s (Claude/BACKLOG.md №81, единый стандарт вместо
+        вставки значений прямо в f-строку). Необязателен -- старые вызовы без params
+        продолжают работать без изменений, миграция кодовой базы идёт постепенно.
+        """
         headers = {"X-Token": self.token}
-        payload = {"query": sql_query}
-        
+        payload = {"query": sql_query, "params": list(params) if params is not None else None}
+
         try:
-            response = requests.post(self.url, json=payload, headers=headers, timeout=10)
+            response = requests.post(f"{self.base_url}/query", json=payload, headers=headers, timeout=10)
             if response.status_code != 200:
                 # 🔥 ВЫТАСКИВАЕМ РЕАЛЬНЫЙ КРИК БАЗЫ ДАННЫХ ИЗ ШЛЮЗА
                 try:
@@ -51,16 +54,44 @@ class Database:
             logging.error(f"🚨 [ШЛЮЗ]: Исключение на запрос: {sql_query[:60]}... | Ошибка: {e}")
             return []
 
-    def execute_row(self, sql_query: str) -> dict:
+    def execute_row(self, sql_query: str, params: tuple = None) -> dict:
         """
         Выполняет SQL-запрос и гарантированно возвращает ОДНУ строку в виде словаря.
         Если база данных ничего не нашла, возвращает пустой словарь {}.
         Идеально подходит для точечных запросов (LIMIT 1) и избавляет от скобок.
         """
-        res = self.execute_query(sql_query)
+        res = self.execute_query(sql_query, params)
         if isinstance(res, list) and len(res) > 0:
             return res[0]
         return {}
+
+    def execute_transaction(self, statements: list) -> list:
+        """
+        Честная атомарная транзакция поверх шлюза (Claude/BACKLOG.md №81) -- одно соединение
+        на весь список запросов, коммит в конце ИЛИ полный откат при ошибке любого шага.
+        Раньше это было физически невозможно через execute_query() (каждый вызов -- новое
+        HTTP-соединение без общей сессии, см. закрытый как непочинимый п.18) -- отсюда
+        соблазн открывать psycopg2.connect в обход шлюза напрямую (см. sync_portfolio_orders
+        ДО этого фикса). Больше так делать не нужно -- это и есть переиспользуемый механизм.
+
+        statements -- список (sql, params) кортежей, params может быть None.
+        Возвращает список результатов, по одному на каждый запрос, в том же порядке.
+        """
+        headers = {"X-Token": self.token}
+        payload = {
+            "statements": [
+                {"query": sql, "params": list(params) if params is not None else None}
+                for sql, params in statements
+            ]
+        }
+        response = requests.post(f"{self.base_url}/transaction", json=payload, headers=headers, timeout=30)
+        if response.status_code != 200:
+            try:
+                err_detail = response.json().get('detail', response.text)
+            except:
+                err_detail = response.text
+            raise RuntimeError(f"Сбой транзакции на шлюзе: {err_detail}")
+        return response.json()
 
     # === ТРИ КИТА ИНФРАСТРУКТУРЫ (ПОДГОТОВКА ДО ТРАНЗАКЦИИ) ===
 
@@ -369,96 +400,91 @@ class Database:
         return 0
     # === ОСНОВНОЙ ЭТАП ЗАПИСИ ПРИКАЗОВ ===
 
-    @staticmethod
-    def sync_portfolio_orders(portfolio_id: int, account_number: str, api_orders: list):
+    def sync_portfolio_orders(self, portfolio_id: int, account_number: str, api_orders: list):
         """
         Этап 2: Полностью перезаписывает слепок активных приказов по портфелю.
         Вводит заполнение реляционного listing_id в таблице orders.
+
+        Переписано на execute_transaction (Claude/BACKLOG.md №81) -- раньше здесь был
+        собственный psycopg2.connect в обход шлюза (единственный способ получить настоящую
+        транзакцию DELETE+INSERT*N+UPDATE с откатом при ошибке). Резолвинг listing_id/ticker_id
+        по каждому приказу -- чтение, не меняет данные -- вынесен ДО сборки транзакции
+        обычными execute_row(); сама транзакция ниже -- только запись, без ветвления
+        по промежуточным результатам (что и требуется для одного HTTP-вызова /transaction).
         """
-        sql_delete_orders = "DELETE FROM public.orders WHERE portfolio_id = %s;"
-        
-        # Получаем одновременно ticker_id и listing_id на основе broker_symbol
-        sql_get_ids = """
-            SELECT l.id as listing_id, l.ticker_id 
-            FROM public.listings l
-            JOIN public.portfolios p ON l.broker_id = p.broker_id
-            WHERE p.id = %s AND l.broker_symbol = %s;
-        """
-        
-        # Запрос адаптирован: записывает как старый ticker_id, так и новый listing_id
+        resolved_orders = []
+        for order in api_orders:
+            row = self.execute_row(
+                """
+                SELECT l.id as listing_id, l.ticker_id
+                FROM public.listings l
+                JOIN public.portfolios p ON l.broker_id = p.broker_id
+                WHERE p.id = %s AND l.broker_symbol = %s;
+                """,
+                (portfolio_id, order['ticker'])
+            )
+            if row:
+                listing_id = row['listing_id']
+                ticker_id = row['ticker_id']
+            else:
+                # Резервный фолбэк на случай рассинхронизации справочников
+                t_fallback = self.execute_row(
+                    "SELECT id FROM public.tickers WHERE full_ticker = %s;",
+                    (order['ticker'],)
+                )
+                ticker_id = t_fallback.get('id') if t_fallback else 1
+                listing_id = None
+
+            stop_price_val = order.get('stop')
+            if stop_price_val is None and int(order.get('type', 0)) in (3, 4, 5, 6):
+                stop_price_val = order.get('stop_init_price')
+            if stop_price_val is not None:
+                stop_price_val = float(stop_price_val)
+
+            resolved_orders.append((order, ticker_id, listing_id, stop_price_val))
+
+        statements = [("DELETE FROM public.orders WHERE portfolio_id = %s;", (portfolio_id,))]
+
         sql_insert_order = """
             INSERT INTO public.orders (portfolio_id, ticker_id, listing_id, broker_order_id, status, oper, type, q, p, stop_init_price, stop_price, currency_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
-        
-        sql_reset_all_reserved = "UPDATE public.accounts SET cash_reserved = 0 WHERE account_number = %s;"
-        sql_update_cash_reserved = "UPDATE public.accounts SET cash_reserved = %s WHERE account_number = %s AND currency_id = %s;"
+        for order, ticker_id, listing_id, stop_price_val in resolved_orders:
+            statements.append((sql_insert_order, (
+                portfolio_id,
+                ticker_id,
+                listing_id,
+                order['broker_order_id'],
+                order['status'],
+                order['oper'],
+                order['type'],
+                order['q'],
+                order['p'],
+                order['stop_init_price'],
+                stop_price_val,
+                order['currency_id']
+            )))
 
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASS")
-        )
-        
+        statements.append(("UPDATE public.accounts SET cash_reserved = 0 WHERE account_number = %s;", (account_number,)))
+
+        currency_reserves = {}
+        for order, *_ in resolved_orders:
+            if order['type'] == 2 and order['oper'] in (1, 2):
+                order_cost = order['q'] * order['p']
+                curr = order['currency_id']
+                currency_reserves[curr] = currency_reserves.get(curr, 0) + order_cost
+
+        for curr_id, reserved_amount in currency_reserves.items():
+            statements.append((
+                "UPDATE public.accounts SET cash_reserved = %s WHERE account_number = %s AND currency_id = %s;",
+                (reserved_amount, account_number, curr_id)
+            ))
+
         try:
-            with conn.cursor() as cur:
-                cur.execute(sql_delete_orders, (portfolio_id,))
-                
-                for order in api_orders:
-                    cur.execute(sql_get_ids, (portfolio_id, order['ticker']))
-                    row = cur.fetchone()
-                    
-                    if row:
-                        listing_id = row[0]
-                        ticker_id = row[1]
-                    else:
-                        # Резервный фолбэк на случай рассинхронизации справочников
-                        cur.execute("SELECT id FROM public.tickers WHERE full_ticker = %s;", (order['ticker'],))
-                        t_fallback = cur.fetchone()
-                        ticker_id = t_fallback[0] if t_fallback else 1
-                        listing_id = None
-
-                    stop_price_val = order.get('stop')                    
-                    if stop_price_val is None and int(order.get('type', 0)) in (3, 4, 5, 6):
-                        stop_price_val = order.get('stop_init_price')
-                    if stop_price_val is not None:
-                        stop_price_val = float(stop_price_val)
-                    
-                    cur.execute(sql_insert_order, (
-                        portfolio_id,
-                        ticker_id,
-                        listing_id,
-                        order['broker_order_id'],
-                        order['status'],
-                        order['oper'],
-                        order['type'],
-                        order['q'],
-                        order['p'],
-                        order['stop_init_price'],
-                        stop_price_val,
-                        order['currency_id']
-                    ))
-                
-                cur.execute(sql_reset_all_reserved, (account_number,))
-                currency_reserves = {}
-                for order in api_orders:
-                    if order['type'] == 2 and order['oper'] in (1, 2):
-                        order_cost = order['q'] * order['p']
-                        curr = order['currency_id']
-                        currency_reserves[curr] = currency_reserves.get(curr, 0) + order_cost
-            
-                for curr_id, reserved_amount in currency_reserves.items():
-                    cur.execute(sql_update_cash_reserved, (reserved_amount, account_number, curr_id))
-                    
-            conn.commit()
+            self.execute_transaction(statements)
         except Exception as e:
-            conn.rollback()
             logging.error(f"❌ [sync_portfolio_orders]: Ошибка транзакции: {e}")
             raise e
-        finally:
-            conn.close()
 
     # === СЕМЕЙНАЯ СВОДКА ===
 

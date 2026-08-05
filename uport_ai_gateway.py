@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Header
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -28,46 +29,41 @@ DB_PARAMS = {
 
 class QueryPayload(BaseModel):
     query: str
+    params: Optional[list] = None
 
-@app.get("/")
-def read_root():
-    return {
-        "message": "UPort AI Gateway is Online", 
-        "version": "3.1 (Env-Configured RBAC)"
-    }
+class TransactionPayload(BaseModel):
+    statements: list[QueryPayload]
 
-@app.post("/query")
-def execute_custom_query(payload: QueryPayload, x_token: str = Header(None)):
-    # Идентификация системной роли
+def _identify_role(x_token: str) -> str:
     if x_token == TOKEN_SYSTEM:
-        role = "SYSTEM"
+        return "SYSTEM"
     elif x_token == TOKEN_AI:
-        role = "AI"
+        return "AI"
     elif x_token == TOKEN_BOT:
-        role = "BOT"
-    else:
-        raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing X-Token")
-    
-    query = payload.query
+        return "BOT"
+    raise HTTPException(status_code=403, detail="Forbidden: Invalid or missing X-Token")
+
+def _verify_role_permission(role: str, query: str):
+    """Общая проверка прав роли -- используется и /query, и /transaction (Claude/BACKLOG.md №81),
+    чтобы не разъезжались правила между одиночным запросом и пакетом внутри транзакции."""
     query_lower = query.strip().lower()
-    
-    # Верификация прав роли
+
     if role == "AI":
         if not query_lower.startswith("select"):
             raise HTTPException(
-                status_code=403, 
+                status_code=403,
                 detail="Forbidden for AI: Only SELECT queries are allowed via this token."
             )
-            
+
     elif role == "BOT":
         allowed_bot_commands = ("select", "insert", "update")
         if not query_lower.startswith(allowed_bot_commands):
             raise HTTPException(status_code=403, detail="Forbidden for BOT: Operation not allowed.")
-            
+
         if (query_lower.startswith("insert") or query_lower.startswith("update")) and \
            any(x in query_lower for x in ["assets", "tickers", "orders", "transactions"]):
             raise HTTPException(
-                status_code=403, 
+                status_code=403,
                 detail="Forbidden for BOT: Direct asset/order modification is restricted."
             )
 
@@ -75,11 +71,25 @@ def execute_custom_query(payload: QueryPayload, x_token: str = Header(None)):
         # Полный доступ ко всем финансовым таблицам (assets, tickers, orders)
         pass
 
-    # Выполнение запроса в PostgreSQL
+@app.get("/")
+def read_root():
+    return {
+        "message": "UPort AI Gateway is Online",
+        "version": "3.2 (Parameterized queries + atomic transactions)"
+    }
+
+@app.post("/query")
+def execute_custom_query(payload: QueryPayload, x_token: str = Header(None)):
+    role = _identify_role(x_token)
+    _verify_role_permission(role, payload.query)
+
+    # Выполнение запроса в PostgreSQL. params=None у psycopg2 равносилен обычному execute(query) --
+    # старые вызовы без параметров (f-строка целиком в query) продолжают работать без изменений,
+    # пока кодовая база постепенно переходит на параметризованный стиль (Claude/BACKLOG.md №81).
     try:
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(query)
+        cur.execute(payload.query, payload.params)
 
         # cur.description -- факт от Postgres "есть ли у этого запроса набор колонок результата".
         # В отличие от query_lower.startswith("select"), корректно работает и для WITH...SELECT (CTE),
@@ -97,6 +107,43 @@ def execute_custom_query(payload: QueryPayload, x_token: str = Header(None)):
         conn.close()
         return result
     except Exception as e:
-        if 'conn' in locals() and conn: 
+        if 'conn' in locals() and conn:
             conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transaction")
+def execute_transaction(payload: TransactionPayload, x_token: str = Header(None)):
+    """
+    Честная атомарная транзакция поверх шлюза (Claude/BACKLOG.md №81) -- корень проблемы,
+    из-за которой раньше приходилось открывать psycopg2.connect в обход шлюза напрямую:
+    /query открывает НОВОЕ соединение на каждый HTTP-вызов, сессии между вызовами не существует,
+    поэтому BEGIN/COMMIT отдельными вызовами execute_query() никогда не давали реальной транзакции.
+    Здесь -- одно соединение на весь список запросов, коммит в конце ИЛИ полный откат при любой
+    ошибке любого из шагов.
+    """
+    role = _identify_role(x_token)
+    for stmt in payload.statements:
+        _verify_role_permission(role, stmt.query)
+
+    conn = None
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        results = []
+        for stmt in payload.statements:
+            cur.execute(stmt.query, stmt.params)
+            if cur.description is not None:
+                results.append(cur.fetchall())
+            else:
+                results.append([{"status": "success", "message": f"Command executed successfully via {role} role"}])
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return results
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
         raise HTTPException(status_code=500, detail=str(e))
