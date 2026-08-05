@@ -94,8 +94,8 @@ def sync_all_broker_alerts():
                 
                 if is_already_triggered:
                     # Если алерт на бирже уже мертв, зряче проверяем — заведен ли он вообще в нашей СУБД?
-                    sql_check_zombie = f"SELECT id FROM public.alerts WHERE portfolio_id = {int(portfolio_id)} AND broker_alert_id = {b_alert_id} LIMIT 1;"
-                    zombie_rows = db_sys.execute_query(sql_check_zombie)
+                    sql_check_zombie = "SELECT id FROM public.alerts WHERE portfolio_id = %s AND broker_alert_id = %s LIMIT 1;"
+                    zombie_rows = db_sys.execute_query(sql_check_zombie, (portfolio_id, b_alert_id))
                     
                     if not zombie_rows:
                         # СЦЕНАРИЙ А: Вы вычистили его из базы вручную (или ночью стёр хрон), а у брокера он в архиве.
@@ -135,13 +135,13 @@ def sync_all_broker_alerts():
                         b_currency = None  # Строго NULL, если брокер не отдал валюту (никаких костылей)
 
                     # Заносим новую бумагу в таблицу листингов брокера
-                    insert_listing_sql = f"""
+                    insert_listing_sql = """
                         INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id, last_price)
-                        VALUES ({int(al_ticker_id)}, 1, '{b_ticker}', {f"'{b_currency}'" if b_currency else 'NULL'}, 0)
+                        VALUES (%s, 1, %s, %s, 0)
                         RETURNING id;
                     """
                     try:
-                        new_listing_rows = db_sys.execute_query(insert_listing_sql)
+                        new_listing_rows = db_sys.execute_query(insert_listing_sql, (al_ticker_id, b_ticker, b_currency))
                         if new_listing_rows:
                             # Извлекаем сгенерированный базой id нового листинга
                             al_listing_id = int(new_listing_rows[0]['id'])
@@ -235,101 +235,110 @@ def sync_all_broker_alerts():
                         logging.info(f"🔄 Периодический алерт #{b_alert_id} ({b_ticker}) зафиксировал срабатывание, но остается активным.")
 
                 # ─── ШАГ 3: ЗРЯЧАЯ ДВУХЭТАПНАЯ ЗАПИСЬ В СУБД БЕЗ ON CONFLICT (СПАСЕНИЕ ID) ───
-                
-                # Вспомогательная функция форматирования наивных UTC-значений для SQL
-                def sql_val(v):
-                    if v is None: return "NULL"
-                    if isinstance(v, bool): return "true" if v else "false"
-                    if isinstance(v, (int, float)): return str(v)
-                    if isinstance(v, datetime): return f"'{v.strftime('%Y-%m-%d %H:%M:%S')}'"
-                    return f"'{str(v).replace(chr(39), chr(39)+chr(39))}'"
+
+                # datetime передаём строкой -- HTTP-шлюз сериализует params в JSON, объект
+                # datetime в нём не умещается (см. Claude/BACKLOG.md №81, тот же баг, что был
+                # найден в sync_strategy_asset_fb.py).
+                expire_at_val = expire_at.strftime('%Y-%m-%d %H:%M:%S') if expire_at else None
+                triggered_at_val = triggered_at.strftime('%Y-%m-%d %H:%M:%S') if triggered_at else None
 
                 # 🔎 Прицельно проверяем кэш СУБД по бизнес-ключу брокера
-                sql_check_alert = f"""
-                    SELECT id FROM public.alerts 
-                    WHERE portfolio_id = {int(portfolio_id)} 
-                      AND broker_alert_id = {b_alert_id} 
+                sql_check_alert = """
+                    SELECT id FROM public.alerts
+                    WHERE portfolio_id = %s
+                      AND broker_alert_id = %s
                     LIMIT 1;
                 """
-                existing_alert_rows = db_sys.execute_query(sql_check_alert)
+                existing_alert_rows = db_sys.execute_query(sql_check_alert, (portfolio_id, b_alert_id))
 
                 if existing_alert_rows and len(existing_alert_rows) > 0:
                     # 📝 ВЕТКА UPDATE: Алерт уже существует. Обновляем точечно по его ID. 
                     # Счётчик автоинкремента таблицы (спидометр ID) полностью спит!
                     row_id = int(existing_alert_rows[0]['id'])
                     
-                    sql_update_alert = f"""
-                        UPDATE public.alerts 
-                        SET listing_id = {int(al_listing_id)},
-                            ticker_id = {int(al_ticker_id)},
-                            trigger_price = {trigger_price},
-                            trigger_price_min = {sql_val(trigger_price_min)},
-                            trigger_price_max = {sql_val(trigger_price_max)},
-                            trigger_pct = {sql_val(trigger_pct)},
-                            expire_type = {sql_val(expire_type)},
-                            expire_at = {sql_val(expire_at)},
-                            triggered_status = {sql_val(str(is_trig))},
-                            is_active = {sql_val(uport_active)},
-                            triggered_at = COALESCE(triggered_at, {sql_val(triggered_at)}),
+                    sql_update_alert = """
+                        UPDATE public.alerts
+                        SET listing_id = %s,
+                            ticker_id = %s,
+                            trigger_price = %s,
+                            trigger_price_min = %s,
+                            trigger_price_max = %s,
+                            trigger_pct = %s,
+                            expire_type = %s,
+                            expire_at = %s,
+                            triggered_status = %s,
+                            is_active = %s,
+                            triggered_at = COALESCE(triggered_at, %s),
                             updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                        WHERE id = {row_id};
+                        WHERE id = %s;
                     """
-                    db_sys.execute_query(sql_update_alert)
+                    db_sys.execute_query(sql_update_alert, (
+                        al_listing_id, al_ticker_id, trigger_price, trigger_price_min, trigger_price_max,
+                        trigger_pct, expire_type, expire_at_val, str(is_trig), uport_active,
+                        triggered_at_val, row_id
+                    ))
                     logging.debug(f"📝 [SYNC ALERTS]: Точечно обновлен алерт #{b_alert_id} (ID строки: {row_id}, Активен: {uport_active})")
                 else:
                     # ➕ ВЕТКА INSERT: Абсолютно новый живой алерт на рынке.
                     # Берем чистый, следующий по порядку ID без холостого выжигания.
-                    sql_insert_alert = f"""
+                    sql_insert_alert = """
                         INSERT INTO public.alerts (
                             portfolio_id, listing_id, ticker_id, source_type, broker_alert_id,
                             ticker, init_price, trigger_price_raw, trigger_price, condition_type,
                             quote_type, notification_type, trigger_type, periodic, expire_raw,
                             triggered_status, deleted_status, is_active, trigger_price_min,
-                            trigger_price_max, trigger_pct, expire_type, expire_at, triggered_at, 
+                            trigger_price_max, trigger_pct, expire_type, expire_at, triggered_at,
                             created_by_user_id, created_at, updated_at
                         ) VALUES (
-                            {int(portfolio_id)}, {int(al_listing_id)}, {int(al_ticker_id)}, 'FB', {b_alert_id},
-                            {sql_val(b_ticker)}, {init_price}, {sql_val(str(raw_trig_price))}, {trigger_price}, {sql_val(condition)},
-                            {sql_val(b_al.get('quote_type', 'ltp'))}, {sql_val(b_al.get('notification_type', 'push'))},
-                            {sql_val(t_type)}, {periodic}, {sql_val(expire_raw)}, {sql_val(str(is_trig))}, '0', {sql_val(uport_active)}, 
-                            {sql_val(trigger_price_min)}, {sql_val(trigger_price_max)}, {sql_val(trigger_pct)},
-                            {sql_val(expire_type)}, {sql_val(expire_at)}, {sql_val(triggered_at)}, {sql_val(user_id)},
+                            %s, %s, %s, 'FB', %s,
+                            %s, %s, %s, %s, %s,
+                            %s, %s,
+                            %s, %s, %s, %s, '0', %s,
+                            %s, %s, %s,
+                            %s, %s, %s, %s,
                             (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
                         );
                     """
-                    db_sys.execute_query(sql_insert_alert)
+                    db_sys.execute_query(sql_insert_alert, (
+                        portfolio_id, al_listing_id, al_ticker_id, b_alert_id,
+                        b_ticker, init_price, str(raw_trig_price), trigger_price, condition,
+                        b_al.get('quote_type', 'ltp'), b_al.get('notification_type', 'push'),
+                        t_type, periodic, expire_raw, str(is_trig), uport_active,
+                        trigger_price_min, trigger_price_max, trigger_pct,
+                        expire_type, expire_at_val, triggered_at_val, user_id
+                    ))
                     logging.info(f"➕ [SYNC ALERTS]: Впервые создан алерт #{b_alert_id} для {b_ticker} (портфель '{portfolio_name}')")
 
         # ─── ШАГ 5: СЛУЖБА ПАКЕТНОГО ГАШЕНИЯ УДАЛЕННЫХ АЛЕРТОВ (БЕЗ КОСТЫЛЕЙ) ───
         # Переводим статус в false строго для тех алертов, которые инвестор физически стер в терминале брокера
         if synced_alert_ids:
-            active_ids_str = ",".join(map(str, synced_alert_ids))
-            
-            sql_deactivate_removed = f"""
-                UPDATE public.alerts 
+            # NOT IN со списком не работает через JSON-параметризацию (список становится
+            # ARRAY[...], не набором для IN) -- NOT (x = ANY(%s)) вместо NOT IN (см. Claude/BACKLOG.md №81).
+            sql_deactivate_removed = """
+                UPDATE public.alerts
                 SET is_active = false,
                     updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                WHERE portfolio_id = {int(portfolio_id)}
+                WHERE portfolio_id = %s
                   AND source_type = 'FB'
-                  AND broker_alert_id NOT IN ({active_ids_str});
+                  AND NOT (broker_alert_id = ANY(%s));
             """
             try:
-                db_sys.execute_query(sql_deactivate_removed)
+                db_sys.execute_query(sql_deactivate_removed, (portfolio_id, synced_alert_ids))
                 logging.debug(f"🧹 [SYNC ALERTS]: Выполнена пакетная деактивация удаленных алертов для портфеля ID {portfolio_id}")
             except Exception as clean_err:
                 logging.error(f"❌ Ошибка пакетной деактивации (NOT IN) для portfolio_id {portfolio_id}: {clean_err}")
                 alerts_errors += 1
         else:
             # Если у брокера стало ноль активных алертов, тотально выключаем все записи этого портфеля
-            sql_deactivate_all = f"""
-                UPDATE public.alerts 
+            sql_deactivate_all = """
+                UPDATE public.alerts
                 SET is_active = false,
                     updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                WHERE portfolio_id = {int(portfolio_id)}
+                WHERE portfolio_id = %s
                   AND source_type = 'FB';
             """
             try:
-                db_sys.execute_query(sql_deactivate_all)
+                db_sys.execute_query(sql_deactivate_all, (portfolio_id,))
                 logging.debug(f"🧹 [SYNC ALERTS]: Тотально выключены все алерты для портфеля ID {portfolio_id} (0 на бирже)")
             except Exception as clean_all_err:
                 logging.error(f"❌ Ошибка тотального выключения для portfolio_id {portfolio_id}: {clean_all_err}")
