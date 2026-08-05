@@ -32,41 +32,43 @@ class PortfolioInspector:
         logging.info(f"🔍 [PortfolioInspector]: Сбор фактов для портфеля ID={self.portfolio_id}...")
         
         # 1. Шаг А: Узнаем базовый номер торгового счета для этого портфеля (ищем USD-строку)
-        sql_base_acc = f"""
-            SELECT account_number FROM public.accounts 
-            WHERE portfolio_id = {self.portfolio_id} AND account_type = 'trade' AND currency_id = 'USD' 
+        sql_base_acc = """
+            SELECT account_number FROM public.accounts
+            WHERE portfolio_id = %s AND account_type = 'trade' AND currency_id = 'USD'
             LIMIT 1;
         """
-        base_res = self.db.execute_query(sql_base_acc)
+        base_res = self.db.execute_query(sql_base_acc, (self.portfolio_id,))
         base_row = base_res[0] if isinstance(base_res, list) and len(base_res) > 0 else (base_res if isinstance(base_res, dict) else {})
         base_account_number = base_row.get("account_number") if base_row else None
-        
+
         if not base_account_number:
             logging.warning(f"⚠️ [PortfolioInspector]: Не найден базовый торговый счет для ID={self.portfolio_id}")
-            sql_accounts = f"SELECT * FROM public.accounts WHERE portfolio_id = {self.portfolio_id};"
+            sql_accounts = "SELECT * FROM public.accounts WHERE portfolio_id = %s;"
+            accounts_params = (self.portfolio_id,)
         else:
             clean_base = str(base_account_number).strip()
             deposit_variant = "D" + clean_base
-            
-            sql_accounts = f"""
-                SELECT id, account_number, account_type, currency_id, 
-                       cash_available, cash_reserved, assets_value 
-                FROM public.accounts 
-                WHERE account_number IN ('{clean_base}', '{deposit_variant}');
+
+            sql_accounts = """
+                SELECT id, account_number, account_type, currency_id,
+                       cash_available, cash_reserved, assets_value
+                FROM public.accounts
+                WHERE account_number IN (%s, %s);
             """
-            
-        self.raw_accounts = self.db.execute_query(sql_accounts) or []
+            accounts_params = (clean_base, deposit_variant)
+
+        self.raw_accounts = self.db.execute_query(sql_accounts, accounts_params) or []
         
         # 2. ЗАПРОС К ПРАВИЛАМ СТРАТЕГИЙ (🔥 ТЕПЕРЬ ТАЩИМ СКОРРЕКТИРОВАННУЮ КОЛОНКУ С ДОЛЯМИ СУБД)
         # system_key нужен audit_limits_and_rules -- отличить служебную Неопределённую
         # стратегию от содержательных (см. Claude/BACKLOG.md, обсуждение 2026-07-27).
-        sql_strategies = f"""
+        sql_strategies = """
             SELECT s.id, s.strategy_name, s.strategy_share_pct, s.rules_config, s.human_philosophy, st.system_key
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {self.portfolio_id} AND s.is_active = true;
+            WHERE s.portfolio_id = %s AND s.is_active = true;
         """
-        self.raw_strategies = self.db.execute_query(sql_strategies) or []
+        self.raw_strategies = self.db.execute_query(sql_strategies, (self.portfolio_id,)) or []
 
         # 2б. Потолки по секторам ДЛЯ ЭТОГО портфеля (Claude/BACKLOG.md №82)
         portfolio_row = self.db.execute_row(
@@ -76,12 +78,12 @@ class PortfolioInspector:
         self.sector_target_config = (portfolio_row or {}).get("sector_target_config") or {}
 
         # 3. ЗАПРОС К АКТИВАМ БРОКЕРА
-        sql_assets = f"""
-            SELECT id, listing_id, quantity, avg_price, currency_id 
-            FROM public.assets 
-            WHERE portfolio_id = {self.portfolio_id} AND quantity > 0;
+        sql_assets = """
+            SELECT id, listing_id, quantity, avg_price, currency_id
+            FROM public.assets
+            WHERE portfolio_id = %s AND quantity > 0;
         """
-        self.raw_assets = self.db.execute_query(sql_assets) or []
+        self.raw_assets = self.db.execute_query(sql_assets, (self.portfolio_id,)) or []
         
         logging.info(
             f"✅ [PortfolioInspector Факты зафиксированы]: Счетов подтянуто: {len(self.raw_accounts)}, "
@@ -112,14 +114,14 @@ class PortfolioInspector:
         logging.debug(f" 🟩 [ИТОГ ПО КЭШУ]: Общий свободный кэш портфеля = ${total_cash_usd:,.2f}")
 
         # 2. Шаг Б: Пошаговый разбор рыночной стоимости акций из VIEW
-        sql_market_assets = f"""
+        sql_market_assets = """
             SELECT COALESCE(SUM(se.exposure_usd), 0.0) AS total_market_assets_usd
             FROM public.strategy_exposure se
             WHERE se.strategy_id IN (
-                SELECT id FROM public.strategies WHERE portfolio_id = {self.portfolio_id} AND is_active = true
+                SELECT id FROM public.strategies WHERE portfolio_id = %s AND is_active = true
             );
         """
-        assets_res = self.db.execute_query(sql_market_assets)
+        assets_res = self.db.execute_query(sql_market_assets, (self.portfolio_id,))
         
         if isinstance(assets_res, list) and len(assets_res) > 0:
             row = assets_res[0]
@@ -166,14 +168,14 @@ class PortfolioInspector:
             
             # 🔥 ТОЧЕЧНОЕ ИСПРАВЛЕНИЕ UPORT: Вытаскиваем количество акций стратегии 
             # и актуальную ценуlast_price из таблицы листингов в валюте брокера
-            sql_strategy_positions = f"""
+            sql_strategy_positions = """
                 SELECT sa.allocated_quantity, l.last_price, l.currency_id
                 FROM public.strategy_assets sa
                 JOIN public.assets a ON sa.asset_id = a.id
                 JOIN public.listings l ON a.listing_id = l.id
-                WHERE sa.strategy_id = {s_id} AND sa.allocated_quantity > 0;
+                WHERE sa.strategy_id = %s AND sa.allocated_quantity > 0;
             """
-            positions_res = self.db.execute_query(sql_strategy_positions) or []
+            positions_res = self.db.execute_query(sql_strategy_positions, (s_id,)) or []
             clean_positions = positions_res if isinstance(positions_res, list) else [positions_res]
             
             # Считаем текущую рыночную стоимость активов стратегии с приведением к USD
@@ -221,15 +223,16 @@ class PortfolioInspector:
         if not content_ids:
             return {}
 
-        ids_str = ", ".join(str(i) for i in content_ids)
-        sql = f"""
+        # content_ids -- динамический список id, IN-список не работает через JSON-параметризацию
+        # (см. Claude/BACKLOG.md №81) -- ANY(%s).
+        sql = """
             SELECT COALESCE(t.sector, 'Unknown Sector') AS sector, SUM(se.exposure_usd) AS total_usd
             FROM public.strategy_exposure se
             JOIN public.tickers t ON se.ticker_id = t.id
-            WHERE se.strategy_id IN ({ids_str}) AND se.exposure_usd > 0
+            WHERE se.strategy_id = ANY(%s) AND se.exposure_usd > 0
             GROUP BY COALESCE(t.sector, 'Unknown Sector');
         """
-        rows = self.db.execute_query(sql) or []
+        rows = self.db.execute_query(sql, (content_ids,)) or []
         rows = rows if isinstance(rows, list) else [rows]
         return {r["sector"]: float(r["total_usd"]) for r in rows if r}
 
@@ -273,17 +276,17 @@ class PortfolioInspector:
 
             # 🔥 РЕФОРМА ШАГА 3: Элегантный запрос к нашему новому СУБД VIEW
             # База данных сама выдает готовые, декомпозированные доллары по каждому тикеру
-            sql_strategy_exposure = f"""
-                SELECT 
-                    t.symbol, 
-                    COALESCE(t.sector, 'Unknown Sector') AS sector, 
-                    t.dividend_yield, 
+            sql_strategy_exposure = """
+                SELECT
+                    t.symbol,
+                    COALESCE(t.sector, 'Unknown Sector') AS sector,
+                    t.dividend_yield,
                     se.exposure_usd AS total_usd
                 FROM public.strategy_exposure se
                 JOIN public.tickers t ON se.ticker_id = t.id
-                WHERE se.strategy_id = {s_id} AND se.exposure_usd > 0;
+                WHERE se.strategy_id = %s AND se.exposure_usd > 0;
             """
-            exposure_shares = self.db.execute_query(sql_strategy_exposure) or []
+            exposure_shares = self.db.execute_query(sql_strategy_exposure, (s_id,)) or []
             
             sector_totals_usd = {}
 
