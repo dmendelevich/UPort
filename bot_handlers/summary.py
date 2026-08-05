@@ -16,33 +16,6 @@ from bot_handlers.bot_screens import format_capital_summary_text
 router = Router()
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И КЛАВИАТУРЫ ---
-
-# async def execute_sql_async(sql_query: str) -> list:
-#     """Потокобезопасный асинхронный вызов шлюза СУБД."""
-#     return await asyncio.to_thread(db_bot.execute_query, sql_query)
-
-
-# def get_main_menu_keyboard(is_admin: bool = False) -> types.InlineKeyboardMarkup:
-#     """Генерирует пульт Главного меню на основе флага из памяти FSM."""
-#     builder = InlineKeyboardBuilder()
-#     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
-#     builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
-#     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
-
-#     # ⚙️ Проверяем гибкий флаг админа. Кнопка доступна вам (и сыну в будущем)
-#     if is_admin:
-#         builder.row(types.InlineKeyboardButton(text="⚙️ Настройки системы", callback_data=MenuAction(action="settings_main").pack()))
-        
-#     return builder.as_markup()
-
-
-# def get_back_to_menu_keyboard() -> types.InlineKeyboardMarkup:
-#     """Кнопка возврата в меню."""
-#     builder = InlineKeyboardBuilder()
-#     builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-#     return builder.as_markup()
-
 # --- ХЭНДЛЕРЫ УРОВНЯ 1 ---
 
 @router.message(Command("start"))

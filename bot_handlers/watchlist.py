@@ -12,16 +12,6 @@ from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyb
 
 router = Router()
 
-# def get_superscript_badge(count: int) -> str:
-#     """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы."""
-#     if count <= 0:
-#         return ""
-#     superscripts = {
-#         '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-#         '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-#     }
-#     return "🔔" + "".join(superscripts.get(char, char) for char in str(count)) + " "
-
 @router.callback_query(MenuAction.filter(F.action == "show_watchlist_focus"))
 async def process_watchlist_focus_menu(callback: types.CallbackQuery):
     """Шаг 2: Экран выбора фокуса исследования."""

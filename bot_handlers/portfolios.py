@@ -31,16 +31,6 @@ SHORT_STRATEGY_LABELS = {
     "UNALLOCATED": "Неопределённая",
 }
 
-# def get_superscript_badge(count: int) -> str:
-#     """Вспомогательный конвертер чисел в аккуратные суперскрипт-индикаторы для кошелька."""
-#     if count <= 0:
-#         return ""
-#     superscripts = {
-#         '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-#         '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-#     }
-#     return "🔔" + "".join(superscripts.get(char, char) for char in str(count))
-
 @router.callback_query(MenuAction.filter(F.action == "view_portfolio"))
 async def process_view_portfolio(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
     """Экран Уровня 2: Детализация конкретного счета семьи (Интерфейс шторок Состав / Паспорт)."""

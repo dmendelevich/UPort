@@ -15,7 +15,6 @@ from bot_handlers.bot_screens import (
 )
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_ticker_footer_keyboard
 from bot_handlers.watchlist import get_watchlist_removal_status
-#from bot_handlers.summary import get_back_to_menu_keyboard, execute_sql_async
 
 # Импортируем наш аналитический модуль аудита лимитов под стратегию (IPS)
 from analytics.portfolio_auditor import audit_ticker_for_portfolio
