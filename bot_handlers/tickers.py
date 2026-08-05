@@ -61,14 +61,14 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     # 1. РЕЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ТИКЕРА И ПЛОЩАДКИ БРОКЕРА
     if l_id > 0:
         # Сценарий А: Вход из инлайн-кнопок портфеля по числовому ID листинга
-        listing_sql = f"""
+        listing_sql = """
             SELECT l.broker_symbol, l.ticker_id, t.symbol, t.company_name, l.currency_id, l.last_price
             FROM public.listings l
             JOIN public.tickers t ON l.ticker_id = t.id
-            WHERE l.id = {l_id};
+            WHERE l.id = %s;
         """
         # 🔥 РЕФАКТОРИНГ: Заменяем на execute_row, убирая кашу проверок на списки/словари
-        l_row = db_bot.execute_row(listing_sql)
+        l_row = db_bot.execute_row(listing_sql, (l_id,))
 
         if not l_row:
             logging.warning(f"⚠️ [ТИКЕР]: СУБД не нашла листинг l_id={l_id} (дохлая ссылка в кнопке).")
@@ -104,13 +104,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 return
             
             # Извлекаем созданные/найденные параметры
-            listing_sql = f"""
+            listing_sql = """
                 SELECT l.broker_symbol, t.symbol, t.company_name, l.currency_id, l.last_price
                 FROM public.listings l
                 JOIN public.tickers t ON l.ticker_id = t.id
-                WHERE l.id = {l_id};
+                WHERE l.id = %s;
             """
-            l_res = db_bot.execute_query(listing_sql)
+            l_res = db_bot.execute_query(listing_sql, (l_id,))
             
         except Exception as err:
             logging.error(f"❌ [ТИКЕР]: Инструмент {t_name} не найден на мировых биржах: {err}")
@@ -128,11 +128,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     user_db_id = user_data.get("user_db_id")
     target_currency = "USD"
     if user_db_id:
-        user_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT base_currency FROM public.users WHERE id = {int(user_db_id)};")
+        user_row = await asyncio.to_thread(db_bot.execute_row, "SELECT base_currency FROM public.users WHERE id = %s;", (user_db_id,))
         if user_row and user_row.get("base_currency"):
             target_currency = user_row["base_currency"]
 
-    target_cur_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT sign FROM public.currencies WHERE id = '{target_currency}';")
+    target_cur_row = await asyncio.to_thread(db_bot.execute_row, "SELECT sign FROM public.currencies WHERE id = %s;", (target_currency,))
     target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
     fx_rate = await asyncio.to_thread(convert_currency_amount, db_bot, 1.0, currency_id, target_currency)
     last_price_display = last_price * fx_rate
@@ -148,15 +148,15 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     is_family_view = (p_id == 0)
 
     # 2. СБОР СТРАТЕГИЧЕСКИХ ДАННЫХ И ХОЛДИНГ-ПЕРИОДОВ
-    assets_info_sql = f"""
+    assets_info_sql = """
         SELECT a.portfolio_id, p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price,
                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
         FROM public.assets a
         JOIN public.portfolios p ON a.portfolio_id = p.id
         JOIN public.users u ON p.owner_id = u.id
-        WHERE a.listing_id = {l_id if l_id > 0 else -1} AND a.quantity > 0;
+        WHERE a.listing_id = %s AND a.quantity > 0;
     """
-    all_holders = db_bot.execute_query(assets_info_sql)
+    all_holders = db_bot.execute_query(assets_info_sql, (l_id if l_id > 0 else -1,))
     if not isinstance(all_holders, list):
         all_holders = [all_holders] if all_holders else []
 
@@ -221,7 +221,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if view == "orders":
         await callback.answer("Загрузка активных приказов...")
 
-        sql_live_orders = f"""
+        sql_live_orders = """
             SELECT u.name as owner_name, p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, cur.sign,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - o.created_at))::int AS order_age_days
             FROM public.orders o
@@ -229,10 +229,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             JOIN public.portfolios p ON o.portfolio_id = p.id
             JOIN public.users u ON p.owner_id = u.id
             JOIN public.currencies cur ON l.currency_id = cur.id
-            WHERE l.ticker_id = {t_id}
+            WHERE l.ticker_id = %s
               AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
         """
-        live_orders_res = db_bot.execute_query(sql_live_orders)
+        live_orders_res = db_bot.execute_query(sql_live_orders, (t_id,))
         if not isinstance(live_orders_res, list):
             live_orders_res = [live_orders_res] if live_orders_res else []
 
@@ -315,14 +315,14 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # приказ неоткуда). Вместо реальной ветки ниже -- прямая кнопка, переиспользующая
         # ГОТОВЫЙ обработчик подтверждения (paper_execution.py), тот же action, что и у
         # кнопки "Да" в ежедневном push, просто с другим спусковым крючком.
-        exec_mode_row = db_bot.execute_row(f"SELECT execution_mode FROM public.portfolios WHERE id = {p_id};")
+        exec_mode_row = db_bot.execute_row("SELECT execution_mode FROM public.portfolios WHERE id = %s;", (p_id,))
         if (exec_mode_row or {}).get("execution_mode") == "CONFIRM":
-            held_anywhere = db_bot.execute_row(f"""
+            held_anywhere = db_bot.execute_row("""
                 SELECT sa.strategy_id FROM public.strategy_assets sa
                 JOIN public.assets a ON sa.asset_id = a.id
-                WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id} AND sa.allocated_quantity > 0
+                WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0
                 LIMIT 1;
-            """)
+            """, (p_id, l_id))
             action_builder = InlineKeyboardBuilder()
             if held_anywhere:
                 # Держится -- strategy_id из callback_data может быть 0 (например, пришли
@@ -372,7 +372,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 pass
             return
 
-        plan_rows = db_bot.execute_query(f"""
+        plan_rows = db_bot.execute_query("""
             SELECT op.id, op.strategy_id, s.strategy_name, s.rules_config,
                    op.current_step, op.target_quantity, op.initial_entry_price,
                    op.pending_broker_order_id, op.step_ready_notified_at,
@@ -385,9 +385,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             JOIN public.strategies s ON s.id = op.strategy_id
             LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
             LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.strategy_id = op.strategy_id
-            WHERE op.portfolio_id = {p_id} AND op.listing_id = {l_id}
+            WHERE op.portfolio_id = %s AND op.listing_id = %s
               AND op.pipeline_status IN ('PENDING', 'ACTIVE');
-        """)
+        """, (p_id, l_id))
         plan_rows = plan_rows if isinstance(plan_rows, list) else ([plan_rows] if plan_rows else [])
 
         report_text = header_text + "📋 **ПЛАН:**\n"
@@ -458,16 +458,16 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # Кнопка видна, только если реально есть что привязывать -- та же проверка,
         # что и в самом pipeline_link_start (order_pipelines.py), по просьбе
         # пользователя 2026-07-29 (раньше показывалась всегда, даже без единого приказа).
-        unlinked_order = db_bot.execute_row(f"""
+        unlinked_order = db_bot.execute_row("""
             SELECT 1 FROM public.orders o
-            WHERE o.portfolio_id = {p_id} AND o.ticker_id = {t_id}
+            WHERE o.portfolio_id = %s AND o.ticker_id = %s
               AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED')
               AND NOT EXISTS (
                   SELECT 1 FROM public.order_pipelines op
                   WHERE op.pending_broker_order_id = o.broker_order_id
               )
             LIMIT 1;
-        """)
+        """, (p_id, t_id))
         if unlinked_order:
             action_builder.row(types.InlineKeyboardButton(
                 text="🔗 Привязать ордер к плану",
@@ -481,12 +481,12 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
         # "План выхода" -- симметрично "Плану входа" (см. Claude/11_asset_lifecycle_and_plan.md,
         # "Смерть"), видна только если бумага реально держится хоть в одной стратегии.
-        held_anywhere = db_bot.execute_row(f"""
+        held_anywhere = db_bot.execute_row("""
             SELECT 1 FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
-            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id} AND sa.allocated_quantity > 0
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0
             LIMIT 1;
-        """)
+        """, (p_id, l_id))
         if held_anywhere:
             action_builder.row(types.InlineKeyboardButton(
                 text="📋 План выхода",
@@ -553,7 +553,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if is_owner_view:
         audit_id = p_id
         # 🔥 РЕФАКТОРИНГ: Заменяем на чистый execute_row
-        p_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT name FROM public.portfolios WHERE id = {audit_id};")
+        p_row = await asyncio.to_thread(db_bot.execute_row, "SELECT name FROM public.portfolios WHERE id = %s;", (audit_id,))
         p_title = p_row.get('name', f"Счет #{audit_id}")
 
         warnings_list = audit_ticker_for_portfolio(broker_symbol if l_id > 0 else pure_symbol, audit_id, db_bot)
@@ -574,7 +574,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
 
     # Блок 5 стандарта body (см. Claude/05_strategy_screen_and_kubiki.md): компактная
     # сводка алертов/ордеров + кнопки "подробнее" в отдельные шторки (sub_view=alerts/orders).
-    sql_live_orders = f"""
+    sql_live_orders = """
         SELECT u.name as owner_name, p.name as portfolio_name, o.oper, o.type, o.q, o.p, o.stop_price, cur.sign,
                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - o.created_at))::int AS order_age_days
         FROM public.orders o
@@ -582,10 +582,10 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         JOIN public.portfolios p ON o.portfolio_id = p.id
         JOIN public.users u ON p.owner_id = u.id
         JOIN public.currencies cur ON l.currency_id = cur.id
-        WHERE l.ticker_id = {t_id}
+        WHERE l.ticker_id = %s
           AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
     """
-    live_orders_res = db_bot.execute_query(sql_live_orders)
+    live_orders_res = db_bot.execute_query(sql_live_orders, (t_id,))
     if not isinstance(live_orders_res, list):
         live_orders_res = [live_orders_res] if live_orders_res else []
 
@@ -644,7 +644,8 @@ async def process_stop_price_alert(callback: types.CallbackQuery, callback_data:
     """
     alert_id = callback_data.alert_id
     db_sys.execute_query(
-        f"UPDATE public.alerts SET is_active = false, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) WHERE id = {int(alert_id)};"
+        "UPDATE public.alerts SET is_active = false, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) WHERE id = %s;",
+        (alert_id,)
     )
     await callback.answer("Остановлено.")
     try:
