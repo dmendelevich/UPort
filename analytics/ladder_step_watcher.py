@@ -68,11 +68,11 @@ class LadderStepWatcher:
         if row.get("system_key") == "CONSERVATIVE_ACCUMULATION" and conservative_fundamental_break_reasons(row):
             return None
 
-        tactic = self.db.execute_row(f"""
+        tactic = self.db.execute_row("""
             SELECT budget_share_pct, trigger_conditions
             FROM public.strategy_tactics
-            WHERE strategy_id = {strat_id} AND step_number = {curr_step};
-        """)
+            WHERE strategy_id = %s AND step_number = %s;
+        """, (strat_id, curr_step))
         if not tactic:
             # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E)
             return None
@@ -158,14 +158,16 @@ def _apply_result(db_instance, row: dict, met: dict):
         if already_notified:
             return  # уже уведомляли, ждём, пока пользователь привяжет ордер к шагу
         db_instance.execute_query(
-            f"UPDATE public.order_pipelines SET step_ready_notified_at = CURRENT_TIMESTAMP WHERE id = {pipeline_id};"
+            "UPDATE public.order_pipelines SET step_ready_notified_at = CURRENT_TIMESTAMP WHERE id = %s;",
+            (pipeline_id,)
         )
         _send_notification(row, met)
         logging.info(f"🪜 [LadderStepWatcher]: Условие следующего шага выполнено (pipeline_id={pipeline_id}), уведомление отправлено.")
     else:
         if already_notified:
             db_instance.execute_query(
-                f"UPDATE public.order_pipelines SET step_ready_notified_at = NULL WHERE id = {pipeline_id};"
+                "UPDATE public.order_pipelines SET step_ready_notified_at = NULL WHERE id = %s;",
+                (pipeline_id,)
             )
 
 
