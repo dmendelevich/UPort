@@ -59,13 +59,13 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
     
     await callback.answer("Сборка паспорта исследования...")
 
-    p_sql = f"""
+    p_sql = """
         SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type
         FROM public.portfolios p
         JOIN public.users u ON p.owner_id = u.id
-        WHERE p.id = {p_id};
+        WHERE p.id = %s;
     """
-    p_meta_res = db_bot.execute_query(p_sql)
+    p_meta_res = db_bot.execute_query(p_sql, (p_id,))
     p_meta = p_meta_res if isinstance(p_meta_res, list) else ([p_meta_res] if p_meta_res else [])
 
     if p_meta and len(p_meta) > 0:
@@ -90,7 +90,7 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
         report_text += "🎯 **АКТИВНЫЕ РАДАРЫ И ЦЕЛИ СЛЕДОВАНИЯ:**"
         
         # 🔥 СУПЕР-ЗАПРОС АГРЕГАЦИИ С ВЫГРУЗКОЙ ТЕКУЩЕЙ ЦЕНЫ БРОКЕРА (last_price)
-        watchlist_query = f"""
+        watchlist_query = """
             SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
                    w.ordered_at, w.bought_at, w.sold_out_at,
                    COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
@@ -106,12 +106,12 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
                                       AND op.pipeline_status IN ('PENDING', 'ACTIVE')
             LEFT JOIN public.assets a ON a.portfolio_id = w.portfolio_id AND a.listing_id = w.listing_id
             LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
-            WHERE w.portfolio_id = {p_id}
+            WHERE w.portfolio_id = %s
             GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
             ORDER BY t.symbol ASC;
         """
 
-        w_res_raw = db_bot.execute_query(watchlist_query)
+        w_res_raw = db_bot.execute_query(watchlist_query, (p_id,))
         w_res = w_res_raw if isinstance(w_res_raw, list) else ([w_res_raw] if w_res_raw else [])
 
         if w_res:
@@ -216,12 +216,12 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
         await callback.message.edit_text("❌ Критическая ошибка сессии. Пройдите /start.", reply_markup=generate_main_menu_keyboard())
         return
 
-    sql_get_portfolios = f"""
+    sql_get_portfolios = """
         SELECT id, name FROM public.portfolios
-        WHERE owner_id = {int(user_db_id)} AND id != 0
+        WHERE owner_id = %s AND id != 0
         ORDER BY id ASC;
     """
-    p_res = await asyncio.to_thread(db_bot.execute_query, sql_get_portfolios)
+    p_res = await asyncio.to_thread(db_bot.execute_query, sql_get_portfolios, (user_db_id,))
     user_portfolios = p_res if isinstance(p_res, list) else ([p_res] if p_res else [])
 
     if not user_portfolios:
@@ -281,8 +281,8 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
     
     try:
         # 1. Извлекаем данные тикера для красивого финального вывода
-        sql_get_ticker = f"SELECT symbol, (ticker_name_map->>'YAHOO') as yahoo_symbol FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
-        t_data = db_sys.execute_query(sql_get_ticker)
+        sql_get_ticker = "SELECT symbol, (ticker_name_map->>'YAHOO') as yahoo_symbol FROM public.tickers WHERE id = %s LIMIT 1;"
+        t_data = db_sys.execute_query(sql_get_ticker, (ticker_id,))
         t_row = t_data[0] if t_data and isinstance(t_data, list) else (t_data if isinstance(t_data, dict) else {})
         
         if not t_row:
@@ -293,8 +293,8 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
         yahoo_symbol = t_row.get("yahoo_symbol", raw_symbol)
 
         # 2. Вычисляем ID брокера, к которому привязан выбранный портфель
-        sql_get_broker = f"SELECT broker_id FROM public.portfolios WHERE id = {int(portfolio_id)} LIMIT 1;"
-        p_data = db_sys.execute_query(sql_get_broker)
+        sql_get_broker = "SELECT broker_id FROM public.portfolios WHERE id = %s LIMIT 1;"
+        p_data = db_sys.execute_query(sql_get_broker, (portfolio_id,))
         p_row = p_data[0] if p_data and isinstance(p_data, list) else (p_data if isinstance(p_data, dict) else {})
         target_broker_id = int(p_row["broker_id"]) if p_row and p_row.get("broker_id") else 1
 
@@ -356,7 +356,7 @@ def get_watchlist_removal_status(db_instance, portfolio_id: int, listing_id: int
     PENDING/ACTIVE), нет активных алертов брокера. Возвращает None, если записи в СН
     для этой пары (портфель, листинг) вообще нет.
     """
-    row = db_instance.execute_row(f"""
+    row = db_instance.execute_row("""
         SELECT w.id, w.ordered_at, w.bought_at,
                COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
                COUNT(DISTINCT op.id)::int as active_plans_count,
@@ -368,9 +368,9 @@ def get_watchlist_removal_status(db_instance, portfolio_id: int, listing_id: int
                                    AND op.pipeline_status IN ('PENDING', 'ACTIVE')
         LEFT JOIN public.assets a ON a.portfolio_id = w.portfolio_id AND a.listing_id = w.listing_id
         LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
-        WHERE w.portfolio_id = {int(portfolio_id)} AND w.listing_id = {int(listing_id)}
+        WHERE w.portfolio_id = %s AND w.listing_id = %s
         GROUP BY w.id, w.ordered_at, w.bought_at;
-    """)
+    """, (portfolio_id, listing_id))
     if not row:
         return None
 
@@ -423,7 +423,7 @@ async def process_execute_remove_watchlist(callback: types.CallbackQuery, callba
         await callback.answer("⚠️ Состояние изменилось -- удаление отменено.", show_alert=True)
         return
 
-    await asyncio.to_thread(db_sys.execute_query, f"DELETE FROM public.watchlist WHERE id = {int(status['watchlist_id'])};")
+    await asyncio.to_thread(db_sys.execute_query, "DELETE FROM public.watchlist WHERE id = %s;", (status['watchlist_id'],))
     await callback.answer("Убрано из списка наблюдения.")
 
     logging.info(f"🗑 [WATCHLIST REMOVE]: {symbol} убран из СН портфеля {p_id} (watchlist_id={status['watchlist_id']}).")
