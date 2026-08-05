@@ -42,10 +42,10 @@ async def process_link_start(callback: types.CallbackQuery, callback_data: MenuA
 
     await callback.answer()
 
-    sql = f"""
+    sql = """
         SELECT o.id, o.broker_order_id, o.q, o.p, o.oper
         FROM public.orders o
-        WHERE o.portfolio_id = {int(p_id)} AND o.ticker_id = {int(t_id)}
+        WHERE o.portfolio_id = %s AND o.ticker_id = %s
           AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED')
           AND NOT EXISTS (
               SELECT 1 FROM public.order_pipelines op
@@ -53,7 +53,7 @@ async def process_link_start(callback: types.CallbackQuery, callback_data: MenuA
           )
         ORDER BY o.created_at DESC;
     """
-    orders = await asyncio.to_thread(db_bot.execute_query, sql)
+    orders = await asyncio.to_thread(db_bot.execute_query, sql, (int(p_id), int(t_id)))
     orders = orders if isinstance(orders, list) else ([orders] if orders else [])
 
     back_kb = _back_to_ticker_keyboard(p_id, l_id)
@@ -105,30 +105,33 @@ async def process_link_order(callback: types.CallbackQuery, callback_data: MenuA
 
     await callback.answer()
 
-    sql_pipelines = f"""
+    sql_pipelines = """
         SELECT op.strategy_id, op.current_step, s.strategy_name
         FROM public.order_pipelines op
         JOIN public.strategies s ON op.strategy_id = s.id
-        WHERE op.portfolio_id = {int(p_id)} AND op.ticker_id = {int(t_id)}
+        WHERE op.portfolio_id = %s AND op.ticker_id = %s
           AND op.pipeline_status IN ('PENDING', 'ACTIVE')
           AND op.pending_broker_order_id IS NULL;
     """
-    pipelines = await asyncio.to_thread(db_bot.execute_query, sql_pipelines)
+    pipelines = await asyncio.to_thread(db_bot.execute_query, sql_pipelines, (int(p_id), int(t_id)))
     pipelines = pipelines if isinstance(pipelines, list) else ([pipelines] if pipelines else [])
 
     back_kb = _back_to_ticker_keyboard(p_id, l_id)
 
     if not pipelines:
         # Нет ни одного плана, ждущего шаг по этой бумаге -- заводим новый (или все уже ждут другой ордер)
+        # st.system_key IN CONTENT_SYSTEM_KEYS -- фиксированный жёстко зашитый кортеж (не из
+        # пользовательского ввода), безопасен как f-строка -- placeholder не годится для
+        # структурного IN-списка (см. Claude/BACKLOG.md №81).
         sql_strategies = f"""
             SELECT s.id, s.strategy_name
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true
+            WHERE s.portfolio_id = %s AND s.is_active = true
               AND st.system_key IN {CONTENT_SYSTEM_KEYS}
             ORDER BY s.strategy_name;
         """
-        strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies)
+        strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies, (int(p_id),))
         strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])
 
         if not strategies:
@@ -223,13 +226,14 @@ async def process_link_confirm(callback: types.CallbackQuery, callback_data: Men
 
     row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT op.current_step, s.strategy_name
             FROM public.order_pipelines op
             JOIN public.strategies s ON op.strategy_id = s.id
-            WHERE op.portfolio_id = {int(p_id)} AND op.ticker_id = {int(t_id)} AND op.strategy_id = {int(s_id)}
+            WHERE op.portfolio_id = %s AND op.ticker_id = %s AND op.strategy_id = %s
               AND op.pipeline_status IN ('PENDING', 'ACTIVE') AND op.pending_broker_order_id IS NULL;
-        """
+        """,
+        (int(p_id), int(t_id), int(s_id))
     )
     if not row:
         await callback.answer("⚠️ План уже недоступен (возможно, шаг уже занят другим ордером).", show_alert=True)
@@ -246,11 +250,12 @@ async def process_link_execute(callback: types.CallbackQuery, callback_data: Men
 
     order_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
-            SELECT broker_order_id FROM public.orders
-            WHERE id = {int(o_id)} AND status IN ('active', 'NEW', 'PARTIALLY_FILLED')
-              AND NOT EXISTS (SELECT 1 FROM public.order_pipelines op WHERE op.pending_broker_order_id = orders.broker_order_id);
         """
+            SELECT broker_order_id FROM public.orders
+            WHERE id = %s AND status IN ('active', 'NEW', 'PARTIALLY_FILLED')
+              AND NOT EXISTS (SELECT 1 FROM public.order_pipelines op WHERE op.pending_broker_order_id = orders.broker_order_id);
+        """,
+        (int(o_id),)
     )
     back_kb = _back_to_ticker_keyboard(p_id, l_id)
     if not order_row:
@@ -264,13 +269,14 @@ async def process_link_execute(callback: types.CallbackQuery, callback_data: Men
 
     updated = await asyncio.to_thread(
         db_sys.execute_query,
-        f"""
+        """
             UPDATE public.order_pipelines
-            SET pending_broker_order_id = '{broker_order_id}', updated_at = CURRENT_TIMESTAMP
-            WHERE portfolio_id = {int(p_id)} AND ticker_id = {int(t_id)} AND strategy_id = {int(s_id)}
+            SET pending_broker_order_id = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE portfolio_id = %s AND ticker_id = %s AND strategy_id = %s
               AND pipeline_status IN ('PENDING', 'ACTIVE') AND pending_broker_order_id IS NULL
             RETURNING id;
-        """
+        """,
+        (broker_order_id, int(p_id), int(t_id), int(s_id))
     )
     if not updated:
         try:
@@ -298,11 +304,12 @@ async def process_new_strategy(callback: types.CallbackQuery, callback_data: Men
 
     order_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
-            SELECT broker_order_id, q, p FROM public.orders
-            WHERE id = {int(o_id)} AND status IN ('active', 'NEW', 'PARTIALLY_FILLED')
-              AND NOT EXISTS (SELECT 1 FROM public.order_pipelines op WHERE op.pending_broker_order_id = orders.broker_order_id);
         """
+            SELECT broker_order_id, q, p FROM public.orders
+            WHERE id = %s AND status IN ('active', 'NEW', 'PARTIALLY_FILLED')
+              AND NOT EXISTS (SELECT 1 FROM public.order_pipelines op WHERE op.pending_broker_order_id = orders.broker_order_id);
+        """,
+        (int(o_id),)
     )
     back_kb = _back_to_ticker_keyboard(p_id, l_id)
     if not order_row:
@@ -377,7 +384,7 @@ async def process_target_quantity_text(message: types.Message, state: FSMContext
     await state.update_data(new_pipeline_target_quantity=target_qty)
 
     strat_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('new_pipeline_strategy_id', 0))};"
+        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('new_pipeline_strategy_id', 0)),)
     )
     strategy_name = (strat_row or {}).get("strategy_name", "?")
 
@@ -446,15 +453,16 @@ async def process_new_execute(callback: types.CallbackQuery, state: FSMContext):
 
     result = await asyncio.to_thread(
         db_sys.execute_query,
-        f"""
+        """
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                ({p_id}, {l_id}, {t_id}, {s_id}, 1, 'PENDING',
-                 {target_qty}, {entry_price}, '{broker_order_id}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (%s, %s, %s, %s, 1, 'PENDING',
+                 %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id;
-        """
+        """,
+        (p_id, l_id, t_id, s_id, target_qty, entry_price, broker_order_id)
     )
     if not result:
         logging.error(f"❌ [НОВЫЙ ПЛАН]: Сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
@@ -506,15 +514,16 @@ async def process_plan_from_idea_start(callback: types.CallbackQuery, callback_d
     l_id = callback_data.listing_id
     await callback.answer()
 
+    # st.system_key IN CONTENT_SYSTEM_KEYS -- фиксированный жёстко зашитый кортеж, см. комментарий выше
     sql_strategies = f"""
         SELECT s.id, s.strategy_name
         FROM public.strategies s
         JOIN public.strategy_templates st ON s.template_id = st.id
-        WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true
+        WHERE s.portfolio_id = %s AND s.is_active = true
           AND st.system_key IN {CONTENT_SYSTEM_KEYS}
         ORDER BY s.strategy_name;
     """
-    strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies)
+    strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies, (int(p_id),))
     strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])
 
     back_kb = _back_to_plan_keyboard(p_id, l_id)
@@ -565,19 +574,20 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
 
     other_strategy_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT sa.strategy_id, sa.allocated_quantity, s.strategy_name
             FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
             JOIN public.strategies s ON sa.strategy_id = s.id
-            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)}
-              AND sa.strategy_id != {int(s_id)} AND sa.allocated_quantity > 0
+            WHERE a.portfolio_id = %s AND a.listing_id = %s
+              AND sa.strategy_id != %s AND sa.allocated_quantity > 0
             LIMIT 1;
-        """
+        """,
+        (int(p_id), int(l_id), int(s_id))
     )
 
     if other_strategy_row:
-        target_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(s_id)};")
+        target_row = await asyncio.to_thread(db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(s_id),))
         target_name = (target_row or {}).get("strategy_name", "?")
         await _start_transfer_quantity_ask(
             callback, state, p_id, t_id, l_id,
@@ -650,7 +660,7 @@ async def process_idea_plan_quantity_text(message: types.Message, state: FSMCont
     await state.update_data(idea_plan_target_quantity=target_qty)
 
     strat_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('idea_plan_strategy_id', 0))};"
+        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('idea_plan_strategy_id', 0)),)
     )
     strategy_name = (strat_row or {}).get("strategy_name", "?")
 
@@ -721,15 +731,16 @@ async def process_idea_plan_execute(callback: types.CallbackQuery, state: FSMCon
 
     result = await asyncio.to_thread(
         db_sys.execute_query,
-        f"""
+        """
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                ({p_id}, {l_id}, {t_id}, {s_id}, 1, 'PENDING',
-                 {target_qty}, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (%s, %s, %s, %s, 1, 'PENDING',
+                 %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id;
-        """
+        """,
+        (p_id, l_id, t_id, s_id, target_qty)
     )
     if not result:
         logging.error(f"❌ [ПЛАН ВХОДА]: Сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
@@ -774,15 +785,15 @@ async def process_plan_exit_start(callback: types.CallbackQuery, callback_data: 
     l_id = callback_data.listing_id
     await callback.answer()
 
-    sql_holdings = f"""
+    sql_holdings = """
         SELECT s.id, s.strategy_name, sa.allocated_quantity
         FROM public.strategy_assets sa
         JOIN public.assets a ON sa.asset_id = a.id
         JOIN public.strategies s ON sa.strategy_id = s.id
-        WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)}
+        WHERE a.portfolio_id = %s AND a.listing_id = %s
           AND sa.allocated_quantity > 0;
     """
-    holdings = await asyncio.to_thread(db_bot.execute_query, sql_holdings)
+    holdings = await asyncio.to_thread(db_bot.execute_query, sql_holdings, (p_id, l_id))
     holdings = holdings if isinstance(holdings, list) else ([holdings] if holdings else [])
 
     back_kb = _back_to_plan_keyboard(p_id, l_id)
@@ -824,11 +835,12 @@ async def process_plan_exit_strategy(callback: types.CallbackQuery, callback_dat
 
     holding_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT sa.allocated_quantity FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
-            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(s_id)};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s;
+        """,
+        (p_id, l_id, s_id)
     )
     held_qty = float((holding_row or {}).get("allocated_quantity") or 0)
     if held_qty <= 0:
@@ -902,7 +914,7 @@ async def process_exit_plan_quantity_text(message: types.Message, state: FSMCont
     await state.update_data(exit_plan_sell_quantity=sell_qty)
 
     strat_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('exit_plan_strategy_id', 0))};"
+        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('exit_plan_strategy_id', 0)),)
     )
     strategy_name = (strat_row or {}).get("strategy_name", "?")
 
@@ -973,15 +985,16 @@ async def process_exit_plan_execute(callback: types.CallbackQuery, state: FSMCon
 
     result = await asyncio.to_thread(
         db_sys.execute_query,
-        f"""
+        """
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                ({p_id}, {l_id}, {t_id}, {s_id}, 1, 'PENDING',
-                 {-sell_qty}, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (%s, %s, %s, %s, 1, 'PENDING',
+                 %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id;
-        """
+        """,
+        (p_id, l_id, t_id, s_id, -sell_qty)
     )
     if not result:
         logging.error(f"❌ [ПЛАН ВЫХОДА]: Сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
@@ -1028,14 +1041,15 @@ class TransferPlanStates(StatesGroup):
 async def _get_current_holders(portfolio_id: int, listing_id: int) -> list:
     rows = await asyncio.to_thread(
         db_bot.execute_query,
-        f"""
+        """
             SELECT sa.strategy_id, s.strategy_name, sa.allocated_quantity
             FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
             JOIN public.strategies s ON sa.strategy_id = s.id
-            WHERE a.portfolio_id = {int(portfolio_id)} AND a.listing_id = {int(listing_id)}
+            WHERE a.portfolio_id = %s AND a.listing_id = %s
               AND sa.allocated_quantity > 0;
-        """
+        """,
+        (portfolio_id, listing_id)
     )
     return rows if isinstance(rows, list) else ([rows] if rows else [])
 
@@ -1092,12 +1106,13 @@ async def process_transfer_source(callback: types.CallbackQuery, callback_data: 
 
     row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT sa.allocated_quantity, s.strategy_name FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
             JOIN public.strategies s ON sa.strategy_id = s.id
-            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(s_id)};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s;
+        """,
+        (p_id, l_id, s_id)
     )
     if not row:
         await callback.answer("⚠️ Уже не актуально.", show_alert=True)
@@ -1120,13 +1135,14 @@ async def _show_transfer_target_picker(callback, p_id: int, t_id: int, l_id: int
     """
     strategies = await asyncio.to_thread(
         db_bot.execute_query,
-        f"""
+        """
             SELECT s.id, s.strategy_name, st.system_key
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true
-              AND s.id != {int(source_id)} AND st.system_key != 'CASH_RESERVE';
-        """
+            WHERE s.portfolio_id = %s AND s.is_active = true
+              AND s.id != %s AND st.system_key != 'CASH_RESERVE';
+        """,
+        (p_id, source_id)
     )
     strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])
     back_kb = _back_to_plan_keyboard(p_id, l_id)
@@ -1182,11 +1198,12 @@ async def process_transfer_target(callback: types.CallbackQuery, callback_data: 
 
     row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT sa.allocated_quantity FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
-            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(source_id)};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s;
+        """,
+        (p_id, l_id, source_id)
     )
     source_qty = float((row or {}).get("allocated_quantity") or 0)
     if source_qty <= 0:
@@ -1195,11 +1212,12 @@ async def process_transfer_target(callback: types.CallbackQuery, callback_data: 
 
     target_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT s.strategy_name, st.system_key FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.id = {int(target_id)};
-        """
+            WHERE s.id = %s;
+        """,
+        (target_id,)
     )
     if not target_row:
         await callback.answer("⚠️ Стратегия больше не существует.", show_alert=True)
@@ -1280,10 +1298,10 @@ async def process_transfer_quantity_text(message: types.Message, state: FSMConte
     await state.update_data(transfer_target_quantity=target_qty)
 
     target_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('transfer_target_id', 0))};"
+        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('transfer_target_id', 0)),)
     )
     source_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(user_data.get('transfer_source_id', 0))};"
+        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('transfer_source_id', 0)),)
     )
     target_name = (target_row or {}).get("strategy_name", "?")
     source_name = (source_row or {}).get("strategy_name", "?")
@@ -1363,15 +1381,16 @@ async def process_transfer_execute(callback: types.CallbackQuery, state: FSMCont
     # 2. Заводим "голый" план в целевой стратегии -- шаг 1, PENDING, без ордера.
     result = await asyncio.to_thread(
         db_sys.execute_query,
-        f"""
+        """
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                ({p_id}, {l_id}, {t_id}, {target_id}, 1, 'PENDING',
-                 {target_qty}, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (%s, %s, %s, %s, 1, 'PENDING',
+                 %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id;
-        """
+        """,
+        (p_id, l_id, t_id, target_id, target_qty)
     )
     if not result:
         logging.error(f"❌ [ПЕРЕНОС]: Перенос выполнен, но сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {target_id}).")
@@ -1412,7 +1431,7 @@ async def process_transfer_execute(callback: types.CallbackQuery, state: FSMCont
 
 async def _show_transfer_confirm_simple(callback, p_id: int, t_id: int, l_id: int, source_id: int, target_id: int, target_name: str, source_qty: float):
     """Перенос в служебную стратегию (сейчас -- только «Неопределённая») -- без плана, планировать там нечего."""
-    source_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT strategy_name FROM public.strategies WHERE id = {int(source_id)};")
+    source_row = await asyncio.to_thread(db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(source_id),))
     source_name = (source_row or {}).get("strategy_name", "?")
 
     confirm_text = generate_confirm_screen(
@@ -1445,11 +1464,12 @@ async def process_transfer_execute_simple(callback: types.CallbackQuery, callbac
 
     row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT sa.allocated_quantity FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
-            WHERE a.portfolio_id = {int(p_id)} AND a.listing_id = {int(l_id)} AND sa.strategy_id = {int(source_id)};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s;
+        """,
+        (p_id, l_id, source_id)
     )
     qty = float((row or {}).get("allocated_quantity") or 0)
     back_kb = _back_to_plan_keyboard(p_id, l_id)
