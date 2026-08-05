@@ -8,9 +8,6 @@ import asyncio
 import json
 import logging
 
-# Глобальная потокобезопасная очередь задач для сквозного анализа ETF
-ETF_LOOK_THROUGH_QUEUE = asyncio.Queue()
-
 # Загружаем переменные из .env
 env_path = Path('/root/UPort/.env')
 load_dotenv(dotenv_path=env_path)
@@ -85,94 +82,6 @@ class Database:
         ON CONFLICT (account_number, currency_id) DO NOTHING;
         """
         self.execute_query(sql)
-
-    def ensure_ticker_v2(self, broker_id: int, broker_symbol: str, fallback_currency: str = "USD", fb_client = None) -> tuple:
-        """
-        Кит №3 (Академический v3.7): Универсальный поисковик тикеров без обрезки точек.
-        Записывает в tickers.symbol строго чистую мировую истину без суффиксов брокера.
-        """
-        broker_symbol_clean = broker_symbol.strip().upper()
-        
-        # 1. СНАЙПЕРСКАЯ ПРОВЕРКА КЭША СУБД (0 запросов в сеть)
-        sql_check = f"SELECT id, ticker_id FROM public.listings WHERE broker_id = {broker_id} AND broker_symbol = '{broker_symbol_clean}';"
-        cache_res = self.execute_query(sql_check)
-        if cache_res and isinstance(cache_res, list) and len(cache_res) > 0:
-            row = cache_res[0]
-            if isinstance(row, dict) and row.get('id') and row.get('ticker_id'):
-                return int(row['ticker_id']), int(row['id'])
-
-        # 2. ИНИЦИАЛИЗАЦИЯ ДЕФОЛТОВ НА СЛУЧАЙ СБОЯ СЕТИ БРОКЕРА
-        symbol = broker_symbol_clean
-        isin = "UNKNOWN"
-        comp_name = "Unknown Company"
-        currency_id = fallback_currency.upper()
-
-        # 3. СУП-ПЕРЕВОДЧИК ИМЕН (1 контролируемый запрос в сеть)
-        if broker_id == 1 and fb_client is not None:
-            try:
-                logging.debug(f"📡 [Ядро СУП]: Новый инструмент! Запрашиваю спецификацию Freedom Broker для '{broker_symbol_clean}'...")
-                sec_info = fb_client.get_security_info(broker_symbol_clean)
-                if sec_info and isinstance(sec_info, dict) and "error" not in sec_info:
-                    # 🔥 ИЗВЛЕКАЕМ МИРОВУЮ ИСТИНУ: забираем готовый глобальный тикер (напр. 'ANTO.L')
-                    # Больше никакой Python-обрезки по первой точке!
-                    fetched_symbol = sec_info.get('default_ticker') or sec_info.get('ticker') or sec_info.get('char_code')
-                    if fetched_symbol:
-                        symbol = str(fetched_symbol).strip().upper()
-                    if sec_info.get('isin'):
-                        isin = str(sec_info['isin']).strip().upper()
-                    if sec_info.get('name'):
-                        comp_name = str(sec_info['name']).strip().replace("'", "''")
-                    if sec_info.get('currency'):
-                        currency_id = str(sec_info['currency']).strip().upper()
-            except Exception as sup_err:
-                logging.warning(f"⚠️ [Ядро СУП]: Ошибка СУП FB: {sup_err}")
-
-        # 4. СИНХРОНИЗАЦИЯ СТЕРИЛЬНОГО СПРАВОЧНИКА TICKERS (3NF)
-        self.ensure_currency(currency_id)
-        
-        # Убраны legacy-колонки full_ticker, suffix, broker_id. Пишем только мировой symbol!
-        sql_insert_ticker = f"""
-            INSERT INTO public.tickers (symbol, company_name, isin)
-            VALUES ('{symbol}', '{comp_name}', '{isin}')
-            ON CONFLICT (symbol) 
-            DO UPDATE SET isin = CASE WHEN public.tickers.isin = 'UNKNOWN' THEN EXCLUDED.isin ELSE public.tickers.isin END;
-        """
-        self.execute_query(sql_insert_ticker)
-        
-        # Надежно забираем сгенерированный ID
-        t_get = self.execute_query(f"SELECT id FROM public.tickers WHERE symbol = '{symbol}';")
-        t_row = t_get[0] if t_get and isinstance(t_get, list) and len(t_get) > 0 else {}
-        ticker_id = t_row.get('id')
-
-        if not ticker_id:
-            raise RuntimeError(f"Критическая ошибка ядра: Не удалось сгенерировать ticker_id для {symbol}")
-
-        # 5. СИНХРОНИЗАЦИЯ ТАБЛИЦЫ-ПЕРЕСЕЧЕНИЯ (listings)
-        sql_insert_listing = f"""
-            INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id)
-            VALUES ({ticker_id}, {broker_id}, '{broker_symbol_clean}', '{currency_id}')
-            ON CONFLICT (broker_id, broker_symbol) DO NOTHING;
-        """
-        self.execute_query(sql_insert_listing)
-        
-        l_res = self.execute_query(f"SELECT id FROM public.listings WHERE broker_id = {broker_id} AND broker_symbol = '{broker_symbol_clean}';")
-        l_row = l_res[0] if l_res and isinstance(l_res, list) and len(l_res) > 0 else {}
-        listing_id = l_row.get('id')
-
-        if not listing_id:
-            raise RuntimeError(f"Критическая ошибка ядра: Не удалось сгенерировать listing_id для {broker_symbol_clean}")
-
-        # 6. ПОСТАНОВКА В ОЧЕРЕДЬ ETF LOOK-THROUGH
-        try:
-            check_h = self.execute_query(f"SELECT 1 FROM public.etf_holdings WHERE etf_ticker_id = {ticker_id} LIMIT 1;")
-            if not check_h:
-                # Передаем чистый мировой символ компонента в очередь
-                task_data = {"id": int(ticker_id), "symbol": symbol, "suffix": "US", "full_ticker": broker_symbol_clean, "currency_id": currency_id, "broker_id": broker_id}
-                ETF_LOOK_THROUGH_QUEUE.put_nowait(task_data)
-        except Exception as q_err:
-            logging.warning(f"⚠️ [ETF QUEUE]: Предупреждение постановки {symbol} в очередь: {q_err}")
-
-        return int(ticker_id), int(listing_id)
 
     def ensure_ticker_v3(self, ticker_name_raw: str, caller_role: str, caller_id=None, broker_id: int = None, fb_client = None) -> tuple:
         """
