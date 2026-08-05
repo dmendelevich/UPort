@@ -55,11 +55,11 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     user_db_id = user_data.get("user_db_id")
     target_currency = "USD"
     if user_db_id:
-        user_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT base_currency FROM public.users WHERE id = {int(user_db_id)};")
+        user_row = await asyncio.to_thread(db_bot.execute_row, "SELECT base_currency FROM public.users WHERE id = %s;", (user_db_id,))
         if user_row and user_row.get("base_currency"):
             target_currency = user_row["base_currency"]
 
-    target_cur_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT sign FROM public.currencies WHERE id = '{target_currency}';")
+    target_cur_row = await asyncio.to_thread(db_bot.execute_row, "SELECT sign FROM public.currencies WHERE id = %s;", (target_currency,))
     target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
     fx_by_currency = {}
 
@@ -82,19 +82,22 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     # не считаются, у портфеля нет единой "стратегии", legacy-поле strategy_type изживаем)
     content_strategies_count = 0
     if p_id > 0:
+        # CONTENT_STRATEGY_SYSTEM_KEYS -- фиксированный кортеж-константа (не из
+        # пользовательского ввода), остаётся f-строкой (Claude/BACKLOG.md №81).
         keys_str = ", ".join(f"'{k}'" for k in CONTENT_STRATEGY_SYSTEM_KEYS)
         count_row = await asyncio.to_thread(
             db_bot.execute_row,
             f"""
                 SELECT COUNT(*)::int AS cnt FROM public.strategies s
                 JOIN public.strategy_templates st ON s.template_id = st.id
-                WHERE s.portfolio_id = {int(p_id)} AND s.is_active = true AND st.system_key IN ({keys_str});
-            """
+                WHERE s.portfolio_id = %s AND s.is_active = true AND st.system_key IN ({keys_str});
+            """,
+            (p_id,)
         )
         content_strategies_count = count_row.get("cnt", 0) if count_row else 0
 
     # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (С ЧЕСТНЫМ ПОДСЧЕТОМ АЛЕРТОВ 3NF)
-    assets_query = f"""
+    assets_query = """
         SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id,
                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days,
                COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count
@@ -103,22 +106,22 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         LEFT JOIN public.alerts al ON al.listing_id = a.listing_id
                                   AND al.portfolio_id = a.portfolio_id
                                   AND al.is_active = true
-        WHERE a.portfolio_id = {p_id} AND a.quantity > 0
+        WHERE a.portfolio_id = %s AND a.quantity > 0
         GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id, a.position_opened_at
         ORDER BY l.broker_symbol ASC;
     """
     # Только торговый счёт ЭТОГО портфеля -- накопительный принадлежит владельцу, а не
     # портфелю (один накопительный на нескольких портфелях одного брокера был бы задвоен),
     # полная раскладка по всем счетам переехала в отдельный экран "🏦 Счета" (см. summary.py)
-    cash_query = f"""
+    cash_query = """
         SELECT a.currency_id, a.cash_available, a.cash_reserved, cur.sign
         FROM public.accounts a
         JOIN public.currencies cur ON a.currency_id = cur.id
-        WHERE a.portfolio_id = {p_id} AND a.account_type = 'trade';
+        WHERE a.portfolio_id = %s AND a.account_type = 'trade';
     """
 
     # Делаем вызовы через права бота db_bot
-    assets_res_raw = db_bot.execute_query(assets_query)
+    assets_res_raw = db_bot.execute_query(assets_query, (p_id,))
     assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])
 
     # Считаем совокупные финансовые показатели акций -- каждая позиция сначала конвертируется
@@ -154,7 +157,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     report_text += f"• Чистая прибыль: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n\n"
 
     # Сборка мультивалютного кэша семьи
-    cash_res_raw = db_bot.execute_query(cash_query)
+    cash_res_raw = db_bot.execute_query(cash_query, (p_id,))
     cash_res = cash_res_raw if isinstance(cash_res_raw, list) else ([cash_res_raw] if cash_res_raw else [])
     
     trade_cash_lines = []
@@ -256,14 +259,17 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         system_key_by_id = {}
         screening_active_by_id = {}
         if strat_map:
-            ids_str = ", ".join(str(int(sid)) for sid in strat_map.keys())
+            # Динамический список id стратегий -- IN не работает через JSON-параметризацию
+            # (см. Claude/BACKLOG.md №81) -- ANY(%s).
+            strategy_ids = [int(sid) for sid in strat_map.keys()]
             key_rows = await asyncio.to_thread(
                 db_bot.execute_query,
-                f"""
+                """
                     SELECT s.id, s.is_screening_active, st.system_key FROM public.strategies s
                     JOIN public.strategy_templates st ON s.template_id = st.id
-                    WHERE s.id IN ({ids_str});
-                """
+                    WHERE s.id = ANY(%s);
+                """,
+                (strategy_ids,)
             )
             key_rows = key_rows if isinstance(key_rows, list) else ([key_rows] if key_rows else [])
             system_key_by_id = {int(r["id"]): r.get("system_key") for r in key_rows if r}
