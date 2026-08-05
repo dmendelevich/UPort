@@ -73,11 +73,12 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
     # стратегию в сообщении "бумаг нет" (а не хардкодить конкретное имя, см. фидбек 2026-07-21)
     key_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT st.system_key FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.id = {int(s_id)};
-        """
+            WHERE s.id = %s;
+        """,
+        (s_id,)
     )
     system_key = key_row.get("system_key") if key_row else None
 
@@ -89,11 +90,11 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
     user_db_id = user_data.get("user_db_id")
     target_currency = "USD"
     if user_db_id:
-        user_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT base_currency FROM public.users WHERE id = {int(user_db_id)};")
+        user_row = await asyncio.to_thread(db_bot.execute_row, "SELECT base_currency FROM public.users WHERE id = %s;", (user_db_id,))
         if user_row and user_row.get("base_currency"):
             target_currency = user_row["base_currency"]
 
-    target_cur_row = await asyncio.to_thread(db_bot.execute_row, f"SELECT sign FROM public.currencies WHERE id = '{target_currency}';")
+    target_cur_row = await asyncio.to_thread(db_bot.execute_row, "SELECT sign FROM public.currencies WHERE id = %s;", (target_currency,))
     target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
     fx_rate = await asyncio.to_thread(convert_currency_amount, db_bot, 1.0, "USD", target_currency)
 
@@ -111,13 +112,13 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
         text += "🚧 Остальные аспекты качества стратегии — отдельная тема позже.\n"
     else:
         # 3. Список позиций внутри стратегии -- через универсальный слоистый view (см. Claude/02_universal_views.md)
-        sql_positions = f"""
+        sql_positions = """
             SELECT listing_id, allocated_quantity, symbol, avg_price, listing_last_price
             FROM public.v_strategy_assets_full
-            WHERE strategy_id = {int(s_id)} AND allocated_quantity > 0
+            WHERE strategy_id = %s AND allocated_quantity > 0
             ORDER BY symbol ASC;
         """
-        positions = await asyncio.to_thread(db_bot.execute_query, sql_positions)
+        positions = await asyncio.to_thread(db_bot.execute_query, sql_positions, (s_id,))
         positions = positions if isinstance(positions, list) else []
 
         text += "📦 **Бумаги в этой стратегии:**"
@@ -208,11 +209,12 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
 
     key_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT st.system_key FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.id = {int(s_id)};
-        """
+            WHERE s.id = %s;
+        """,
+        (s_id,)
     )
     system_key = (key_row or {}).get("system_key")
 
@@ -236,12 +238,13 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
 
     held_rows = await asyncio.to_thread(
         db_bot.execute_query,
-        f"""
+        """
             SELECT DISTINCT lt.id AS ticker_id
             FROM public.assets a
             JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
-            WHERE a.portfolio_id = {int(p_id)} AND a.quantity > 0;
-        """
+            WHERE a.portfolio_id = %s AND a.quantity > 0;
+        """,
+        (p_id,)
     )
     held_rows = held_rows if isinstance(held_rows, list) else ([held_rows] if held_rows else [])
     held_ids = {int(r["ticker_id"]) for r in held_rows if r}
@@ -312,7 +315,7 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
     # (тот же приём, что и в execute_watchlist_fixation, bot_handlers/watchlist.py),
     # чтобы «🔗 Привязать ордер»/«📋 План» в футере ниже были кликабельны.
     broker_row = await asyncio.to_thread(
-        db_bot.execute_row, f"SELECT broker_id FROM public.portfolios WHERE id = {int(p_id)};"
+        db_bot.execute_row, "SELECT broker_id FROM public.portfolios WHERE id = %s;", (p_id,)
     )
     broker_id = int((broker_row or {}).get("broker_id") or 1)
     try:
@@ -343,11 +346,12 @@ async def process_view_idea_reason(callback: types.CallbackQuery, callback_data:
         alerts_count = len([al for al in alerts_list if al.get('portfolio_id') == p_id])
         orders_res = await asyncio.to_thread(
             db_bot.execute_query,
-            f"""
-                SELECT 1 FROM public.orders
-                WHERE portfolio_id = {int(p_id)} AND listing_id = {int(l_id)}
-                  AND status IN ('active', 'NEW', 'PARTIALLY_FILLED');
             """
+                SELECT 1 FROM public.orders
+                WHERE portfolio_id = %s AND listing_id = %s
+                  AND status IN ('active', 'NEW', 'PARTIALLY_FILLED');
+            """,
+            (p_id, l_id)
         )
         orders_res = orders_res if isinstance(orders_res, list) else ([orders_res] if orders_res else [])
         orders_count = len(orders_res)
