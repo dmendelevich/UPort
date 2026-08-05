@@ -32,16 +32,16 @@ def sync_quotes_fb_autonomous():
     broker_key = broker_rows[0]['short_name'] # Вернет 'FB'
 
     # 2. Схлопнутый SQL-запрос: достаем тикер прямо из JSON-карты по ключу брокера
-    sql_get_tickers = f"""
-        SELECT 
+    sql_get_tickers = """
+        SELECT
             l.id AS listing_id,
-            (t.ticker_name_map ->> '{broker_key}') AS full_ticker
+            (t.ticker_name_map ->> %s) AS full_ticker
         FROM public.listings l
         JOIN public.tickers t ON l.ticker_id = t.id
-        WHERE l.broker_id = 1 
-          AND (t.ticker_name_map ->> '{broker_key}') IS NOT NULL;
+        WHERE l.broker_id = 1
+          AND (t.ticker_name_map ->> %s) IS NOT NULL;
     """
-    tickers_data = db_sys.execute_query(sql_get_tickers)
+    tickers_data = db_sys.execute_query(sql_get_tickers, (broker_key, broker_key))
 
     if not tickers_data:
         logging.warning(f"⚠️ [REST FB]: В СУБД не найдено активных листингов для брокера {broker_key}.")
@@ -96,13 +96,13 @@ def sync_quotes_fb_autonomous():
                 l_id = listing_id_map[ticker]
 
                 # 🔥 СТАНДАРТ ВРЕМЕНИ UPORT — СТЕРИЛЬНЫЙ UTC ДО СЕКУНД TIMESTAMP(0)
-                sql_update_listing = f"""
+                sql_update_listing = """
                     UPDATE public.listings
-                    SET last_price = {final_price},
+                    SET last_price = %s,
                         last_updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                    WHERE id = {l_id};
+                    WHERE id = %s;
                 """
-                db_sys.execute_query(sql_update_listing)
+                db_sys.execute_query(sql_update_listing, (final_price, l_id))
                 updated_count += 1
             else:
                 bad_price_count += 1
