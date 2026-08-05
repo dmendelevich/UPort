@@ -30,18 +30,20 @@ def sync_global_yahoo_signals(single_ticker_id=None):
     # 🔥 ШАГ 2: SQL-ЗАПРОС НА ВЕСЬ UNIVERSE ТИКЕРОВ (С ПОДДЕРЖКОЙ ТОЧЕЧНОЙ ОТЛАДКИ)
     if single_ticker_id:
         logging.info(f"🎯 [РЕЖИМ ОДИНОЧНОГО ТИКЕРА]: Сбор котировок изолирован строго под ticker_id: {single_ticker_id}")
-        sql_get_universe = f"SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol, exchange_mic FROM public.tickers WHERE id = {int(single_ticker_id)};"
+        sql_get_universe = "SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol, exchange_mic FROM public.tickers WHERE id = %s;"
+        universe_params = (single_ticker_id,)
     else:
         logging.info("📡 Запрашиваю полный Universe тикеров (S&P 500, S&P 400, FTSE 100) из СУБД...")
         # Выбираем только те боевые строки, которые прошли нашу генеральную чистку и имеют паспорт паспортистки
         sql_get_universe = """
-            SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers 
-            WHERE provenance::text LIKE '%"MS_%' 
+            SELECT id, symbol, yahoo_symbol, exchange_mic FROM public.tickers
+            WHERE provenance::text LIKE '%"MS_%'
                OR provenance::text LIKE '%TG_USR_ID=%'
                OR provenance::text LIKE '%LST_ID=%';
         """
-            
-    active_rows = db_sys.execute_query(sql_get_universe)
+        universe_params = None
+
+    active_rows = db_sys.execute_query(sql_get_universe, universe_params)
     if not active_rows:
         logging.warning("⚠️ Инструментов для обработки в Universe СУБД не обнаружено.")
         return {"processed": 0, "errors": 0}
@@ -117,12 +119,12 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                     raw_volume = float(hist['Volume'].iloc[-1]) if not hist['Volume'].empty else 0.0
 
                     # 💸 ПОДТЯГИВАЕМ МЕТАДАННЫЕ ВАЛЮТЫ И НАШ СКВОЗНОЙ МУЛЬТИПЛИКАТОР
-                    sql_ex_meta = f"SELECT currency_id FROM public.exchanges WHERE mic = '{f_mic}' LIMIT 1;"
-                    res_ex_meta = db_sys.execute_query(sql_ex_meta)
+                    sql_ex_meta = "SELECT currency_id FROM public.exchanges WHERE mic = %s LIMIT 1;"
+                    res_ex_meta = db_sys.execute_query(sql_ex_meta, (f_mic,))
                     y_curr = str(res_ex_meta[0]["currency_id"]).strip().upper() if res_ex_meta and len(res_ex_meta) > 0 else "USD"
-                    
-                    sql_y_multiplier = f"SELECT multiplier FROM public.currencies WHERE id = '{y_curr}' LIMIT 1;"
-                    res_y_mult = db_sys.execute_query(sql_y_multiplier)
+
+                    sql_y_multiplier = "SELECT multiplier FROM public.currencies WHERE id = %s LIMIT 1;"
+                    res_y_mult = db_sys.execute_query(sql_y_multiplier, (y_curr,))
                     y_multiplier = float(res_y_mult[0]["multiplier"]) if res_y_mult and len(res_y_mult) > 0 and res_y_mult[0].get("multiplier") else 1.0
 
                     # 🔥 НАШ УНИВЕРСАЛЬНЫЙ СКВОЗНОЙ ПАТТЕРН: Применяем мультипликатор к цене
@@ -209,50 +211,45 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                         recommendation = "NEUTRAL"
 
                     # Применяем мультипликатор к индикаторам для синхронизации с clean_price базы
-                    ema20_sql = f"{ema_20 * y_multiplier:.4f}"
-                    sma50_sql = f"{sma_50 * y_multiplier:.4f}"
-                    sma100_sql = f"{sma_100 * y_multiplier:.4f}"
-                    sma200_sql = f"{sma_200 * y_multiplier:.4f}"
-                    pct100_sql = f"{price_to_sma100_pct:.2f}"
-                    pct200_sql = f"{price_to_sma200_pct:.2f}"
-                    rsi_sql = f"{rsi_14:.2f}"
-                    macd_sql = f"{macd_val * y_multiplier:.4f}"
-                    # Проценты изменения цены -- отношение, множитель валюты сокращается
-                    # (числитель и знаменатель в одних и тех же единицах), не применяем
-                    pct1d_sql = f"{pct_1d:.2f}"
-                    pct1w_sql = f"{pct_1w:.2f}"
-                    pct1m_sql = f"{pct_1m:.2f}"
-                    pct1y_sql = f"{pct_1y:.2f}"
-                    volatility_sql = f"{daily_volatility_pct:.4f}" if daily_volatility_pct is not None else "NULL"
-                    streak_sql = f"{ema20_streak_days}"
+                    # (значения передаются параметрами напрямую, округление -- для стабильности
+                    # чисел в БД, не для сборки SQL-текста, см. Claude/BACKLOG.md №81)
+                    volatility_val = round(daily_volatility_pct, 4) if daily_volatility_pct is not None else None
 
                     # 🔥 АТОМАРНЫЙ UPDATE СТРОКИ В СУБД (БЕЗ ЗАТИРАНИЯ ДАТЫ ОТЧЕТОВ)
-                    sql_update_yhoo = f"""
-                        UPDATE public.tickers SET 
-                            current_price = {clean_price:.4f}, 
-                            currency_id = '{y_curr}', 
-                            daily_turnover_usd = {calc_y_turnover_usd:.2f},
-                            signal_recommendation = '{recommendation}', 
-                            signal_ema_20 = {ema20_sql},
-                            signal_sma_50 = {sma50_sql},
-                            signal_sma_100 = {sma100_sql}, 
-                            signal_price_to_sma100_pct = {pct100_sql},
-                            signal_sma_200 = {sma200_sql}, 
-                            signal_price_to_sma200_pct = {pct200_sql}, 
-                            signal_rsi = {rsi_sql},
-                            signal_macd = {macd_sql},
-                            signal_pct_1d = {pct1d_sql},
-                            signal_pct_1w = {pct1w_sql},
-                            signal_pct_1m = {pct1m_sql},
-                            signal_pct_1y = {pct1y_sql},
-                            signal_daily_volatility_pct = {volatility_sql},
-                            signal_ema20_streak_days = {streak_sql},
+                    sql_update_yhoo = """
+                        UPDATE public.tickers SET
+                            current_price = %s,
+                            currency_id = %s,
+                            daily_turnover_usd = %s,
+                            signal_recommendation = %s,
+                            signal_ema_20 = %s,
+                            signal_sma_50 = %s,
+                            signal_sma_100 = %s,
+                            signal_price_to_sma100_pct = %s,
+                            signal_sma_200 = %s,
+                            signal_price_to_sma200_pct = %s,
+                            signal_rsi = %s,
+                            signal_macd = %s,
+                            signal_pct_1d = %s,
+                            signal_pct_1w = %s,
+                            signal_pct_1m = %s,
+                            signal_pct_1y = %s,
+                            signal_daily_volatility_pct = %s,
+                            signal_ema20_streak_days = %s,
                             signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
-                            fb_market = 'YAHOO_GLOBAL', 
+                            fb_market = 'YAHOO_GLOBAL',
                             fb_exchange = 'YAHOO_GLOBAL'
-                        WHERE id = {db_id};
+                        WHERE id = %s;
                     """
-                    db_sys.execute_query(sql_update_yhoo)
+                    db_sys.execute_query(sql_update_yhoo, (
+                        round(clean_price, 4), y_curr, round(calc_y_turnover_usd, 2), recommendation,
+                        round(ema_20 * y_multiplier, 4), round(sma_50 * y_multiplier, 4),
+                        round(sma_100 * y_multiplier, 4), round(price_to_sma100_pct, 2),
+                        round(sma_200 * y_multiplier, 4), round(price_to_sma200_pct, 2),
+                        round(rsi_14, 2), round(macd_val * y_multiplier, 4),
+                        round(pct_1d, 2), round(pct_1w, 2), round(pct_1m, 2), round(pct_1y, 2),
+                        volatility_val, ema20_streak_days, db_id
+                    ))
                     total_updated += 1
 
                 except Exception as single_err:
