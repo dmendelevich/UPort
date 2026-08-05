@@ -133,6 +133,47 @@ def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_
         return float(amount)
 
 
+def check_sector_ceiling_breach(sector_exposure_usd: dict, total_capital_usd: float,
+                                 sector_target_config: dict, sector: str,
+                                 additional_usd: float = 0.0) -> dict:
+    """
+    Портфельный секторальный потолок (Claude/BACKLOG.md №82) -- один расчёт,
+    переиспользуется и реактивно (PortfolioInspector.audit_limits_and_rules,
+    факт по всему портфелю прямо сейчас), и проактивно (CashDeploymentAdvisor,
+    прогноз с учётом ещё не совершённой покупки). НЕ путать с существующим
+    отдельным лимитом на сектор ВНУТРИ одной стратегии (rules_config.portfolio_max_sector_pct)
+    -- это независимый, более высокий контур.
+
+    sector_exposure_usd -- {sector: usd} факт по всем активным содержательным
+    стратегиям портфеля (PortfolioInspector.get_portfolio_sector_exposure).
+    additional_usd -- гипотетическая добавка (например, размер будущей покупки),
+    0.0 для чисто реактивной проверки по факту.
+
+    Срабатывание одностороннее -- только превышение потолка, недовес не тревога.
+    Сектор, для которого потолок не задан в sector_target_config, пропускается
+    (не считается нарушением -- нет ориентира, не наше дело придумывать за
+    пользователя).
+
+    Возвращает {} если не пробивает, иначе {"sector", "projected_pct", "limit_pct"}.
+    """
+    if total_capital_usd <= 0 or not sector_target_config:
+        return {}
+    limit_pct = sector_target_config.get(sector)
+    if limit_pct is None:
+        return {}
+
+    current_usd = float(sector_exposure_usd.get(sector) or 0.0)
+    projected_usd = current_usd + float(additional_usd)
+    projected_pct = (projected_usd / total_capital_usd) * 100.0
+
+    if projected_pct > float(limit_pct):
+        return {
+            "sector": sector,
+            "projected_pct": round(projected_pct, 2),
+            "limit_pct": float(limit_pct),
+        }
+    return {}
+
 
 class TickerEvaluator:
     """
@@ -512,6 +553,7 @@ class TickerEvaluator:
                 results.append({
                     "ticker_id": int(f["id"]),
                     "symbol": f.get("symbol"),
+                    "sector": f.get("sector") or "Unknown Sector",
                     "ranking_value": scored["ranking_value"],
                     "metrics": scored["metrics"],
                 })

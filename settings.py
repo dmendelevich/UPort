@@ -70,3 +70,24 @@ TREND_REVERSAL_CONFIRM_DAYS = 3
 # rules_config сам. day-of-month, не отдельный cron-джоб -- переиспользует то, что
 # assemble_portfolio_digest_data и так вызывается не чаще раза в сутки (digest_clock_loop).
 MONTHLY_SLOT_REVIEW_DAY = 1
+
+# ─── СЕКТОРАЛЬНАЯ ДИВЕРСИФИКАЦИЯ ПОРТФЕЛЯ (Claude/BACKLOG.md №82, 2026-08-05) ───
+# Заводское значение portfolios.sector_target_config (jsonb) для НОВОГО портфеля --
+# потолок доли каждого сектора от total_capital портфеля (не цель, срабатывание
+# одностороннее -- только превышение). Ориентир -- примерные веса секторов широкого
+# рыночного индекса (S&P 500, таксономия секторов как у Yahoo/tickers.sector), чтобы
+# заводское значение не было произвольным equal-weight. Пользователь может
+# скорректировать под конкретный портфель после создания -- это только стартовая точка.
+DEFAULT_SECTOR_TARGET_CONFIG = {
+    "Technology": 32.0,
+    "Financial Services": 14.0,
+    "Healthcare": 10.0,
+    "Consumer Cyclical": 10.0,
+    "Communication Services": 9.0,
+    "Industrials": 8.0,
+    "Consumer Defensive": 6.0,
+    "Energy": 3.0,
+    "Utilities": 2.5,
+    "Real Estate": 2.0,
+    "Basic Materials": 2.0,
+}

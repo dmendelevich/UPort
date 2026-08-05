@@ -729,6 +729,12 @@ async def format_portfolio_risk_audit_rollup(portfolio_id: int) -> str:
         for u in strat_audit.get("unassigned_assets", []):
             text += f" ⚠️ {u['symbol']}: не распределена по стратегии ({u['current_share_pct']:.1f}% капитала)\n"
 
+    portfolio_violated_sectors = audit.get("portfolio_violated_sectors", [])
+    if portfolio_violated_sectors:
+        text += "🌐 По ПОРТФЕЛЮ целиком (сумма всех стратегий):\n"
+        for sec in portfolio_violated_sectors:
+            text += f" ⚠️ Сектор {sec.get('sector', '?')}: доля {sec.get('projected_pct', 0):.1f}% (лимит {sec.get('limit_pct', 0)}%)\n"
+
     return text
 
 

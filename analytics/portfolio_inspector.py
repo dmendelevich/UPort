@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import logging
-from analytics.analytics_utils import convert_to_base_currency
+from analytics.analytics_utils import convert_to_base_currency, check_sector_ceiling_breach, CONTENT_STRATEGY_SYSTEM_KEYS
 
 class PortfolioInspector:
     """
@@ -20,7 +20,8 @@ class PortfolioInspector:
         self.raw_accounts = []      # Реальные счета брокера (торговый и накопительный D)
         self.raw_strategies = []    # Активные семейные стратегии, их rules_config и СУБД-доли
         self.raw_assets = []        # Физический состав ценных бумаг на счете
-        
+        self.sector_target_config = {}  # Потолки по секторам ДЛЯ ЭТОГО портфеля (Claude/BACKLOG.md №82)
+
         # Автоматический экспресс-сбор данных при создании объекта
         self._collect_raw_portfolio_facts()
 
@@ -66,7 +67,14 @@ class PortfolioInspector:
             WHERE s.portfolio_id = {self.portfolio_id} AND s.is_active = true;
         """
         self.raw_strategies = self.db.execute_query(sql_strategies) or []
-        
+
+        # 2б. Потолки по секторам ДЛЯ ЭТОГО портфеля (Claude/BACKLOG.md №82)
+        portfolio_row = self.db.execute_row(
+            "SELECT sector_target_config FROM public.portfolios WHERE id = %s;",
+            (self.portfolio_id,)
+        )
+        self.sector_target_config = (portfolio_row or {}).get("sector_target_config") or {}
+
         # 3. ЗАПРОС К АКТИВАМ БРОКЕРА
         sql_assets = f"""
             SELECT id, listing_id, quantity, avg_price, currency_id 
@@ -195,6 +203,36 @@ class PortfolioInspector:
             
         return virtual_report
 
+    def get_portfolio_sector_exposure(self) -> dict:
+        """
+        🌐 ПОРТФЕЛЬНЫЙ СЕКТОРАЛЬНЫЙ РЕНТГЕН (Claude/BACKLOG.md №82)
+        Сумма $-экспозиции по сектору across ВСЕХ активных содержательных стратегий
+        портфеля разом (REVOLVER/CONSERVATIVE_ACCUMULATION/TREND_FOLLOWING) -- не
+        внутри одной, как в audit_limits_and_rules ниже. UNALLOCATED/CASH_RESERVE
+        не участвуют (первая -- само наличие бумаг там уже нарушение по другой
+        причине, вторая -- в ней физически нет активов). Та же честная ETF-
+        декомпозиция через strategy_exposure, что и везде.
+        Возвращает {sector: usd}, пустой словарь если участвовать нечему.
+        """
+        content_ids = [
+            int(s["id"]) for s in self.raw_strategies
+            if s.get("system_key") in CONTENT_STRATEGY_SYSTEM_KEYS
+        ]
+        if not content_ids:
+            return {}
+
+        ids_str = ", ".join(str(i) for i in content_ids)
+        sql = f"""
+            SELECT COALESCE(t.sector, 'Unknown Sector') AS sector, SUM(se.exposure_usd) AS total_usd
+            FROM public.strategy_exposure se
+            JOIN public.tickers t ON se.ticker_id = t.id
+            WHERE se.strategy_id IN ({ids_str}) AND se.exposure_usd > 0
+            GROUP BY COALESCE(t.sector, 'Unknown Sector');
+        """
+        rows = self.db.execute_query(sql) or []
+        rows = rows if isinstance(rows, list) else [rows]
+        return {r["sector"]: float(r["total_usd"]) for r in rows if r}
+
     def audit_limits_and_rules(self) -> dict:
         """
         🔬 КОМПЛЕКСНЫЙ ИНСПЕКТОР ЛИМИТОВ И ПРАВИЛ UPORT (ОБНОВЛЕННЫЙ)
@@ -314,5 +352,18 @@ class PortfolioInspector:
 
             # Шаг 6: Сохраняем результаты по текущей стратегии в общий отчет
             audit_report["strategies"][s_id] = strat_report
+
+        # Шаг 7: ПОРТФЕЛЬНЫЙ СЕКТОРАЛЬНЫЙ РЕНТГЕН (Claude/BACKLOG.md №82) -- НЕЗАВИСИМЫЙ
+        # контур поверх постратегийного выше: сумма по ВСЕМ активным стратегиям сразу,
+        # против sector_target_config портфеля, а не rules_config одной стратегии.
+        portfolio_sector_exposure = self.get_portfolio_sector_exposure()
+        audit_report["portfolio_violated_sectors"] = []
+        for sector_name in portfolio_sector_exposure:
+            breach = check_sector_ceiling_breach(
+                portfolio_sector_exposure, total_capital, self.sector_target_config, sector_name
+            )
+            if breach:
+                audit_report["has_violations"] = True
+                audit_report["portfolio_violated_sectors"].append(breach)
 
         return audit_report

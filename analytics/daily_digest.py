@@ -129,6 +129,11 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                 "text": f"{v['symbol']}: дивиденды {v['dividend_yield_pct']}% (лимит {v['limit_pct']}%)",
                 "label": v["symbol"],
             })
+    for v in audit_report.get("portfolio_violated_sectors", []):
+        limit_items.append({
+            "text": f"сектор {v['sector']}: {v['projected_pct']}% от ВСЕГО портфеля (лимит {v['limit_pct']}%)",
+            "label": v["sector"],
+        })
 
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
     signal_items += [

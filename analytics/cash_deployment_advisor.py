@@ -1,5 +1,5 @@
 from analytics.portfolio_inspector import PortfolioInspector
-from analytics.analytics_utils import TickerEvaluator
+from analytics.analytics_utils import TickerEvaluator, check_sector_ceiling_breach
 
 
 class CashDeploymentAdvisor:
@@ -48,14 +48,46 @@ class CashDeploymentAdvisor:
         )
         return row or {}
 
-    def _find_best_candidate(self, strategy_id: int, held_ids: set, us_only: bool):
-        # Переиспользует быстрый пакетный скан TickerEvaluator (analytics_utils.py) --
-        # тот же источник правды для условий отбора, что и evaluate_ticker_strategy,
-        # без N+1 запросов к БД. Результат уже отсортирован по ranking_value.
+    def _find_best_candidate(self, strategy_id: int, held_ids: set, us_only: bool, system_key: str,
+                              sector_exposure: dict, sector_target_config: dict,
+                              total_capital: float, target_slot_usd: float):
+        """
+        Переиспользует быстрый пакетный скан TickerEvaluator (analytics_utils.py) --
+        тот же источник правды для условий отбора, что и evaluate_ticker_strategy,
+        без N+1 запросов к БД. Результат уже отсортирован по ranking_value.
+
+        Секторальная дисциплина (Claude/BACKLOG.md №82) различается по стратегии:
+        - Консервативная -- ЖЁСТКИЙ проактивный фильтр: пропускает кандидатов, чья
+          покупка (по прогнозу, портфель целиком) пробила бы потолок сектора, берёт
+          первого по рангу СРЕДИ НЕ пробивающих.
+        - Револьверная/Трендовая -- выбор кандидата НЕ меняется (сигнал стратегии не
+          душим), но если топ-кандидат пробивает потолок -- возвращаем предупреждение
+          отдельно, текст рекомендации его покажет, не спрячет.
+
+        Возвращает (candidate_or_None, sector_warning_or_None).
+        """
         results = self.evaluator.screen_universe_for_strategy(
             strategy_id, exclude_ticker_ids=held_ids, us_only=us_only
         )
-        return results[0] if results else None
+        if not results:
+            return None, None
+
+        if system_key == "CONSERVATIVE_ACCUMULATION":
+            for cand in results:
+                breach = check_sector_ceiling_breach(
+                    sector_exposure, total_capital, sector_target_config,
+                    cand.get("sector"), additional_usd=target_slot_usd,
+                )
+                if not breach:
+                    return cand, None
+            return None, None
+
+        best = results[0]
+        warning = check_sector_ceiling_breach(
+            sector_exposure, total_capital, sector_target_config,
+            best.get("sector"), additional_usd=target_slot_usd,
+        ) or None
+        return best, warning
 
     def _compute_slot_cap(self, rules_config: dict, ideal_budget_usd: float, total_capital: float) -> float:
         """
@@ -224,6 +256,13 @@ class CashDeploymentAdvisor:
 
         held_ids = self._get_held_ticker_ids(portfolio_id)
 
+        # Секторальный рентген по факту -- считаем ОДИН раз на весь вызов (не на
+        # каждого кандидата), это факт текущего портфеля, а не гипотеза, которая
+        # менялась бы от рекомендации к рекомендации внутри одного и того же прогона
+        # (Claude/BACKLOG.md №82).
+        sector_exposure = inspector.get_portfolio_sector_exposure()
+        sector_target_config = inspector.sector_target_config
+
         recommendations = []
         remaining_pool = deployable_pool
 
@@ -237,7 +276,10 @@ class CashDeploymentAdvisor:
                 continue
 
             pct_underfunded_pretty = round(cand["pct_underfunded"] * 100, 1)
-            best = self._find_best_candidate(cand["strategy_id"], held_ids, us_only)
+            best, sector_warning = self._find_best_candidate(
+                cand["strategy_id"], held_ids, us_only, cand["system_key"],
+                sector_exposure, sector_target_config, total_capital, target_slot,
+            )
 
             if not best:
                 recommendations.append({
@@ -260,6 +302,20 @@ class CashDeploymentAdvisor:
             step1_amount = target_slot * step1_share_pct / 100.0
             mode = (tactic.get("trigger_conditions") or {}).get("mode", "market")
 
+            reason_text = (
+                f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
+                f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
+                f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
+                f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
+            )
+            # Только для Револьверной/Трендовой -- у Консервативной такой кандидат
+            # физически не мог дойти сюда, _find_best_candidate его уже отсеял.
+            if sector_warning:
+                reason_text += (
+                    f" ⚠️ Доведёт долю сектора {sector_warning['sector']} по портфелю до "
+                    f"{sector_warning['projected_pct']}% (лимит {sector_warning['limit_pct']}%)."
+                )
+
             recommendations.append({
                 "portfolio_id": portfolio_id,
                 "strategy_id": cand["strategy_id"],
@@ -273,12 +329,8 @@ class CashDeploymentAdvisor:
                 "step1_amount_usd": round(step1_amount, 2),
                 "step1_mode": mode,
                 "ranking_value": best["ranking_value"],
-                "reason": (
-                    f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
-                    f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
-                    f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
-                    f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
-                ),
+                "sector_warning": sector_warning,
+                "reason": reason_text,
             })
 
             remaining_pool -= target_slot
