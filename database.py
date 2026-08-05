@@ -97,22 +97,22 @@ class Database:
 
     def ensure_currency(self, currency_id: str):
         """Кит №1: Гарантирует наличие валюты в справочнике currencies."""
-        sql = f"""
+        sql = """
         INSERT INTO public.currencies (id, sign, multiplier)
-        VALUES ('{currency_id}', '{currency_id}', 1.0)
+        VALUES (%s, %s, 1.0)
         ON CONFLICT (id) DO NOTHING;
         """
-        self.execute_query(sql)
+        self.execute_query(sql, (currency_id, currency_id))
 
     def ensure_account_sub_row(self, user_id: int, portfolio_id: int, broker_id: int, account_number: str, account_type: str, currency_id: str):
         """Кит №2: Гарантирует наличие мультивалютной строки субсчета в таблице accounts."""
-        p_id_val = portfolio_id if portfolio_id else "NULL"
-        sql = f"""
+        p_id_val = portfolio_id if portfolio_id else None
+        sql = """
         INSERT INTO public.accounts (user_id, portfolio_id, broker_id, account_number, account_type, currency_id, cash_available, cash_reserved, assets_value)
-        VALUES ({user_id}, {p_id_val}, {broker_id}, '{account_number}', '{account_type}', '{currency_id}', 0, 0, 0)
+        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, 0)
         ON CONFLICT (account_number, currency_id) DO NOTHING;
         """
-        self.execute_query(sql)
+        self.execute_query(sql, (user_id, p_id_val, broker_id, account_number, account_type, currency_id))
 
     def ensure_ticker_v3(self, ticker_name_raw: str, caller_role: str, caller_id=None, broker_id: int = None, fb_client = None) -> tuple:
         """
@@ -145,13 +145,13 @@ class Database:
         json_pattern_fb = json.dumps({"FB": symbol_clean})
         json_pattern_t212 = json.dumps({"T212": symbol_clean})
         
-        sql_check_ticker = f"""
-            SELECT id FROM public.tickers 
-            WHERE ticker_name_map @> '{json_pattern_fb}'::jsonb 
-            OR ticker_name_map @> '{json_pattern_t212}'::jsonb 
+        sql_check_ticker = """
+            SELECT id FROM public.tickers
+            WHERE ticker_name_map @> %s::jsonb
+            OR ticker_name_map @> %s::jsonb
             LIMIT 1;
         """
-        res_ticker = self.execute_query(sql_check_ticker)
+        res_ticker = self.execute_query(sql_check_ticker, (json_pattern_fb, json_pattern_t212))
         if res_ticker and isinstance(res_ticker, list) and len(res_ticker) > 0:
             row_t = res_ticker[0] if isinstance(res_ticker, list) else res_ticker
             ticker_id = int(row_t.get('id') if isinstance(row_t, dict) else row_t)
@@ -181,11 +181,11 @@ class Database:
         # ─── ШАГ 3: СКАНДИРОВАНИЕ СУЩЕСТВУЮЩЕГО ЛИСТИНГА БРОКЕРА ───
         listing_id = None
         if broker_id is not None:
-            sql_check_listing = f"""
-                SELECT id FROM public.listings 
-                WHERE ticker_id = {int(ticker_id)} AND broker_id = {int(broker_id)} LIMIT 1;
+            sql_check_listing = """
+                SELECT id FROM public.listings
+                WHERE ticker_id = %s AND broker_id = %s LIMIT 1;
             """
-            res_listing = self.execute_query(sql_check_listing)
+            res_listing = self.execute_query(sql_check_listing, (int(ticker_id), int(broker_id)))
             if res_listing and isinstance(res_listing, list) and len(res_listing) > 0:
                 row_l = res_listing[0] if isinstance(res_listing, list) else res_listing
                 listing_id = int(row_l.get('id') if isinstance(row_l, dict) else row_l)
@@ -262,19 +262,21 @@ class Database:
         target_column = reason_columns[reason_clean]
         
         # 🛡️ ЗАЩИТА СПИДОМЕТРА ID: Сначала зряче проверяем, существует ли уже запись
-        sql_check = f"SELECT id FROM public.watchlist WHERE portfolio_id = {p_id} AND listing_id = {l_id} LIMIT 1;"
-        res_wl = self.execute_query(sql_check)
-        
+        sql_check = "SELECT id FROM public.watchlist WHERE portfolio_id = %s AND listing_id = %s LIMIT 1;"
+        res_wl = self.execute_query(sql_check, (p_id, l_id))
+
         if res_wl and len(res_wl) > 0:
             # --- ВЕТКА UPDATE: Запись уже есть, точечно взводим нужную метку времени ---
             row_id = int(res_wl[0]['id'])
+            # target_column -- имя колонки (не значение), не параметризуется через %s, но безопасно:
+            # берётся строго из жёстко зашитого белого списка reason_columns выше, не из ввода извне.
             sql_update = f"""
-                UPDATE public.watchlist 
+                UPDATE public.watchlist
                 SET {target_column} = CURRENT_TIMESTAMP(0),
                     updated_at = CURRENT_TIMESTAMP(0)
-                WHERE id = {row_id};
+                WHERE id = %s;
             """
-            self.execute_query(sql_update)
+            self.execute_query(sql_update, (row_id,))
             # На DEBUG (Claude/BACKLOG.md №28) -- вызывается на каждый тикер при каждой синхронизации
             # алертов/вотчлиста, для уже отслеживаемой бумаги это рутинное продление метки времени,
             # не событие ("впервые добавлена" ниже -- другое дело, остаётся на INFO).
@@ -282,19 +284,20 @@ class Database:
         else:
             # --- ВЕТКА INSERT: Абсолютно новая запись, заполняем стартовую колонку, остальные NULL ---
             columns_list = ["portfolio_id", "listing_id", "updated_at", target_column]
-            values_list = [str(p_id), str(l_id), "CURRENT_TIMESTAMP(0)", "CURRENT_TIMESTAMP(0)"]
-            
+            value_exprs = ["%s", "%s", "CURRENT_TIMESTAMP(0)", "CURRENT_TIMESTAMP(0)"]
+            params = [p_id, l_id]
+
             # Дописываем остальные колонки времени как NULL, чтобы запрос был монолитным
             for col in reason_columns.values():
                 if col != target_column:
                     columns_list.append(col)
-                    values_list.append("NULL")
-                    
+                    value_exprs.append("NULL")
+
             sql_insert = f"""
                 INSERT INTO public.watchlist ({', '.join(columns_list)})
-                VALUES ({', '.join(values_list)});
+                VALUES ({', '.join(value_exprs)});
             """
-            self.execute_query(sql_insert)
+            self.execute_query(sql_insert, tuple(params))
             logging.info(f"➕ [WATCHLIST v2]: Бумага LST_ID={l_id} впервые добавлена в портфель ID={p_id} по причине '{reason_clean}'.")
 
     def ensure_listing(self, ticker_id: int, broker_id: int, fb_client = None) -> int:
@@ -307,20 +310,20 @@ class Database:
         b_id = int(broker_id)
         
         # 🛡️ ПЕРВИЧНАЯ ПРОВЕРКА КЭША: Если листинг уже существует, мгновенно отдаем его ID
-        sql_check = f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = {b_id} LIMIT 1;"
-        res_listing = self.execute_query(sql_check)
+        sql_check = "SELECT id FROM public.listings WHERE ticker_id = %s AND broker_id = %s LIMIT 1;"
+        res_listing = self.execute_query(sql_check, (t_id, b_id))
         if res_listing and len(res_listing) > 0:
             row_l = res_listing[0] if isinstance(res_listing, list) else res_listing
             return int(row_l.get('id') if isinstance(row_l, dict) else row_l)
-            
+
         # 🔗 РЕЛЯЦИОННОЕ ИЗВЛЕЧЕНИЕ КАННОНИЧЕСКОГО ИМЕНИ ИЗ КАРТЫ СУБД
-        sql_get_canonical = f"""
-            SELECT ticker_name_map ->> (SELECT short_name FROM public.brokers WHERE id = {b_id}) AS broker_symbol
-            FROM public.tickers 
-            WHERE id = {t_id};
+        sql_get_canonical = """
+            SELECT ticker_name_map ->> (SELECT short_name FROM public.brokers WHERE id = %s) AS broker_symbol
+            FROM public.tickers
+            WHERE id = %s;
         """
         try:
-            res_canonical = self.execute_query(sql_get_canonical)
+            res_canonical = self.execute_query(sql_get_canonical, (b_id, t_id))
             row_c = res_canonical[0] if isinstance(res_canonical, list) else res_canonical
             broker_ticker_name = row_c.get('broker_symbol') if isinstance(row_c, dict) else row_c
         except Exception as db_json_err:
@@ -363,27 +366,28 @@ class Database:
             live_price = 0.0
             
         self.ensure_currency(target_currency)
-        
+
         # Фиксируем листинг с правильным именем и живой котировкой
-        sql_insert_listing = f"""
+        sql_insert_listing = """
             INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id, last_price)
-            VALUES ({t_id}, {b_id}, '{broker_ticker_name}', '{target_currency}', {float(live_price)})
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (broker_id, broker_symbol) DO NOTHING;
         """
-        self.execute_query(sql_insert_listing)
-        
+        self.execute_query(sql_insert_listing, (t_id, b_id, broker_ticker_name, target_currency, float(live_price)))
+
         res_id = self.execute_query(
-            f"SELECT id FROM public.listings WHERE broker_id = {b_id} AND broker_symbol = '{broker_ticker_name}' LIMIT 1;"
+            "SELECT id FROM public.listings WHERE broker_id = %s AND broker_symbol = %s LIMIT 1;",
+            (b_id, broker_ticker_name)
         )
         if res_id and len(res_id) > 0:
             # 🔥 ФИКС v5.3: Зряче извлекаем нулевой элемент списка словарей PostgreSQL
             row_id = res_id[0] if isinstance(res_id, list) else res_id
             listing_id = int(row_id.get('id') if isinstance(row_id, dict) else row_id)
-            
+
             # Фоновый запуск декомпозиции без блокировки Event Loop
             try:
-                sql_get_type = f"SELECT asset_type FROM public.tickers WHERE id = {t_id};"
-                res_type = self.execute_query(sql_get_type)
+                sql_get_type = "SELECT asset_type FROM public.tickers WHERE id = %s;"
+                res_type = self.execute_query(sql_get_type, (t_id,))
                 if res_type and len(res_type) > 0:
                     row_t = res_type[0] if isinstance(res_type, list) else res_type
                     asset_type = str(row_t.get('asset_type', 'UNDETERMINED')).strip().upper()
@@ -506,8 +510,8 @@ class Database:
         и реальной, и тестовой сводкой (BACKLOG.md, стандартизация экрана «Тестовый капитал»,
         2026-08-03). portfolio_filter_sql -- сырое SQL-условие на алиас `p` (portfolios).
         """
-        user_sql = f"SELECT id, base_currency FROM public.users WHERE telegram_id = {telegram_id};"
-        user_res = self.execute_query(user_sql)
+        user_sql = "SELECT id, base_currency FROM public.users WHERE telegram_id = %s;"
+        user_res = self.execute_query(user_sql, (telegram_id,))
         if not user_res or not isinstance(user_res, list):
             return {}
 
@@ -515,12 +519,12 @@ class Database:
         user_id = current_user['id']
         base_curr = current_user['base_currency'] or "USD"
 
-        sign_sql = f"SELECT sign FROM public.currencies WHERE id = '{base_curr}';"
-        sign_res = self.execute_query(sign_sql)
+        sign_sql = "SELECT sign FROM public.currencies WHERE id = %s;"
+        sign_res = self.execute_query(sign_sql, (base_curr,))
         curr_sign = sign_res[0]['sign'] if sign_res else base_curr
 
-        rate_user_sql = f"SELECT rate FROM public.currency_rates WHERE from_currency = '{base_curr}' AND to_currency = 'USD';"
-        rate_user_res = self.execute_query(rate_user_sql)
+        rate_user_sql = "SELECT rate FROM public.currency_rates WHERE from_currency = %s AND to_currency = 'USD';"
+        rate_user_res = self.execute_query(rate_user_sql, (base_curr,))
         user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res else 1.0
 
         accounts_sql = f"""
@@ -581,26 +585,26 @@ class Database:
         """
         base_curr = "USD"
         if telegram_id:
-            user_sql = f"SELECT base_currency FROM public.users WHERE telegram_id = {telegram_id};"
-            user_res = self.execute_query(user_sql)
+            user_sql = "SELECT base_currency FROM public.users WHERE telegram_id = %s;"
+            user_res = self.execute_query(user_sql, (telegram_id,))
             if user_res and isinstance(user_res, list):
                 base_curr = user_res[0]['base_currency'] or "USD"
 
-        rate_user_sql = f"SELECT rate FROM public.currency_rates WHERE from_currency = '{base_curr}' AND to_currency = 'USD';"
-        rate_user_res = self.execute_query(rate_user_sql)
+        rate_user_sql = "SELECT rate FROM public.currency_rates WHERE from_currency = %s AND to_currency = 'USD';"
+        rate_user_res = self.execute_query(rate_user_sql, (base_curr,))
         user_to_usd_rate = float(rate_user_res[0]['rate']) if rate_user_res and isinstance(rate_user_res, list) else 1.0
 
         # ЗАПРОС 1: Базовые рыночные параметры листинга из точки истины listings -> tickers
-        ticker_sql = f"""
+        ticker_sql = """
             SELECT l.id as listing_id, l.broker_symbol as full_ticker, t.company_name, l.last_price, l.currency_id AS ticker_currency,
                    l.last_updated_at, 'active' as tracking_status, 'Система' AS added_by_user,
                    COALESCE(r.rate, 1.0) as asset_to_usd_rate
             FROM public.listings l
             JOIN public.tickers t ON l.ticker_id = t.id
             LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-            WHERE l.broker_symbol = '{full_ticker.strip().upper()}';
+            WHERE l.broker_symbol = %s;
         """
-        ticker_res = self.execute_query(ticker_sql)
+        ticker_res = self.execute_query(ticker_sql, (full_ticker.strip().upper(),))
         if not ticker_res or not isinstance(ticker_res, list):
             return {}
 
@@ -611,8 +615,12 @@ class Database:
         price_in_user_currency = (raw_price * asset_to_usd) / user_to_usd_rate
 
         # ЗАПРОС 2: Контекст владения по новому listing_id
-        portfolio_filter_assets = "" if portfolio_id == 0 else f"AND a.portfolio_id = {portfolio_id}"
-        
+        assets_params = [listing_id]
+        portfolio_filter_assets = ""
+        if portfolio_id != 0:
+            portfolio_filter_assets = "AND a.portfolio_id = %s"
+            assets_params.append(portfolio_id)
+
         assets_sql = f"""
             SELECT p.name AS portfolio_name, u.name AS owner_name, a.quantity, a.avg_price, l.currency_id,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at)) AS holding_days,
@@ -622,9 +630,9 @@ class Database:
             JOIN public.portfolios p ON a.portfolio_id = p.id
             JOIN public.users u ON p.owner_id = u.id
             LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-            WHERE a.listing_id = {listing_id} AND a.quantity > 0 {portfolio_filter_assets};
+            WHERE a.listing_id = %s AND a.quantity > 0 {portfolio_filter_assets};
         """
-        assets_res = self.execute_query(assets_sql)
+        assets_res = self.execute_query(assets_sql, tuple(assets_params))
         if not isinstance(assets_res, list):
             assets_res = []
 
@@ -644,8 +652,12 @@ class Database:
             })
 
         # ЗАПРОС 3: Контекст активных ордеров по listing_id
-        portfolio_filter_orders = "" if portfolio_id == 0 else f"AND o.portfolio_id = {portfolio_id}"
-        
+        orders_params = [listing_id]
+        portfolio_filter_orders = ""
+        if portfolio_id != 0:
+            portfolio_filter_orders = "AND o.portfolio_id = %s"
+            orders_params.append(portfolio_id)
+
         orders_sql = f"""
             SELECT p.name AS portfolio_name, o.broker_order_id, o.status, o.q AS order_quantity, o.p AS order_price,
                    l.currency_id, o.oper, o.created_at, COALESCE(r.rate, 1.0) as order_to_usd_rate
@@ -653,9 +665,9 @@ class Database:
             JOIN public.listings l ON o.listing_id = l.id
             JOIN public.portfolios p ON o.portfolio_id = p.id
             LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-            WHERE o.listing_id = {listing_id} AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED') {portfolio_filter_orders};
+            WHERE o.listing_id = %s AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED') {portfolio_filter_orders};
         """
-        orders_res = self.execute_query(orders_sql)
+        orders_res = self.execute_query(orders_sql, tuple(orders_params))
         if not isinstance(orders_res, list):
             orders_res = []
 
@@ -695,9 +707,9 @@ class Database:
         Выгружает все активные и исторические триггеры по конкретному listing_id,
         подтягивая имена владельцев портфелей и создателей алертов через реляционный слой.
         """
-        sql = f"""
-            SELECT 
-                al.id, al.portfolio_id, al.source_type, al.trigger_type, al.condition_type, 
+        sql = """
+            SELECT
+                al.id, al.portfolio_id, al.source_type, al.trigger_type, al.condition_type,
                 al.trigger_price, al.trigger_price_min, al.trigger_price_max, al.trigger_pct,
                 al.is_active, al.triggered_status, al.triggered_at, al.note, al.ai_strategy_id,
                 p.name AS portfolio_name,
@@ -707,10 +719,10 @@ class Database:
             JOIN public.portfolios p ON al.portfolio_id = p.id
             JOIN public.users u_owner ON p.owner_id = u_owner.id
             LEFT JOIN public.users u_creator ON al.created_by_user_id = u_creator.id
-            WHERE al.listing_id = {int(listing_id)}
+            WHERE al.listing_id = %s
             ORDER BY al.is_active DESC, al.created_at DESC;
         """
-        res = self.execute_query(sql)
+        res = self.execute_query(sql, (int(listing_id),))
         return res if isinstance(res, list) else ([res] if res else [])
 
 
