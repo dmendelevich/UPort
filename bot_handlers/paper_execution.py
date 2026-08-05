@@ -35,7 +35,7 @@ def _back_keyboard(portfolio_id: int, listing_id: int = 0):
     return generate_nav_back_keyboard(menu_only=True)
 
 
-def _refresh_assets_value_sql(portfolio_id: int) -> str:
+def _refresh_assets_value_sql() -> str:
     """
     accounts.assets_value для реальных портфелей держит в актуальном состоянии
     брокерский синк (sync_account_fb.py) -- у бумажного портфеля такого синка нет,
@@ -43,13 +43,13 @@ def _refresh_assets_value_sql(portfolio_id: int) -> str:
     при тестировании экрана «Тестовый капитал» -- без этого он показывал $0.00 по
     акциям, хотя карточка портфеля (считает live через assets/listings) была верна.
     """
-    return f"""
+    return """
         UPDATE public.accounts SET assets_value = (
             SELECT COALESCE(SUM(a.quantity * l.last_price), 0)
             FROM public.assets a JOIN public.listings l ON a.listing_id = l.id
-            WHERE a.portfolio_id = {int(portfolio_id)}
+            WHERE a.portfolio_id = %s
         )
-        WHERE portfolio_id = {int(portfolio_id)} AND currency_id = 'USD';
+        WHERE portfolio_id = %s AND currency_id = 'USD';
     """
 
 
@@ -61,7 +61,8 @@ async def _resolve_listing(t_id: int):
     """
     listing_row = await asyncio.to_thread(
         db_sys.execute_row,
-        f"SELECT id, last_price FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+        "SELECT id, last_price FROM public.listings WHERE ticker_id = %s AND broker_id = 1;",
+        (t_id,)
     )
     if not listing_row:
         try:
@@ -70,7 +71,8 @@ async def _resolve_listing(t_id: int):
             return False, f"⚠️ Не удалось легализовать листинг: {e}", 0
         listing_row = await asyncio.to_thread(
             db_sys.execute_row,
-            f"SELECT id, last_price FROM public.listings WHERE id = {int(listing_id)};"
+            "SELECT id, last_price FROM public.listings WHERE id = %s;",
+            (listing_id,)
         )
 
     listing_id = int(listing_row["id"])
@@ -97,12 +99,11 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
     quantity = max(1, round(amount / price))
     spent = quantity * price
     now = _system_now()
-    override_sql = "TRUE" if is_manual_override else "FALSE"
 
-    sql = f"""
+    sql = """
         WITH upsert_asset AS (
             INSERT INTO public.assets (portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at)
-            VALUES ({p_id}, {listing_id}, {quantity}, {price}, 'USD', '{now}', '{now}')
+            VALUES (%s, %s, %s, %s, 'USD', %s, %s)
             ON CONFLICT (portfolio_id, listing_id) DO UPDATE SET
                 avg_price = (assets.quantity * assets.avg_price + EXCLUDED.quantity * EXCLUDED.avg_price) / (assets.quantity + EXCLUDED.quantity),
                 quantity = assets.quantity + EXCLUDED.quantity,
@@ -111,7 +112,7 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
         ),
         upsert_strategy_asset AS (
             INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
-            SELECT id, {s_id}, {quantity}, '{now}' FROM upsert_asset
+            SELECT id, %s, %s, %s FROM upsert_asset
             ON CONFLICT (asset_id, strategy_id) DO UPDATE SET
                 allocated_quantity = strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
                 last_updated_at = EXCLUDED.last_updated_at
@@ -119,16 +120,22 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
         new_pipeline AS (
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price, is_manual_override)
-            VALUES ({p_id}, {listing_id}, {s_id}, {t_id}, 1, 'COMPLETED', {quantity}, {price}, {override_sql})
+            VALUES (%s, %s, %s, %s, 1, 'COMPLETED', %s, %s, %s)
         ),
         updated_cash AS (
-            UPDATE public.accounts SET cash_available = cash_available - {spent}, last_updated = '{now}'
-            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
+            UPDATE public.accounts SET cash_available = cash_available - %s, last_updated = %s
+            WHERE portfolio_id = %s AND currency_id = 'USD'
         )
         SELECT 1;
     """
-    await asyncio.to_thread(db_sys.execute_query, sql)
-    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
+    params = (
+        p_id, listing_id, quantity, price, now, now,
+        s_id, quantity, now,
+        p_id, listing_id, s_id, t_id, quantity, price, is_manual_override,
+        spent, now, p_id,
+    )
+    await asyncio.to_thread(db_sys.execute_query, sql, params)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(), (p_id, p_id))
     return True, quantity, price, spent, listing_id
 
 
@@ -145,7 +152,8 @@ async def _execute_virtual_sell(p_id: int, l_id: int, s_id: int, ticker_id: int,
     """
     price_row = await asyncio.to_thread(
         db_sys.execute_row,
-        f"SELECT l.last_price FROM public.listings l WHERE l.id = {l_id};"
+        "SELECT l.last_price FROM public.listings l WHERE l.id = %s;",
+        (l_id,)
     )
     price = float((price_row or {}).get("last_price") or 0.0)
     if price <= 0:
@@ -155,25 +163,29 @@ async def _execute_virtual_sell(p_id: int, l_id: int, s_id: int, ticker_id: int,
     pnl = (price - avg_price) * quantity
     pnl_pct = ((price - avg_price) / avg_price * 100.0) if avg_price > 0 else 0.0
     now = _system_now()
-    override_sql = "TRUE" if is_manual_override else "FALSE"
 
-    sql = f"""
+    sql = """
         WITH deleted_asset AS (
-            DELETE FROM public.assets WHERE id = {asset_id}
+            DELETE FROM public.assets WHERE id = %s
         ),
         new_pipeline AS (
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price, is_manual_override)
-            VALUES ({p_id}, {l_id}, {s_id}, {ticker_id}, 1, 'COMPLETED', {-quantity}, 0, {override_sql})
+            VALUES (%s, %s, %s, %s, 1, 'COMPLETED', %s, 0, %s)
         ),
         updated_cash AS (
-            UPDATE public.accounts SET cash_available = cash_available + {proceeds}, last_updated = '{now}'
-            WHERE portfolio_id = {p_id} AND currency_id = 'USD'
+            UPDATE public.accounts SET cash_available = cash_available + %s, last_updated = %s
+            WHERE portfolio_id = %s AND currency_id = 'USD'
         )
         SELECT 1;
     """
-    await asyncio.to_thread(db_sys.execute_query, sql)
-    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(p_id))
+    params = (
+        asset_id,
+        p_id, l_id, s_id, ticker_id, -quantity, is_manual_override,
+        proceeds, now, p_id,
+    )
+    await asyncio.to_thread(db_sys.execute_query, sql, params)
+    await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(), (p_id, p_id))
     return True, price, proceeds, pnl, pnl_pct
 
 
@@ -202,7 +214,8 @@ async def send_paper_buy_recommendations(db_instance, bot):
 
         owner_row = await asyncio.to_thread(
             db_instance.execute_row,
-            f"SELECT telegram_id FROM public.users WHERE id = {int(owner_id)};"
+            "SELECT telegram_id FROM public.users WHERE id = %s;",
+            (owner_id,)
         ) if owner_id else {}
         chat_id = (owner_row or {}).get("telegram_id")
         if not chat_id:
@@ -257,7 +270,8 @@ async def process_paper_buy_no(callback: types.CallbackQuery, callback_data: Men
     await callback.answer()
     listing_row = await asyncio.to_thread(
         db_sys.execute_row,
-        f"SELECT id FROM public.listings WHERE ticker_id = {callback_data.ticker_id} AND broker_id = 1;"
+        "SELECT id FROM public.listings WHERE ticker_id = %s AND broker_id = 1;",
+        (callback_data.ticker_id,)
     )
     l_id = int((listing_row or {}).get("id") or 0)
     try:
@@ -290,7 +304,8 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
     if not match:
         listing_row_chk = await asyncio.to_thread(
             db_sys.execute_row,
-            f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+            "SELECT id FROM public.listings WHERE ticker_id = %s AND broker_id = 1;",
+            (t_id,)
         )
         l_id_chk = int((listing_row_chk or {}).get("id") or 0)
         try:
@@ -307,7 +322,7 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
 
     amount = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
     cash_row = await asyncio.to_thread(
-        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+        db_sys.execute_row, "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = 'USD';", (p_id,)
     )
     cash_available = float((cash_row or {}).get("cash_available") or 0.0)
     amount = min(amount, cash_available)
@@ -315,7 +330,8 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
     if amount <= 0:
         listing_row_chk = await asyncio.to_thread(
             db_sys.execute_row,
-            f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+            "SELECT id FROM public.listings WHERE ticker_id = %s AND broker_id = 1;",
+            (t_id,)
         )
         l_id_chk = int((listing_row_chk or {}).get("id") or 0)
         try:
@@ -377,12 +393,12 @@ async def process_paper_buy_force_ask(callback: types.CallbackQuery, callback_da
     _, listing_id, price = resolved
 
     cash_row = await asyncio.to_thread(
-        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+        db_sys.execute_row, "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = 'USD';", (p_id,)
     )
     cash_available = float((cash_row or {}).get("cash_available") or 0.0)
     amount = min(amount, cash_available)
 
-    symbol_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT symbol FROM public.tickers WHERE id = {t_id};")
+    symbol_row = await asyncio.to_thread(db_sys.execute_row, "SELECT symbol FROM public.tickers WHERE id = %s;", (t_id,))
     symbol = (symbol_row or {}).get("symbol", "?")
 
     if amount <= 0:
@@ -441,12 +457,12 @@ async def process_paper_buy_force_yes(callback: types.CallbackQuery, callback_da
     advisor = CashDeploymentAdvisor(db_sys)
     amount = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
     cash_row = await asyncio.to_thread(
-        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+        db_sys.execute_row, "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = 'USD';", (p_id,)
     )
     cash_available = float((cash_row or {}).get("cash_available") or 0.0)
     amount = min(amount, cash_available)
 
-    symbol_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT symbol FROM public.tickers WHERE id = {t_id};")
+    symbol_row = await asyncio.to_thread(db_sys.execute_row, "SELECT symbol FROM public.tickers WHERE id = %s;", (t_id,))
     symbol = (symbol_row or {}).get("symbol", "?")
 
     if amount <= 0:
@@ -501,7 +517,8 @@ async def send_paper_sell_recommendations(db_instance, bot):
 
         owner_row = await asyncio.to_thread(
             db_instance.execute_row,
-            f"SELECT telegram_id FROM public.users WHERE id = {int(owner_id)};"
+            "SELECT telegram_id FROM public.users WHERE id = %s;",
+            (owner_id,)
         ) if owner_id else {}
         chat_id = (owner_row or {}).get("telegram_id")
         if not chat_id:
@@ -597,7 +614,7 @@ async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: M
     asset_id = int(match["asset_id"])
     ticker_id = int(match["ticker_id"])
 
-    avg_price_row = await asyncio.to_thread(db_sys.execute_row, f"SELECT avg_price FROM public.assets WHERE id = {asset_id};")
+    avg_price_row = await asyncio.to_thread(db_sys.execute_row, "SELECT avg_price FROM public.assets WHERE id = %s;", (asset_id,))
     avg_price = float((avg_price_row or {}).get("avg_price") or 0.0)
 
     result = await _execute_virtual_sell(p_id, l_id, s_id, ticker_id, asset_id, quantity, avg_price, is_manual_override=False)
@@ -638,13 +655,14 @@ async def process_paper_sell_force_ask(callback: types.CallbackQuery, callback_d
 
     asset_row = await asyncio.to_thread(
         db_sys.execute_row,
-        f"""
+        """
             SELECT a.id AS asset_id, a.quantity, a.avg_price, l.last_price, l.ticker_id, t.symbol
             FROM public.assets a
             JOIN public.listings l ON a.listing_id = l.id
             JOIN public.tickers t ON l.ticker_id = t.id
-            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s;
+        """,
+        (p_id, l_id)
     )
     if not asset_row:
         try:
@@ -700,13 +718,14 @@ async def process_paper_sell_force_yes(callback: types.CallbackQuery, callback_d
 
     asset_row = await asyncio.to_thread(
         db_sys.execute_row,
-        f"""
+        """
             SELECT a.id AS asset_id, a.quantity, a.avg_price, l.ticker_id, t.symbol
             FROM public.assets a
             JOIN public.listings l ON a.listing_id = l.id
             JOIN public.tickers t ON l.ticker_id = t.id
-            WHERE a.portfolio_id = {p_id} AND a.listing_id = {l_id};
-        """
+            WHERE a.portfolio_id = %s AND a.listing_id = %s;
+        """,
+        (p_id, l_id)
     )
     if not asset_row:
         try:
