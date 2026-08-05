@@ -26,11 +26,11 @@ async def process_universal_confirm_screen(callback: types.CallbackQuery, callba
     quantity = int(payload[1])
     
     # Запрашиваем из базы человеческие имена обеих стратегий для зрячего вопроса
-    sql_src = f"SELECT strategy_name FROM public.strategies WHERE id = {int(source_id)} LIMIT 1;"
-    sql_tgt = f"SELECT strategy_name FROM public.strategies WHERE id = {int(target_id)} LIMIT 1;"
-    
-    src_res = await asyncio.to_thread(db_bot.execute_query, sql_src)
-    tgt_res = await asyncio.to_thread(db_bot.execute_query, sql_tgt)
+    sql_src = "SELECT strategy_name FROM public.strategies WHERE id = %s LIMIT 1;"
+    sql_tgt = "SELECT strategy_name FROM public.strategies WHERE id = %s LIMIT 1;"
+
+    src_res = await asyncio.to_thread(db_bot.execute_query, sql_src, (source_id,))
+    tgt_res = await asyncio.to_thread(db_bot.execute_query, sql_tgt, (target_id,))
     
     src_row = src_res[0] if isinstance(src_res, list) and len(src_res) > 0 else {}
     tgt_row = tgt_res[0] if isinstance(tgt_res, list) and len(tgt_res) > 0 else {}
@@ -86,16 +86,14 @@ async def process_universal_execute(callback: types.CallbackQuery, callback_data
     target_id = callback_data.task_id 
 
     if action_type == "transfer":
-        sql_l = f"SELECT id, t.symbol FROM public.listings l JOIN public.tickers t ON t.id = l.ticker_id WHERE l.ticker_id = {int(ticker_id)} LIMIT 1;"
-        l_res = await asyncio.to_thread(db_bot.execute_query, sql_l)
+        sql_l = "SELECT l.id, t.symbol FROM public.listings l JOIN public.tickers t ON t.id = l.ticker_id WHERE l.ticker_id = %s LIMIT 1;"
+        l_res = await asyncio.to_thread(db_bot.execute_query, sql_l, (ticker_id,))
         l_row = l_res[0] if isinstance(l_res, list) and len(l_res) > 0 else (l_res if isinstance(l_res, dict) else {})
         listing_id = int(l_row.get("id", 0))
         symbol = l_row.get("symbol", "бумага")
 
-        sql_names = f"""
-            SELECT id, strategy_name FROM public.strategies WHERE id IN ({int(source_id)}, {int(target_id)});
-        """
-        names_res = await asyncio.to_thread(db_bot.execute_query, sql_names)
+        sql_names = "SELECT id, strategy_name FROM public.strategies WHERE id IN (%s, %s);"
+        names_res = await asyncio.to_thread(db_bot.execute_query, sql_names, (source_id, target_id))
         names_res = names_res if isinstance(names_res, list) else ([names_res] if names_res else [])
         names_by_id = {int(r["id"]): r["strategy_name"] for r in names_res}
         source_name = names_by_id.get(source_id, "исходной стратегии")
