@@ -308,12 +308,12 @@ class Database:
         if b_id == 1:
             try:
                 if not fb_client:
+                    # Та же фабрика, что и в ensure_ticker_v3 (Claude/BACKLOG.md №80) -- раньше
+                    # здесь были жёстко зашиты личные ключи ДЛМ (FB_DLM_API_KEY/SECRET) в обход
+                    # фабрики, независимо от того, чей портфель легализует листинг.
                     from brokers_connectors.fb_client import FreedomBrokerClient
-                    pub_key = os.getenv("FB_DLM_API_KEY")
-                    priv_key = os.getenv("FB_DLM_API_SECRET")
-                    if pub_key and priv_key:
-                        fb_client = FreedomBrokerClient(pub_key, priv_key)
-                
+                    fb_client = FreedomBrokerClient.create_for_user(user_id=1, db_instance=self)
+
                 if fb_client:
                     # Запрашиваем справочную валюту по каноническому имени (напр. 'RKLB.US')
                     sec_info = fb_client.get_security_info(broker_ticker_name)
