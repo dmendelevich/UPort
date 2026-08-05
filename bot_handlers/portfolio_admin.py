@@ -152,10 +152,10 @@ async def process_name_text(message: types.Message, state: FSMContext, bot: Bot)
 
     await state.update_data(new_portfolio_name=raw_name)
 
-    sql_owner = f"SELECT name FROM public.users WHERE id = {owner_id} LIMIT 1;"
-    sql_broker = f"SELECT name FROM public.brokers WHERE id = {broker_id} LIMIT 1;"
-    owner_row = await asyncio.to_thread(db_bot.execute_row, sql_owner)
-    broker_row = await asyncio.to_thread(db_bot.execute_row, sql_broker)
+    sql_owner = "SELECT name FROM public.users WHERE id = %s LIMIT 1;"
+    sql_broker = "SELECT name FROM public.brokers WHERE id = %s LIMIT 1;"
+    owner_row = await asyncio.to_thread(db_bot.execute_row, sql_owner, (owner_id,))
+    broker_row = await asyncio.to_thread(db_bot.execute_row, sql_broker, (broker_id,))
     owner_name = owner_row.get("name", f"ID {owner_id}")
     broker_name = broker_row.get("name", f"ID {broker_id}")
 
@@ -219,7 +219,6 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
     owner_id = int(user_data.get("new_portfolio_owner_id", 0))
     broker_id = int(user_data.get("new_portfolio_broker_id", 0))
     raw_name = user_data.get("new_portfolio_name", "")
-    clean_name = raw_name.replace("'", "''")
 
     # Атомарно заводит ВСЕ 5 шаблонов стратегий (не только служебные), см.
     # Claude/BACKLOG.md п.9 (2026-07-31) -- каждый портфель должен иметь полный
@@ -228,10 +227,10 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
     # сразу с заводской долей (`recommended_share_pct`); содержательные
     # (Револьверная/Консервативное накопление/Трендовая) -- Пассивные, доля 0%,
     # включаются вручную, когда понадобятся (готовая цель будущего переноса).
-    sql_create = f"""
+    sql_create = """
         WITH new_portfolio AS (
             INSERT INTO public.portfolios (name, owner_id, broker_id)
-            VALUES ('{clean_name}', {owner_id}, {broker_id})
+            VALUES (%s, %s, %s)
             RETURNING id
         ),
         all_strategies AS (
@@ -256,7 +255,7 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
         FROM new_portfolio;
     """
 
-    result = await asyncio.to_thread(db_sys.execute_query, sql_create)
+    result = await asyncio.to_thread(db_sys.execute_query, sql_create, (raw_name, owner_id, broker_id))
 
     # Бережно сохраняем системные user_db_id/is_admin через clear() + update_data(),
     # как и в process_cancel/process_back_to_menu -- иначе админ незаметно потеряет
