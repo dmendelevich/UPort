@@ -22,14 +22,14 @@ class SyncStrategyAssetFB:
         Вызывается ДО того, как демон применит обновление от брокера.
         """
         # Страховочный запрос. Ищем позицию по связке портфеля и листинга
-        sql = f"""
-            SELECT quantity 
-            FROM public.assets 
-            WHERE portfolio_id = {int(portfolio_id)} 
-              AND listing_id = {int(listing_id)};
+        sql = """
+            SELECT quantity
+            FROM public.assets
+            WHERE portfolio_id = %s
+              AND listing_id = %s;
         """
         # Используем безопасный метод одной строки без скобок
-        row = self.db.execute_row(sql)
+        row = self.db.execute_row(sql, (portfolio_id, listing_id))
         if 'quantity' in row:
             return float(row['quantity'])
 
@@ -93,16 +93,18 @@ class SyncStrategyAssetFB:
         проактивно до всякой покупки, см. Claude/11_asset_lifecycle_and_plan.md). Больше одного
         кандидата -- не гадаем, чей это ордер/покупка (см. Claude/09_pipeline_reconciliation.md).
         """
+        # condition -- фиксированный структурный фрагмент (не из пользовательского ввода),
+        # placeholder не годится, остаётся f-строкой (см. Claude/BACKLOG.md №81).
         condition = "pending_broker_order_id IS NOT NULL" if require_linked_order else "pending_broker_order_id IS NULL"
         sql = f"""
             SELECT id, strategy_id, current_step, target_quantity
             FROM public.order_pipelines
-            WHERE portfolio_id = {int(portfolio_id)}
-              AND ticker_id = {int(ticker_id)}
+            WHERE portfolio_id = %s
+              AND ticker_id = %s
               AND pipeline_status IN ('PENDING', 'ACTIVE')
               AND {condition};
         """
-        pipes = self.db.execute_query(sql)
+        pipes = self.db.execute_query(sql, (portfolio_id, ticker_id))
         pipes = pipes if isinstance(pipes, list) else ([pipes] if pipes else [])
 
         if len(pipes) == 0:
@@ -122,15 +124,15 @@ class SyncStrategyAssetFB:
         Держится в нескольких стратегиях сразу -- настоящая неоднозначность, не резолвим.
         Возвращает (strategy_id, allocated_quantity) или None.
         """
-        sql = f"""
+        sql = """
             SELECT sa.strategy_id, sa.allocated_quantity
             FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
             JOIN public.listings l ON a.listing_id = l.id
-            WHERE a.portfolio_id = {int(portfolio_id)} AND l.ticker_id = {int(ticker_id)}
+            WHERE a.portfolio_id = %s AND l.ticker_id = %s
               AND sa.allocated_quantity > 0;
         """
-        rows = self.db.execute_query(sql)
+        rows = self.db.execute_query(sql, (portfolio_id, ticker_id))
         rows = rows if isinstance(rows, list) else ([rows] if rows else [])
 
         if len(rows) != 1:
@@ -144,16 +146,16 @@ class SyncStrategyAssetFB:
         для срочных продаж, сделанных в обход бота. Цена -- assets.avg_price на момент записи
         (нет привязанного ордера, откуда брать цену исполнения, см. _notify_step_filled).
         """
-        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
-        result = self.db.execute_query(f"""
+        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
+        result = self.db.execute_query("""
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                ({int(portfolio_id)}, {int(listing_id)}, {int(ticker_id)}, {int(strategy_id)}, 1, 'COMPLETED',
-                 {matched_qty}, 0, NULL, '{system_now}', '{system_now}')
+                (%s, %s, %s, %s, 1, 'COMPLETED',
+                 %s, 0, NULL, %s, %s)
             RETURNING id;
-        """)
+        """, (portfolio_id, listing_id, ticker_id, strategy_id, matched_qty, system_now, system_now))
         if not result:
             logging.error(f"🚨 [UPort Стратегии]: Не удалось записать задним числом план продажи (портфель {portfolio_id}, тикер {ticker_id}, стратегия {strategy_id}).")
             return None
@@ -214,13 +216,13 @@ class SyncStrategyAssetFB:
             return strat_id, pipe_id, 'COMPLETE_PIPELINE', target_qty, excess_qty
 
         # Проверка 2: дельта относительно текущего шага лесенки (через strategy_tactics)
-        sql_tactic = f"""
+        sql_tactic = """
             SELECT budget_share_pct
             FROM public.strategy_tactics
-            WHERE strategy_id = {strat_id}
-              AND step_number = {curr_step};
+            WHERE strategy_id = %s
+              AND step_number = %s;
         """
-        tactic = self.db.execute_row(sql_tactic)
+        tactic = self.db.execute_row(sql_tactic, (strat_id, curr_step))
         if tactic:
             expected_step_qty = expected_step_quantity(target_qty, tactic['budget_share_pct'])
 
@@ -239,15 +241,15 @@ class SyncStrategyAssetFB:
         Находит ID буферной стратегии для данного портфеля через связь с
         "заводским" шаблоном (system_key = 'UNALLOCATED'), а не по тексту имени.
         """
-        sql = f"""
+        sql = """
             SELECT s.id
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {int(portfolio_id)}
+            WHERE s.portfolio_id = %s
               AND st.system_key = 'UNALLOCATED';
         """
         # Безопасно забираем одну строку буфера
-        row = self.db.execute_row(sql)
+        row = self.db.execute_row(sql, (portfolio_id,))
         if row:
             return int(row['id'])
 
@@ -260,12 +262,12 @@ class SyncStrategyAssetFB:
         в таблицу strategy_assets. Использует UPSERT (ON CONFLICT).
         """
         # Стерильный UTC-срез времени UPort без микросекунд и таймзон
-        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
         
         # Получаем ID связи из assets, так как таблица strategy_assets жестко привязана к общему котлу
-        sql_asset = f"SELECT id FROM public.assets WHERE portfolio_id = {int(portfolio_id)} AND listing_id = {int(listing_id)};"
-        asset_row = self.db.execute_row(sql_asset)
-        
+        sql_asset = "SELECT id FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;"
+        asset_row = self.db.execute_row(sql_asset, (portfolio_id, listing_id))
+
         if not asset_row:
             logging.error(f"🚨 [UPort]: Не удалось найти asset_id для листинга {listing_id} портфеля {portfolio_id}")
             return
@@ -273,15 +275,15 @@ class SyncStrategyAssetFB:
         asset_id = int(asset_row['id'])
 
         # Магия сквозной математики: просто прибавляем дельту (неважно, +5 или -5)
-        sql_upsert = f"""
+        sql_upsert = """
             INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
-            VALUES ({asset_id}, {int(strategy_id)}, {delta}, '{system_now}')
-            ON CONFLICT (asset_id, strategy_id) 
-            DO UPDATE SET 
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (asset_id, strategy_id)
+            DO UPDATE SET
                 allocated_quantity = public.strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
                 last_updated_at = EXCLUDED.last_updated_at;
         """
-        self.db.execute_query(sql_upsert)
+        self.db.execute_query(sql_upsert, (asset_id, strategy_id, delta, system_now))
 
     def _notify_step_filled(self, pipeline_id: int, action: str, matched_qty: float):
         """
@@ -291,7 +293,7 @@ class SyncStrategyAssetFB:
         это уведомление, а не критическая операция.
         """
         try:
-            row = self.db.execute_row(f"""
+            row = self.db.execute_row("""
                 SELECT op.current_step, op.pending_broker_order_id,
                        t.symbol, s.strategy_name, port.name AS portfolio_name,
                        u.telegram_id, o.p AS order_price, a.avg_price
@@ -302,8 +304,8 @@ class SyncStrategyAssetFB:
                 JOIN public.users u ON port.owner_id = u.id
                 LEFT JOIN public.orders o ON o.broker_order_id = op.pending_broker_order_id
                 LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
-                WHERE op.id = {int(pipeline_id)};
-            """)
+                WHERE op.id = %s;
+            """, (pipeline_id,))
             if not row or not row.get("telegram_id"):
                 return
 
@@ -347,27 +349,27 @@ class SyncStrategyAssetFB:
         В обоих случаях снимает pending_broker_order_id -- отработавший ордер больше не ожидается,
         следующий шаг (если есть) должен быть привязан заново через bot_handlers/order_pipelines.py.
         """
-        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+        system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
 
         if action == 'COMPLETE_PIPELINE':
             # Цель достигнута полностью, закрываем конвейер
-            sql = f"""
+            sql = """
                 UPDATE public.order_pipelines
                 SET pipeline_status = 'COMPLETED',
                     pending_broker_order_id = NULL,
-                    updated_at = '{system_now}'
-                WHERE id = {int(pipeline_id)};
+                    updated_at = %s
+                WHERE id = %s;
             """
-            self.db.execute_query(sql)
+            self.db.execute_query(sql, (system_now, pipeline_id))
 
         elif action == 'NEXT_STEP':
             # Шаг лесенки совпал, переключаем конвейер на следующий уровень и активируем его статус
-            sql = f"""
+            sql = """
                 UPDATE public.order_pipelines
                 SET current_step = current_step + 1,
                     pipeline_status = 'ACTIVE',
                     pending_broker_order_id = NULL,
-                    updated_at = '{system_now}'
-                WHERE id = {int(pipeline_id)};
+                    updated_at = %s
+                WHERE id = %s;
             """
-            self.db.execute_query(sql)
+            self.db.execute_query(sql, (system_now, pipeline_id))
