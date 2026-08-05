@@ -272,9 +272,14 @@ async def process_paper_buy_no(callback: types.CallbackQuery, callback_data: Men
 async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: MenuAction):
     """
     Подтверждение покупки -- перепроверяет условия заново (не исполняет старыми
-    числами из утреннего сообщения): кандидат должен всё ещё быть реальной
-    рекомендацией CashDeploymentAdvisor. Для покупки вопреки совету -- см.
-    paper_buy_force_yes (BACKLOG.md №73).
+    числами из утреннего сообщения). BACKLO.md №74 (живой кейс NRG, 2026-08-05):
+    раньше требовалось точное совпадение с ЕДИНСТВЕННЫМ лидером рейтинга из
+    evaluate_deployment -- клик на любого другого кандидата из топ-10 «Предложений»
+    отваливался как "условия изменились", даже если тикер честно проходит экран
+    стратегии. Теперь -- verify_buy_candidate (тикер не куплен, стратегия ещё не
+    добрана, экран пройден сейчас), сумма -- compute_slot_size (та же формула слота,
+    что и у форс-покупки), с тем же кэп по доступному кэшу. Для покупки вопреки
+    совету -- см. paper_buy_force_yes (BACKLOG.md №73).
     """
     p_id = callback_data.portfolio_id
     s_id = callback_data.strategy_id
@@ -283,12 +288,7 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
     await callback.answer("Проверяю условия...")
 
     advisor = CashDeploymentAdvisor(db_sys)
-    recommendations = await asyncio.to_thread(advisor.evaluate_deployment, p_id)
-    match = next(
-        (r for r in recommendations
-         if r.get("status") == "CANDIDATE_FOUND" and int(r.get("strategy_id", -1)) == s_id and int(r.get("ticker_id", -1)) == t_id),
-        None
-    )
+    match = await asyncio.to_thread(advisor.verify_buy_candidate, p_id, s_id, t_id)
     if not match:
         listing_row_chk = await asyncio.to_thread(
             db_sys.execute_row,
@@ -305,8 +305,29 @@ async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: Me
         return
 
     symbol = match["symbol"]
-    amount = float(match["step1_amount_usd"])
     strategy_name = match["strategy_name"]
+
+    amount = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
+    cash_row = await asyncio.to_thread(
+        db_sys.execute_row, f"SELECT cash_available FROM public.accounts WHERE portfolio_id = {p_id} AND currency_id = 'USD';"
+    )
+    cash_available = float((cash_row or {}).get("cash_available") or 0.0)
+    amount = min(amount, cash_available)
+
+    if amount <= 0:
+        listing_row_chk = await asyncio.to_thread(
+            db_sys.execute_row,
+            f"SELECT id FROM public.listings WHERE ticker_id = {t_id} AND broker_id = 1;"
+        )
+        l_id_chk = int((listing_row_chk or {}).get("id") or 0)
+        try:
+            await callback.message.edit_text(
+                f"⚠️ Не удалось исполнить {symbol} -- нет свободного кэша или размера слота.",
+                reply_markup=_back_keyboard(p_id, l_id_chk)
+            )
+        except TelegramBadRequest:
+            pass
+        return
 
     result = await _execute_virtual_buy(p_id, s_id, t_id, amount, is_manual_override=False)
     if not result[0]:

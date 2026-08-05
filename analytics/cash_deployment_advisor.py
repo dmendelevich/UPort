@@ -57,14 +57,43 @@ class CashDeploymentAdvisor:
         )
         return results[0] if results else None
 
+    def _compute_slot_cap(self, rules_config: dict, ideal_budget_usd: float, total_capital: float) -> float:
+        """
+        Целевой размер слота (ДО применения share_pct шага 1) -- приоритет сверху вниз
+        (Claude/13_portfolio_construction_and_rebalancing_rules.md, 2026-08-03):
+        1) tactic_slot_fixed_usd -- фиксированная сумма (Револьверная $1000, Трендовая
+           $3000): число одновременно доступных качественных идей не растёт вместе с
+           капиталом семьи, поэтому размер слота ФИКСИРОВАН, а растёт число слотов.
+        2) tactic_slot_pct_of_strategy -- % от ЦЕЛЕВОГО бюджета САМОЙ стратегии.
+        3) иначе -- потолок от ОБЩЕГО капитала портфеля (portfolio_max_asset_pct).
+
+        portfolio_max_asset_pct -- ВСЕГДА жёсткий потолок сверху, независимо от того,
+        откуда взялась исходная сумма (BACKLOG.md №74, живой случай 2026-08-05: у П10,
+        капитал $10 439, фиксированный слот Трендовой $3000 оказался 28.7% капитала при
+        лимите на бумагу 3% -- формула это раньше не проверяла вообще, риск-лимит можно
+        было пробить собственной рекомендацией системы).
+        """
+        slot_fixed_usd = rules_config.get("tactic_slot_fixed_usd")
+        slot_pct_of_strategy = rules_config.get("tactic_slot_pct_of_strategy")
+        if slot_fixed_usd is not None:
+            slot_cap = float(slot_fixed_usd)
+        elif slot_pct_of_strategy is not None:
+            slot_cap = ideal_budget_usd * float(slot_pct_of_strategy) / 100.0
+        else:
+            slot_cap = None
+
+        max_asset_pct = float(rules_config.get("portfolio_max_asset_pct") or 5.0)
+        hard_cap = total_capital * max_asset_pct / 100.0
+        return hard_cap if slot_cap is None else min(slot_cap, hard_cap)
+
     def compute_slot_size(self, portfolio_id: int, strategy_id: int) -> float:
         """
         Целевой размер слота (шаг 1 лесенки) для стратегии -- та же формула, что и
-        в evaluate_deployment (tactic_slot_fixed_usd -> tactic_slot_pct_of_strategy ->
-        portfolio_max_asset_pct), но БЕЗ проверки, есть ли реально недофинансирование
-        (slack). Нужно для "Всё равно купить" -- ручного форс-оверрайда совета системы
-        (BACKLOG.md №73) -- там условия "стратегия недофинансирована" может не быть
-        вовсе (пользователь хочет купить, даже если стратегия уже на цели).
+        в evaluate_deployment (см. _compute_slot_cap), но БЕЗ проверки, есть ли реально
+        недофинансирование (slack). Нужно для "Всё равно купить" -- ручного
+        форс-оверрайда совета системы (BACKLOG.md №73) -- там условия "стратегия
+        недофинансирована" может не быть вовсе (пользователь хочет купить, даже если
+        стратегия уже на цели).
         """
         inspector = PortfolioInspector(self.db, portfolio_id)
         balances = inspector.get_virtual_cash_balances()
@@ -84,19 +113,53 @@ class CashDeploymentAdvisor:
         )
         ideal_budget_usd = float((bal or {}).get("ideal_budget_usd") or 0.0)
 
-        slot_fixed_usd = rules_config.get("tactic_slot_fixed_usd")
-        slot_pct_of_strategy = rules_config.get("tactic_slot_pct_of_strategy")
-        if slot_fixed_usd is not None:
-            slot_cap = float(slot_fixed_usd)
-        elif slot_pct_of_strategy is not None:
-            slot_cap = ideal_budget_usd * float(slot_pct_of_strategy) / 100.0
-        else:
-            max_asset_pct = float(rules_config.get("portfolio_max_asset_pct") or 5.0)
-            slot_cap = total_capital * max_asset_pct / 100.0
+        slot_cap = self._compute_slot_cap(rules_config, ideal_budget_usd, total_capital)
 
         tactic = self._get_step1_tactic(strategy_id)
         step1_share_pct = float(tactic.get("budget_share_pct") or 100.0)
         return round(slot_cap * step1_share_pct / 100.0, 2)
+
+    def verify_buy_candidate(self, portfolio_id: int, strategy_id: int, ticker_id: int) -> dict:
+        """
+        Проверка "всё ещё можно ли купить именно этот тикер под эту стратегию" --
+        менее строгая версия evaluate_deployment (та признаёт СТРОГО ОДНОГО лучшего
+        по рангу кандидата на стратегию). Нужна для paper_buy_yes (BACKLOG.md №74,
+        живой кейс NRG, 2026-08-05): «Предложения» показывают топ-10 кандидатов для
+        обзора, а evaluate_deployment -- только текущего лидера рейтинга; клик на
+        любого другого из топ-10 раньше ВСЕГДА проваливался бы как "условия
+        изменились", даже если тикер честно проходит экран стратегии и деньги под
+        неё ещё есть -- просто он не сегодняшний фаворит по ранжированию.
+
+        Проверяет: тикер ещё не куплен в портфеле, стратегия содержательная и
+        активна, у стратегии есть свободный кэш (slack), тикер проходит экран
+        стратегии ПРЯМО СЕЙЧАС. Возвращает {} если что-то не так, иначе
+        {"symbol":..., "strategy_name":...}.
+        """
+        held_ids = self._get_held_ticker_ids(portfolio_id)
+        if int(ticker_id) in held_ids:
+            return {}
+
+        strat_rows = self._get_strategies_with_keys(portfolio_id)
+        strat_row = next((r for r in strat_rows if int(r["id"]) == int(strategy_id)), None)
+        if not strat_row or strat_row.get("system_key") not in self.CONTENT_SYSTEM_KEYS:
+            return {}
+
+        inspector = PortfolioInspector(self.db, portfolio_id)
+        balances = inspector.get_virtual_cash_balances()
+        bal = next(
+            (b for s_id, b in balances.get("strategies", {}).items() if int(s_id) == int(strategy_id)),
+            {}
+        )
+        slack = float((bal or {}).get("virtual_free_cash_usd") or 0.0)
+        if slack <= 0:
+            return {}
+
+        report = self.evaluator.evaluate_ticker_strategy(ticker_id, portfolio_id)
+        info = (report.get("explain_map") or {}).get(int(strategy_id))
+        if not info or not info.get("is_compatible_technically"):
+            return {}
+
+        return {"symbol": report.get("symbol"), "strategy_name": strat_row.get("strategy_name")}
 
     def evaluate_deployment(self, portfolio_id: int) -> list:
         """
@@ -168,25 +231,7 @@ class CashDeploymentAdvisor:
             if remaining_pool <= 0:
                 break
 
-            # Размер слота -- три варианта, приоритет сверху вниз (Claude/13_portfolio_
-            # construction_and_rebalancing_rules.md, 2026-08-03):
-            # 1) tactic_slot_fixed_usd -- фиксированная сумма (Револьверная $1000, Трендовая
-            #    $3000): число одновременно доступных качественных спекулятивных/трендовых
-            #    идей не растёт вместе с капиталом семьи, поэтому размер слота ФИКСИРОВАН, а
-            #    растёт число слотов. Пересматривается вручную на ежемесячном ритуале, не
-            #    автоматически (см. _monthly_slot_review_items в daily_digest.py).
-            # 2) tactic_slot_pct_of_strategy -- % от ЦЕЛЕВОГО бюджета САМОЙ стратегии
-            #    (Консервативная, 5%): само масштабируется с капиталом, пересмотр не нужен.
-            # 3) иначе -- старое поведение, потолок от ОБЩЕГО капитала портфеля.
-            slot_fixed_usd = cand["rules_config"].get("tactic_slot_fixed_usd")
-            slot_pct_of_strategy = cand["rules_config"].get("tactic_slot_pct_of_strategy")
-            if slot_fixed_usd is not None:
-                slot_cap = float(slot_fixed_usd)
-            elif slot_pct_of_strategy is not None:
-                slot_cap = cand["ideal_budget_usd"] * float(slot_pct_of_strategy) / 100.0
-            else:
-                max_asset_pct = float(cand["rules_config"].get("portfolio_max_asset_pct") or 5.0)
-                slot_cap = total_capital * max_asset_pct / 100.0
+            slot_cap = self._compute_slot_cap(cand["rules_config"], cand["ideal_budget_usd"], total_capital)
             target_slot = min(cand["slack_usd"], remaining_pool, slot_cap)
             if target_slot <= 0:
                 continue
