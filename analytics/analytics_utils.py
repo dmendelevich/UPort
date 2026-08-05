@@ -65,7 +65,8 @@ def _get_fx_rate(db_instance, from_currency: str, to_currency: str) -> float:
 
     if curr_to == "USD":
         row = db_instance.execute_row(
-            f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_from}' AND to_currency = 'USD' LIMIT 1;"
+            "SELECT rate FROM public.currency_rates WHERE from_currency = %s AND to_currency = 'USD' LIMIT 1;",
+            (curr_from,)
         )
         if row and row.get("rate"):
             return float(row["rate"])
@@ -74,10 +75,12 @@ def _get_fx_rate(db_instance, from_currency: str, to_currency: str) -> float:
 
     # Хаб через USD: rate(X->USD) / rate(Y->USD)
     row_from = db_instance.execute_row(
-        f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_from}' AND to_currency = 'USD' LIMIT 1;"
+        "SELECT rate FROM public.currency_rates WHERE from_currency = %s AND to_currency = 'USD' LIMIT 1;",
+        (curr_from,)
     )
     row_to = db_instance.execute_row(
-        f"SELECT rate FROM public.currency_rates WHERE from_currency = '{curr_to}' AND to_currency = 'USD' LIMIT 1;"
+        "SELECT rate FROM public.currency_rates WHERE from_currency = %s AND to_currency = 'USD' LIMIT 1;",
+        (curr_to,)
     )
     if row_from and row_from.get("rate") and row_to and row_to.get("rate"):
         return float(row_from["rate"]) / float(row_to["rate"])
@@ -119,8 +122,8 @@ def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_
         return float(amount)
 
     try:
-        sql_mult = f"SELECT multiplier FROM public.currencies WHERE id = '{curr_from}' LIMIT 1;"
-        res_mult = db_instance.execute_query(sql_mult)
+        sql_mult = "SELECT multiplier FROM public.currencies WHERE id = %s LIMIT 1;"
+        res_mult = db_instance.execute_query(sql_mult, (curr_from,))
         multiplier = float(res_mult[0]["multiplier"]) if res_mult and res_mult[0].get("multiplier") else 1.0
 
         rate = _get_fx_rate(db_instance, curr_from, curr_to)
@@ -211,11 +214,11 @@ class TickerEvaluator:
         2026-08-03). Единая точка вместо трёх независимых копий одной проверки
         (BACKLOG.md, Трек C, п.53).
         """
-        broker_row = self.db.execute_row(f"""
+        broker_row = self.db.execute_row("""
             SELECT b.short_name FROM public.portfolios p
             JOIN public.brokers b ON p.broker_id = b.id
-            WHERE p.id = {int(portfolio_id)};
-        """)
+            WHERE p.id = %s;
+        """, (portfolio_id,))
         short_name = (broker_row or {}).get("short_name")
         if short_name is None:
             return True
@@ -435,8 +438,10 @@ class TickerEvaluator:
         🌐 ГЛАВНАЯ СКВОЗНАЯ ТОЧКА ВХОДА ЭВАЛЮАТОРА UPORT (один тикер)
         Сводит воедино все расчеты по трем стратегиям и формирует паспорт актива.
         """
-        sql_ticker = f"SELECT {self.TICKER_FACTS_SQL_COLUMNS} FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
-        ticker_res = self.db.execute_query(sql_ticker)
+        # TICKER_FACTS_SQL_COLUMNS -- фиксированный список колонок константой класса
+        # (не из пользовательского ввода), остаётся f-строкой (Claude/BACKLOG.md №81).
+        sql_ticker = f"SELECT {self.TICKER_FACTS_SQL_COLUMNS} FROM public.tickers WHERE id = %s LIMIT 1;"
+        ticker_res = self.db.execute_query(sql_ticker, (ticker_id,))
         if not ticker_res:
             return {"error": f"Тикер с ID={ticker_id} не найден в СУБД."}
 
@@ -450,13 +455,13 @@ class TickerEvaluator:
         # всей БД и не привязан к порядковому номеру стратегии внутри портфеля.
         # is_screening_active = false -- пассивная стратегия (см. Claude/BACKLOG.md п.9,
         # 2026-07-31), не подбираем под неё новых кандидатов, пока не включена.
-        sql_strat = f"""
+        sql_strat = """
             SELECT s.id, s.rules_config, st.system_key
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = {int(target_portfolio_id)} AND s.is_active = true AND s.is_screening_active = true;
+            WHERE s.portfolio_id = %s AND s.is_active = true AND s.is_screening_active = true;
         """
-        strat_rows = self.db.execute_query(sql_strat) or []
+        strat_rows = self.db.execute_query(sql_strat, (target_portfolio_id,)) or []
         clean_strat_rows = strat_rows if isinstance(strat_rows, list) else [strat_rows]
 
         strategy_configs = {}
@@ -510,12 +515,12 @@ class TickerEvaluator:
         ranking_value по убыванию: [{"ticker_id", "symbol", "ranking_value",
         "metrics"}, ...].
         """
-        strat_row = self.db.execute_row(f"""
+        strat_row = self.db.execute_row("""
             SELECT s.rules_config, st.system_key
             FROM public.strategies s
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.id = {int(strategy_id)};
-        """)
+            WHERE s.id = %s;
+        """, (strategy_id,))
         if not strat_row or not strat_row.get("system_key"):
             return []
 
@@ -528,19 +533,23 @@ class TickerEvaluator:
         rules_config = strat_row.get("rules_config") or {}
         exclude_ticker_ids = exclude_ticker_ids or set()
 
+        # US_EXCHANGE_CODES -- фиксированный кортеж-константа класса (не из пользовательского
+        # ввода), остаётся f-строкой. exclude_ticker_ids -- динамический набор id, IN-список
+        # не работает через JSON-параметризацию (см. Claude/BACKLOG.md №81) -- ANY(%s).
         sql = f"SELECT {self.TICKER_FACTS_SQL_COLUMNS} FROM public.tickers"
         conditions = []
+        params = []
         if us_only:
             codes = "', '".join(self.US_EXCHANGE_CODES)
             conditions.append(f"exchange_mic IN ('{codes}')")
         if exclude_ticker_ids:
-            ids_str = ", ".join(str(int(t)) for t in exclude_ticker_ids)
-            conditions.append(f"id NOT IN ({ids_str})")
+            conditions.append("NOT (id = ANY(%s))")
+            params.append([int(t) for t in exclude_ticker_ids])
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += ";"
 
-        rows = self.db.execute_query(sql) or []
+        rows = self.db.execute_query(sql, tuple(params)) or []
         rows = rows if isinstance(rows, list) else [rows]
 
         results = []
