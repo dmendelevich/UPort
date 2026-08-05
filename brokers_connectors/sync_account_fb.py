@@ -29,51 +29,51 @@ class FreedomBrokerSyncManager:
             w_check = None  # 🔥 Объявляем переменную пустой на старте функции!
 
             # 1. Проверяем наличие счета в таблице accounts
-            acc_sql = f"""
-                SELECT a.user_id, a.portfolio_id, a.account_type, u.name as owner_name, u.prefix 
+            acc_sql = """
+                SELECT a.user_id, a.portfolio_id, a.account_type, u.name as owner_name, u.prefix
                 FROM accounts a
                 JOIN users u ON a.user_id = u.id
-                WHERE a.account_number = '{account_number}' LIMIT 1
+                WHERE a.account_number = %s LIMIT 1
             """
-            acc_data = self.db.execute_query(acc_sql)
-            
+            acc_data = self.db.execute_query(acc_sql, (account_number,))
+
             # АВТОМАТИЧЕСКОЕ СОЗДАНИЕ: Если таблица accounts пуста, генерируем базовую структуру
             if not acc_data or len(acc_data) == 0:
                 logging.info(f"♻️ [Sync Manager]: Счет {account_number} не найден в accounts. Автоматическое создание...")
-                
+
                 is_deposit = account_number.startswith("D")
                 look_num = account_number[1:] if is_deposit else account_number
                 account_type = "deposit" if is_deposit else "trade"
-                
-                user_sql = f"SELECT id, name, prefix, id as user_id FROM users WHERE account_number = '{look_num}' LIMIT 1"
-                user_rows = self.db.execute_query(user_sql)
-                
+
+                user_sql = "SELECT id, name, prefix, id as user_id FROM users WHERE account_number = %s LIMIT 1"
+                user_rows = self.db.execute_query(user_sql, (look_num,))
+
                 if not user_rows or len(user_rows) == 0:
                     raise ValueError(f"Критическая ошибка: Базовый аккаунт {look_num} не привязан ни к одному пользователю.")
-                    
+
                 user_id = user_rows[0]['id']
                 broker_id = 1 # Freedom Broker Казахстан всегда имеет ID = 1
-                
+
                 portfolio_id = None
                 if account_type == "trade":
                     # Фильтр по broker_id обязателен: у владельца может быть больше одного портфеля
                     # (например, бумажный портфель с broker_id=NULL) -- без фильтра LIMIT 1 без ORDER BY
                     # мог бы непредсказуемо приписать реальные деньги брокера чужому портфелю.
-                    p_sql = f"SELECT id FROM portfolios WHERE owner_id = {user_id} AND broker_id = {broker_id} ORDER BY id LIMIT 1"
-                    p_rows = self.db.execute_query(p_sql)
+                    p_sql = "SELECT id FROM portfolios WHERE owner_id = %s AND broker_id = %s ORDER BY id LIMIT 1"
+                    p_rows = self.db.execute_query(p_sql, (user_id, broker_id))
                     if p_rows and len(p_rows) > 0:
                         portfolio_id = p_rows[0]['id']
                     else:
-                        p_insert = f"INSERT INTO portfolios (owner_id, name, broker_id) VALUES ({user_id}, 'Основной', {broker_id})"
-                        self.db.execute_query(p_insert)
-                        p_rows_retry = self.db.execute_query(p_sql)
+                        p_insert = "INSERT INTO portfolios (owner_id, name, broker_id) VALUES (%s, 'Основной', %s)"
+                        self.db.execute_query(p_insert, (user_id, broker_id))
+                        p_rows_retry = self.db.execute_query(p_sql, (user_id, broker_id))
                         portfolio_id = p_rows_retry[0]['id'] if p_rows_retry else None
 
                 # Вызываем "Китов" для создания базовой USD строки кошелька
                 self.db.ensure_currency("USD")
                 self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, "USD")
-                
-                acc_data = self.db.execute_query(acc_sql)
+
+                acc_data = self.db.execute_query(acc_sql, (account_number,))
 
             user_id = acc_data[0]['user_id']
             portfolio_id = acc_data[0]['portfolio_id']
@@ -115,8 +115,8 @@ class FreedomBrokerSyncManager:
                 self.db.ensure_account_sub_row(user_id, portfolio_id, broker_id, account_number, account_type, currency)
 
                 # Теперь спокойно делаем UPDATE балансов
-                sql_wallet_update = f"UPDATE accounts SET cash_available = {available}, cash_reserved = {reserved}, last_updated = transaction_timestamp() WHERE account_number = '{account_number}' AND currency_id = '{currency}'"
-                self.db.execute_query(sql_wallet_update)
+                sql_wallet_update = "UPDATE accounts SET cash_available = %s, cash_reserved = %s, last_updated = transaction_timestamp() WHERE account_number = %s AND currency_id = %s"
+                self.db.execute_query(sql_wallet_update, (available, reserved, account_number, currency))
 
             # --- ЭТАП Б: ОБНОВЛЕНИЕ ЦЕННЫХ БУМАГ (ЧЕРЕЗ КИТОВ v3.0) ---
             synced_assets_count = 0
@@ -156,33 +156,35 @@ class FreedomBrokerSyncManager:
                     # 🔥 MASTER-ЗЕРКАЛИРОВАНИЕ v4.7: Фиксируем пятифлаговый жизненный цикл ПЕРЕД любыми операциями с деньгами
                     # Проверяем, зафиксирована ли уже эта бумага в планах этого портфеля
                     w_check = self.db.execute_query(
-                        f"SELECT id FROM public.watchlist WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id};"
+                        "SELECT id FROM public.watchlist WHERE portfolio_id = %s AND listing_id = %s;",
+                        (portfolio_id, listing_id)
                     )
-                    
+
                     if w_check and len(w_check) > 0:
                         # Если бумага уже была в радаре/фокусе/приказе — бережно дописываем дату реальной покупки через COALESCE
                         w_id = w_check[0]['id'] if isinstance(w_check, list) else w_check['id']
-                        self.db.execute_query(f"""
-                            UPDATE public.watchlist 
+                        self.db.execute_query("""
+                            UPDATE public.watchlist
                             SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP),
-                                updated_at = CURRENT_TIMESTAMP 
-                            WHERE id = {int(w_id)};
-                        """)
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s;
+                        """, (int(w_id),))
                     else:
                         # Если купили сразу в терминале "мимо блокнота" — легализуем в watchlist одной секундной пачкой!
-                        self.db.execute_query(f"""
+                        self.db.execute_query("""
                             INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, bought_at)
-                            VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-                        """)
+                            VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                        """, (portfolio_id, listing_id))
 
                     # 🔎 СНАЙПЕРСКАЯ ПРОВЕРКА MASTER-ТАБЛИЦЫ (Вынесена на самый верх!)
                     w_check = self.db.execute_query(
-                        f"SELECT id FROM public.watchlist WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id};"
+                        "SELECT id FROM public.watchlist WHERE portfolio_id = %s AND listing_id = %s;",
+                        (portfolio_id, listing_id)
                     )
 
                     # 💵 РАБОТАЕМ С БАЛАНСАМИ ТАБЛИЦЫ ASSETS
-                    asset_search = f"SELECT id FROM assets WHERE portfolio_id = {portfolio_id} AND listing_id = {listing_id}"
-                    asset_res = self.db.execute_query(asset_search)
+                    asset_search = "SELECT id FROM assets WHERE portfolio_id = %s AND listing_id = %s"
+                    asset_res = self.db.execute_query(asset_search, (portfolio_id, listing_id))
 
                     # 🔥 НАЧАЛО ВНЕДРЕНИЯ (ТОЧКА 1): Замеряем, сколько акций БЫЛО в базе до обновления   #!!!!!!!!!!!!!!!!!!!
                     old_quantity = strat_sync.get_current_quantity(portfolio_id, listing_id)
@@ -197,9 +199,9 @@ class FreedomBrokerSyncManager:
                             a_row = asset_res
                             
                         a_id = int(a_row['id'])
-                        sql_asset_update = f"UPDATE assets SET quantity = {quantity}, avg_price = {avg_price}, last_updated = '{session_start_time}' WHERE id = {a_id}"
-                        self.db.execute_query(sql_asset_update)
-                        
+                        sql_asset_update = "UPDATE assets SET quantity = %s, avg_price = %s, last_updated = %s WHERE id = %s"
+                        self.db.execute_query(sql_asset_update, (quantity, avg_price, session_start_time, a_id))
+
                         # Безопасно извлекаем w_id из w_check для обновления даты покупки
                         w_id = None
                         if w_check:
@@ -207,9 +209,12 @@ class FreedomBrokerSyncManager:
                                 w_id = w_check[0].get('id')
                             elif isinstance(w_check, dict):
                                 w_id = w_check.get('id')
-                        
+
                         if w_id is not None:
-                            self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
+                            self.db.execute_query(
+                                "UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = %s;",
+                                (int(w_id),)
+                            )
                     else:
                         # Узел Б: Первичное добавление абсолютно новой бумаги (Инсерт)
                         w_id = None
@@ -220,19 +225,25 @@ class FreedomBrokerSyncManager:
                                 w_id = w_check.get('id')
 
                         if w_id is not None:
-                            self.db.execute_query(f"UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = {int(w_id)};")
+                            self.db.execute_query(
+                                "UPDATE public.watchlist SET bought_at = COALESCE(bought_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = %s;",
+                                (int(w_id),)
+                            )
                         else:
                             # Если бумаги не было вообще ни в одном списке — легализуем её с нуля пачкой
-                            self.db.execute_query(f"INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, bought_at) VALUES ({portfolio_id}, {listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+                            self.db.execute_query(
+                                "INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, bought_at) VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+                                (portfolio_id, listing_id)
+                            )
 
                         # Фиксируем холдинг-дни position_opened_at
-                        sql_asset_insert = f"""
-                            INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at) 
-                            VALUES ({portfolio_id}, {listing_id}, {quantity}, {avg_price}, '{session_start_time}', '{session_start_time}') 
-                            ON CONFLICT (portfolio_id, listing_id) 
-                            DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = '{session_start_time}';
+                        sql_asset_insert = """
+                            INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (portfolio_id, listing_id)
+                            DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = EXCLUDED.last_updated;
                         """
-                        self.db.execute_query(sql_asset_insert)
+                        self.db.execute_query(sql_asset_insert, (portfolio_id, listing_id, quantity, avg_price, session_start_time, session_start_time))
 
                     # 🔥 НАЧАЛО ВНЕДРЕНИЯ (ТОЧКА 2): Базовый asset обновлен! Запускаем умное распределение по стратегиям   #!!!!!!!!!!!!!!!!!!!
                     # quantity — это то новое количество, которое только что прислал брокер
@@ -248,31 +259,37 @@ class FreedomBrokerSyncManager:
                 # 🔥 ИНТЕЛЛЕКТУАЛЬНЫЙ МАССОВЫЙ ФИКС ФАНТОМОВ v5.0 (КРУГОВОРОТ В WATCHLIST)
                 # Старый поштучный цикл со статусами полностью удален ради чистоты природы Master-таблицы.
                 if active_listing_ids:
-                    # Превращаем список активных ID [1, 2, 3] в линейную строку "1,2,3" для SQL
-                    active_ids_str = ",".join(map(str, active_listing_ids))
-                    
+                    # NOT IN (%s) со списком не работает через JSON-параметризацию (список
+                    # адаптируется psycopg2 в ARRAY[...], не в набор для IN) -- рабочий эквивалент
+                    # для "не входит в список" через массив: NOT (x = ANY(%s)), проверено отдельно
+                    # на шлюзе включая пустой список (Claude/BACKLOG.md №81).
+                    active_ids_list = list(active_listing_ids)
+
                     # 1. ПАКЕТНЫЙ UPDATE MASTER-ТАБЛИЦЫ: Находим все акции этого портфеля, которые брокер НЕ прислал
                     # (то есть они проданы в ноль), и бережно фиксируем им секунду закрытия sold_out_at.
-                    sql_watchlist_sold_out = f"""
-                        UPDATE public.watchlist 
+                    sql_watchlist_sold_out = """
+                        UPDATE public.watchlist
                         SET sold_out_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE portfolio_id = {portfolio_id}
-                        AND listing_id NOT IN ({active_ids_str})
+                        WHERE portfolio_id = %s
+                        AND NOT (listing_id = ANY(%s))
                         AND bought_at IS NOT NULL;
                     """
-                    self.db.execute_query(sql_watchlist_sold_out)
-                    
+                    self.db.execute_query(sql_watchlist_sold_out, (portfolio_id, active_ids_list))
+
                     # 2. СТЕРИЛЬНАЯ ОЧИСТКА КОНТУРА ЖИВЫХ ДЕНЕГ
-                    sql_cleanup = f"""
-                        DELETE FROM assets 
-                        WHERE portfolio_id = {portfolio_id} 
-                        AND listing_id NOT IN ({active_ids_str});
+                    sql_cleanup = """
+                        DELETE FROM assets
+                        WHERE portfolio_id = %s
+                        AND NOT (listing_id = ANY(%s));
                     """
-                    self.db.execute_query(sql_cleanup)
+                    self.db.execute_query(sql_cleanup, (portfolio_id, active_ids_list))
 
                 # Обновляем агрегированную долларовую стоимость активов счета в accounts
-                self.db.execute_query(f"UPDATE accounts SET assets_value = {total_market_value} WHERE account_number = '{account_number}' AND currency_id = 'USD'")
+                self.db.execute_query(
+                    "UPDATE accounts SET assets_value = %s WHERE account_number = %s AND currency_id = 'USD'",
+                    (total_market_value, account_number)
+                )
                 synced_assets_count = len(active_listing_ids)
 
             # --- ЭТАП В: СИНХРОНИЗАЦИЯ ОРДЕРОВ (ЧЕРЕЗ КИТОВ ПЕРЕД ТРАНЗАКЦИЕЙ) ---
@@ -297,9 +314,10 @@ class FreedomBrokerSyncManager:
                         
                     # 🔥 MASTER-ФИКС v5.3: Проверяем наличие Master-строки в watchlist с жесткой распаковкой списка СУБД
                     w_ord_check = self.db.execute_query(
-                        f"SELECT id FROM public.watchlist WHERE portfolio_id = {portfolio_id} AND listing_id = {ord_listing_id};"
+                        "SELECT id FROM public.watchlist WHERE portfolio_id = %s AND listing_id = %s;",
+                        (portfolio_id, ord_listing_id)
                     )
-                    
+
                     # Безопасно извлекаем w_o_id, страхуясь от списков словарей
                     w_o_id = None
                     if w_ord_check:
@@ -307,21 +325,21 @@ class FreedomBrokerSyncManager:
                             w_o_id = w_ord_check[0].get('id')
                         elif isinstance(w_ord_check, dict):
                             w_o_id = w_ord_check.get('id')
-                    
+
                     if w_o_id is not None:
                         # Если бумага уже была в слежке/фокусе, просто дописываем дату выставления ордера ordered_at
-                        self.db.execute_query(f"""
-                            UPDATE public.watchlist 
+                        self.db.execute_query("""
+                            UPDATE public.watchlist
                             SET ordered_at = COALESCE(ordered_at, CURRENT_TIMESTAMP),
-                                updated_at = CURRENT_TIMESTAMP 
-                            WHERE id = {int(w_o_id)};
-                        """)
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = %s;
+                        """, (int(w_o_id),))
                     else:
                         # Если вы выставили ордер в терминале "мимо блокнота" — легализуем в watchlist с фиксацией даты ордера!
-                        self.db.execute_query(f"""
+                        self.db.execute_query("""
                             INSERT INTO public.watchlist (portfolio_id, listing_id, watched_at, ordered_at)
-                            VALUES ({portfolio_id}, {ord_listing_id}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-                        """)
+                            VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                        """, (portfolio_id, ord_listing_id))
                     
                     # Все сущности на месте. Вызываем чистую и размеренную вставку ордеров.
                     # Метод экземпляра (Claude/BACKLOG.md №81) -- раньше вызывался статикой
