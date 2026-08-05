@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 # Импортируем готовые объекты СУБД, фабрику и клавиатуры из доноров
 from database import db_bot
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text, generate_main_menu_keyboard
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text, generate_main_menu_keyboard
 from bot_handlers.bot_screens import format_portfolio_risk_audit_rollup
 
 # Импортируем независимый аналитический модуль аудитора портфеля

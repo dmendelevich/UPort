@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 # Импортируем готовые объекты СУБД, фабрику и навигацию
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
-from bot_handlers.bot_keyboards import build_smart_badge, generate_nav_back_keyboard, generate_watchlist_button_text, generate_main_menu_keyboard, generate_confirm_keyboard
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_watchlist_button_text, generate_main_menu_keyboard, generate_confirm_keyboard
 
 router = Router()
 

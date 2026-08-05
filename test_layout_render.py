@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 from aiogram import Bot, types
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+sys.path.append(str(Path(__file__).parent.resolve()))
+from bot_handlers.bot_keyboards import build_smart_badge
+
 # Настраиваем вывод логов в консоль
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -20,37 +23,6 @@ FIGURE_SPACE = "\u2007"   # Цифровой пробел (равен ширин
 BRAILLE_EMPTY = "\u2800"  # Прозрачный знак Брайля
 SIX_PER_EM = "\u2006"     # Тончайший микро-отступ (1/6 пробела)
 
-
-# =========================================================================
-# ⚙️ ПУНКТ 1: МИКРО-СТАНК ГРАФИЧЕСКИХ КУБИКОВ (Откалиброван на Шаге 1)
-# =========================================================================
-
-def build_smart_badge(icon: str, value: int) -> str:
-    """
-    Преобразователь одной иконки и индекса в кубик фиксированной ширины.
-    🔥 ИСПРАВЛЕНО: При value=0 исчезает ТОЛЬКО индекс, а иконка остается!
-    """
-    # Состояние 3: Абсолютно пустой кубик (Иконки нет вообще в чертеже)
-    if not icon:
-        # Ваша проверенная формула полной слепой заглушки эмодзи
-        return f"{BRAILLE_EMPTY}{BRAILLE_EMPTY}{SIX_PER_EM}{SIX_PER_EM}{SIX_PER_EM}"
-        
-    # Состояние 1 и 2: Иконка есть. Разбираемся с индексом
-    if value == 0:
-        # Индекс равен 0 -> выводим живую иконку + узкий компенсатор вместо цифры
-        superscript = SIX_PER_EM
-    elif value > 9:
-        # Перегрузка индекса
-        superscript = "⁺"
-    else:
-        # Стандартный индекс 1-9
-        superscripts = {
-            '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', 
-            '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'
-        }
-        superscript = superscripts.get(str(value), '⁰')
-        
-    return f"{icon}{superscript}"
 
 # =========================================================================
 # ⚙️ МИКРО-СТАНК ТЕКСТОВЫХ ТИКЕРОВ (Откалиброван на Шаге 2)
