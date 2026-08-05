@@ -108,10 +108,7 @@ async def process_summary_callback(callback: types.CallbackQuery):
     summary = await asyncio.to_thread(db_bot.get_family_summary, callback.from_user.id)
     if not summary:
         # Генерируем лаконичную одиночную кнопку Главного меню
-        fallback_markup = generate_nav_back_keyboard(
-            one_step_back_text="📱 В главное меню",
-            full_back_callback=MenuAction(action="main_menu").pack()
-        )
+        fallback_markup = generate_nav_back_keyboard(menu_only=True)
         await callback.message.edit_text(
             "❌ Ваш Telegram ID не зарегистрирован в базе данных UPort.", 
             reply_markup=fallback_markup
@@ -149,10 +146,7 @@ async def process_summary_callback(callback: types.CallbackQuery):
     portfolios_markup = builder.as_markup()
     
     # Генерируем лаконичную одиночную кнопку Главного меню через универсальный навигационный пульт UPort
-    reply_markup = generate_nav_back_keyboard(
-        one_step_back_text="📱 В главное меню",
-        full_back_callback=MenuAction(action="main_menu").pack()
-    )
+    reply_markup = generate_nav_back_keyboard(menu_only=True)
     
     # Ювелирно склеиваем кнопки портфелей и системный универсальный подвал
     final_builder = InlineKeyboardBuilder.from_markup(portfolios_markup)
@@ -175,10 +169,7 @@ async def process_test_summary_callback(callback: types.CallbackQuery):
 
     summary = await asyncio.to_thread(db_bot.get_test_capital_summary, callback.from_user.id)
     if not summary or not summary.get("portfolios"):
-        fallback_markup = generate_nav_back_keyboard(
-            one_step_back_text="📱 В главное меню",
-            full_back_callback=MenuAction(action="main_menu").pack()
-        )
+        fallback_markup = generate_nav_back_keyboard(menu_only=True)
         await callback.message.edit_text(
             "🧪 Тестовых портфелей пока нет.",
             reply_markup=fallback_markup
@@ -199,10 +190,7 @@ async def process_test_summary_callback(callback: types.CallbackQuery):
         ))
 
     portfolios_markup = builder.as_markup()
-    reply_markup = generate_nav_back_keyboard(
-        one_step_back_text="📱 В главное меню",
-        full_back_callback=MenuAction(action="main_menu").pack()
-    )
+    reply_markup = generate_nav_back_keyboard(menu_only=True)
     final_builder = InlineKeyboardBuilder.from_markup(portfolios_markup)
     final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
 

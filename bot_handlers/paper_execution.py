@@ -32,9 +32,7 @@ def _back_keyboard(portfolio_id: int, listing_id: int = 0):
             one_step_back_text="🔙 К карточке бумаги",
             full_back_callback=MenuAction(action="view_ticker", portfolio_id=portfolio_id, listing_id=listing_id, sub_view="owner").pack()
         )
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-    return builder.as_markup()
+    return generate_nav_back_keyboard(menu_only=True)
 
 
 def _refresh_assets_value_sql(portfolio_id: int) -> str:

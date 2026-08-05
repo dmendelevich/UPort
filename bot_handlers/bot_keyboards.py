@@ -75,26 +75,34 @@ def generate_tab_switch_keyboard(tabs: list, current_sub_view: str) -> InlineKey
         builder.row(*buttons)
     return builder.as_markup()
 
-def generate_nav_back_keyboard(one_step_back_text: str, full_back_callback: str) -> InlineKeyboardMarkup:
+def generate_nav_back_keyboard(one_step_back_text: str = None, full_back_callback: str = None, menu_only: bool = False) -> InlineKeyboardMarkup:
     """
     Абсолютно универсальный навигационный пульт возврата экосистемы UPort.
-    Генерирует пару кнопок: "Один шаг назад" (с полной сохранностью контекста через full_back_callback)
-    и жесткую системную кнопку "В главное меню".
+    По умолчанию -- пара кнопок: "Один шаг назад" (с полной сохранностью контекста через
+    full_back_callback) и жесткая системная кнопка "В главное меню".
+
+    menu_only=True -- только кнопка "В главное меню", без первой строки (one_step_back_text/
+    full_back_callback игнорируются). Два разных повода использовать этот режим (см.
+    Claude/BACKLOG.md): (1) экран первого уровня -- один хоп от главного меню, "шаг назад" и
+    "главное меню" были бы одной и той же кнопкой дважды; (2) экран глубже, но для него нет
+    осмысленной точки "шаг назад" (например, кандидат ещё не легализован до карточки бумаги).
+    Причина -- дело вызывающего кода, сама функция только про механику отображения.
     """
     builder = InlineKeyboardBuilder()
-    
-    # Кнопка динамического возврата на один шаг назад
-    builder.row(types.InlineKeyboardButton(
-        text=one_step_back_text,
-        callback_data=full_back_callback
-    ))
-    
+
+    if not menu_only:
+        # Кнопка динамического возврата на один шаг назад
+        builder.row(types.InlineKeyboardButton(
+            text=one_step_back_text,
+            callback_data=full_back_callback
+        ))
+
     # Кнопка безусловного возврата в Главное меню UPort
     builder.row(types.InlineKeyboardButton(
         text="📱 В главное меню",
         callback_data=MenuAction(action="main_menu").pack()
     ))
-    
+
     return builder.as_markup()
 
 def generate_ticker_footer_keyboard(

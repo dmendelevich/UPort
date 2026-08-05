@@ -8,7 +8,7 @@ from database import db_sys
 from bot_handlers.common import MenuAction
 from analytics.daily_digest import assemble_portfolio_digest_data
 from bot_handlers.bot_screens import render_digest_overview_text, render_digest_section_text
-from bot_handlers.bot_keyboards import generate_digest_toc_keyboard, generate_digest_section_keyboard
+from bot_handlers.bot_keyboards import generate_digest_toc_keyboard, generate_digest_section_keyboard, generate_nav_back_keyboard
 
 router = Router()
 
@@ -38,10 +38,11 @@ async def process_digest_focus_menu(callback: types.CallbackQuery):
             text=f"📅 Дайджест {p['name']} ({p['owner_name']})",
             callback_data=MenuAction(action="view_digest", portfolio_id=int(p["id"]), sub_view="overview").pack()
         ))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
 
     try:
-        await callback.message.edit_text("📅 **УТРЕННИЙ ДАЙДЖЕСТ**\nВыберите портфель:", parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text("📅 **УТРЕННИЙ ДАЙДЖЕСТ**\nВыберите портфель:", parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
 

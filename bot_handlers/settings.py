@@ -7,6 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # Импортируем шлюз СУБД, фабрику и модуль ночного Yahoo-воркера
 from database import db_sys
 from bot_handlers.common import MenuAction
+from bot_handlers.bot_keyboards import generate_nav_back_keyboard
 from site_connectors.sync_fundamentals_yhoo import sync_fundamentals
 
 # Инициализируем роутер инженерного контура настроек
@@ -42,9 +43,10 @@ async def process_settings_main(callback: types.CallbackQuery, state: FSMContext
         text="➕ Создать портфель",
         callback_data=MenuAction(action="admin_portfolio_new").pack()
     ))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
 
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
 
 
 @router.callback_query(MenuAction.filter(F.action == "run_yahoo_sync"))
@@ -109,6 +111,4 @@ async def process_yahoo_sync_callback(callback: types.CallbackQuery, state: FSMC
 
 def builder_back_only() -> types.InlineKeyboardMarkup:
     """Вспомогательная кнопка возврата во время выполнения задачи."""
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-    return builder.as_markup()
+    return generate_nav_back_keyboard(menu_only=True)

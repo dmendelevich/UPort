@@ -272,7 +272,7 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
     if watched_portfolios:
         # Уже в СН -- "Оставить в покое" не имеет смысла (нечего оставлять, решение уже
         # принято раньше), обычная кнопка "В главное меню" без дублирующей формулировки.
-        final_builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+        final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
     else:
         # Нижнюю кнопку отмены генерируем через наш универсальный подпрограммный подвал UPort
         reply_markup = generate_nav_back_keyboard(

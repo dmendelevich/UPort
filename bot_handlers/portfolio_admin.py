@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import db_bot, db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_screens import generate_confirm_screen
-from bot_handlers.bot_keyboards import generate_confirm_keyboard
+from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
 
 router = Router()
 
@@ -284,9 +284,6 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
 
     logging.info(f"✅ [СОЗДАНИЕ ПОРТФЕЛЯ]: Портфель #{p_id} создан (Кэш/Резерв #{cash_id}, Неопределенная #{unalloc_id}, + 3 пассивные содержательные стратегии).")
 
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-
     await callback.message.edit_text(
         f"✅ **Портфель успешно создан!**\n\n"
         f"🆔 Портфель: #{p_id}\n"
@@ -294,5 +291,5 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
         f"📥 Неопределенная стратегия: #{unalloc_id} (90%)\n"
         f"😴 Револьверная/Консервативное накопление/Трендовая — добавлены пассивными (0%), включите вручную по мере надобности",
         parse_mode="Markdown",
-        reply_markup=builder.as_markup()
+        reply_markup=generate_nav_back_keyboard(menu_only=True)
     )

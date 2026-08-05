@@ -53,10 +53,11 @@ async def process_watchlist_focus_menu(callback: types.CallbackQuery):
             callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
         ))
 
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
 
     try:
-        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
 
@@ -192,19 +193,14 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
             callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
         ))
         
-    # 🔥 НАДЕЖНЫЙ ПРЯМОЙ СПОСОБ: Добавляем кнопки возврата прямо в текущий builder
-    builder.row(types.InlineKeyboardButton(
-        text="🔙 К выбору фокуса", 
-        callback_data=MenuAction(action="show_watchlist_focus").pack()
-    ))
-    builder.row(types.InlineKeyboardButton(
-        text="📱 В главное меню", 
-        callback_data=MenuAction(action="main_menu").pack()
-    ))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(
+        one_step_back_text="🔙 К выбору фокуса",
+        full_back_callback=MenuAction(action="show_watchlist_focus").pack()
+    )))
 
-        
     try:
-        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
 
@@ -260,10 +256,11 @@ async def process_add_to_watchlist_routing(callback: types.CallbackQuery, callba
             callback_data=MenuAction(action="confirm_wl_add", portfolio_id=int(p["id"]), ticker_id=int(t_id), sub_view=callback_data.sub_view).pack()
         ))
     
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
 
     try:
-        await callback.message.edit_text("Выберите портфель:", reply_markup=builder.as_markup())
+        await callback.message.edit_text("Выберите портфель:", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
 
@@ -340,9 +337,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
                 full_back_callback=MenuAction(action="view_ticker_passport", ticker_id=ticker_id).pack()
             )
         else:
-            builder = InlineKeyboardBuilder()
-            builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-            success_markup = builder.as_markup()
+            success_markup = generate_nav_back_keyboard(menu_only=True)
 
         await message.edit_text(f"✅ Добавлено: **{yahoo_symbol}**", parse_mode="Markdown", reply_markup=success_markup)
         logging.info(f"🏁 [WATCHLIST]: Бумага {yahoo_symbol} добавлена в список наблюдения (портфель {portfolio_id}).")
@@ -350,9 +345,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
     except ValueError as val_err:
         # Перехватываем наш кастомный шлагбаум безопасности ("Этот инструмент не торгуется...")
         logging.warning(f"⚠️ [WATCHLIST LIBS BLOCK]: {val_err}")
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
-        await message.edit_text(f"❌ {val_err}", reply_markup=builder.as_markup())
+        await message.edit_text(f"❌ {val_err}", reply_markup=generate_nav_back_keyboard(menu_only=True))
 
     except Exception as fix_err:
         logging.error(f"🚨 [WATCHLIST CRITICAL СБОЙ]: Ошибка фиксации инвест-идеи: {fix_err}")
@@ -445,14 +438,12 @@ async def process_execute_remove_watchlist(callback: types.CallbackQuery, callba
 
     logging.info(f"🗑 [WATCHLIST REMOVE]: {symbol} убран из СН портфеля {p_id} (watchlist_id={status['watchlist_id']}).")
 
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="🔬 К списку наблюдения",
-        callback_data=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
-    ))
-    builder.row(types.InlineKeyboardButton(text="📱 В главное меню", callback_data=MenuAction(action="main_menu").pack()))
+    reply_markup = generate_nav_back_keyboard(
+        one_step_back_text="🔬 К списку наблюдения",
+        full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+    )
 
     try:
-        await callback.message.edit_text(f"✅ **{symbol}** убран из списка наблюдения.", parse_mode="Markdown", reply_markup=builder.as_markup())
+        await callback.message.edit_text(f"✅ **{symbol}** убран из списка наблюдения.", parse_mode="Markdown", reply_markup=reply_markup)
     except TelegramBadRequest:
         pass
