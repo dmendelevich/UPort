@@ -62,29 +62,31 @@ def sync_rates(db_instance):
             rate = float(raw_price)
 
             # Проверяем наличие записи, используя оригинальный code для составного PK (from_currency, to_currency)
-            sql_check = f"""
-                SELECT 1 FROM public.currency_rates 
-                WHERE from_currency = '{code}' AND to_currency = 'USD' 
+            sql_check = """
+                SELECT 1 FROM public.currency_rates
+                WHERE from_currency = %s AND to_currency = 'USD'
                 LIMIT 1;
             """
-            exists = db_instance.execute_query(sql_check)
+            exists = db_instance.execute_query(sql_check, (code,))
 
             if exists:
                 # Путь А: Строка есть — UPDATE с точным сохранением updated_at по UTC TIMESTAMP(0)
-                sql_write = f"""
-                    UPDATE public.currency_rates 
-                    SET rate = {rate}, 
+                sql_write = """
+                    UPDATE public.currency_rates
+                    SET rate = %s,
                         updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                    WHERE from_currency = '{code}' AND to_currency = 'USD';
+                    WHERE from_currency = %s AND to_currency = 'USD';
                 """
+                write_params = (rate, code)
             else:
                 # Путь Б: Строки нет — INSERT со строгим соблюдением Foreign Key СУБД
-                sql_write = f"""
+                sql_write = """
                     INSERT INTO public.currency_rates (from_currency, to_currency, rate, updated_at)
-                    VALUES ('{code}', 'USD', {rate}, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0));
+                    VALUES (%s, 'USD', %s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0));
                 """
-            
-            db_instance.execute_query(sql_write)
+                write_params = (code, rate)
+
+            db_instance.execute_query(sql_write, write_params)
             logging.debug(f"   ✅ Пара {code} -> USD успешно сохранена в СУБД. Курс: {rate:.6f}")
 
         except Exception as e:
