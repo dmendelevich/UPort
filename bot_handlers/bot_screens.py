@@ -126,14 +126,14 @@ async def format_premium_header(ticker_id: int, portfolio_id: int = 0, target_cu
     """
     try:
         # 1. Запрашиваем паспорт инструмента
-        sql_t = f"""
+        sql_t = """
             SELECT t.symbol, t.company_name, t.asset_type, t.sector, t.industry,
                    t.currency_id, t.ticker_name_map, e.exchange_code
             FROM public.tickers t
             LEFT JOIN public.exchanges e ON t.exchange_mic = e.mic
-            WHERE t.id = {int(ticker_id)} LIMIT 1;
+            WHERE t.id = %s LIMIT 1;
         """
-        t = await asyncio.to_thread(db_bot.execute_row, sql_t)
+        t = await asyncio.to_thread(db_bot.execute_row, sql_t, (ticker_id,))
 
         if not t:
             return "🌟 **Инструмент UPort**\n❌ Паспорт бумаги не найден в СУБД."
@@ -143,16 +143,16 @@ async def format_premium_header(ticker_id: int, portfolio_id: int = 0, target_cu
         # 2. Ищем уже существующий листинг у любого брокера -- предпочтительно у брокера
         # переданного портфеля, если он есть. Если листинга нет вообще -- бумага ещё
         # нигде не легализована (не в watchlist ни у кого), это нормально.
-        sql_l = f"""
+        sql_l = """
             SELECT l.last_price, l.currency_id, b.short_name AS broker_short_name
             FROM public.listings l
             JOIN public.brokers b ON b.id = l.broker_id
-            LEFT JOIN public.portfolios p ON p.id = {int(portfolio_id)} AND p.broker_id = l.broker_id
-            WHERE l.ticker_id = {int(ticker_id)}
+            LEFT JOIN public.portfolios p ON p.id = %s AND p.broker_id = l.broker_id
+            WHERE l.ticker_id = %s
             ORDER BY (p.id IS NOT NULL) DESC
             LIMIT 1;
         """
-        l_row = await asyncio.to_thread(db_bot.execute_row, sql_l)
+        l_row = await asyncio.to_thread(db_bot.execute_row, sql_l, (portfolio_id, ticker_id))
 
         if l_row:
             # Цена из брокерского листинга -- брокерский слой, уже в НАСТОЯЩИХ единицах
@@ -236,25 +236,27 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     только к avg_price (единственная сумма, которую эта функция достаёт из БД сама).
     """
     if strategy_id > 0:
-        sql = f"""
+        sql = """
             SELECT vsaf.allocated_quantity AS quantity, vsaf.avg_price, vsaf.portfolio_name, st.system_key,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(vsaf.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
             FROM public.v_strategy_assets_full vsaf
             JOIN public.strategies s ON s.id = vsaf.strategy_id
             JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE vsaf.strategy_id = {int(strategy_id)} AND vsaf.listing_id = {int(listing_id)}
+            WHERE vsaf.strategy_id = %s AND vsaf.listing_id = %s
             LIMIT 1;
         """
+        params = (strategy_id, listing_id)
     else:
-        sql = f"""
+        sql = """
             SELECT quantity, avg_price, portfolio_name,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
             FROM public.v_assets_full
-            WHERE portfolio_id = {int(portfolio_id)} AND listing_id = {int(listing_id)} AND quantity > 0
+            WHERE portfolio_id = %s AND listing_id = %s AND quantity > 0
             LIMIT 1;
         """
+        params = (portfolio_id, listing_id)
 
-    row = await asyncio.to_thread(db_bot.execute_row, sql)
+    row = await asyncio.to_thread(db_bot.execute_row, sql, params)
     if not row:
         return "❌ Позиция по этой бумаге не найдена.\n"
 
@@ -426,24 +428,24 @@ async def format_cross_holdings(ticker_id: int, listing_id: int, portfolio_id: i
     lines = []
 
     if strategy_id > 0:
-        holders_sql = f"""
+        holders_sql = """
             SELECT strategy_name, portfolio_name, allocated_quantity AS quantity
             FROM public.v_strategy_assets_full
-            WHERE listing_id = {int(listing_id)} AND allocated_quantity > 0
-              AND strategy_id != {int(strategy_id)};
+            WHERE listing_id = %s AND allocated_quantity > 0
+              AND strategy_id != %s;
         """
-        holders = await asyncio.to_thread(db_bot.execute_query, holders_sql)
+        holders = await asyncio.to_thread(db_bot.execute_query, holders_sql, (listing_id, strategy_id))
         holders = holders if isinstance(holders, list) else ([holders] if holders else [])
 
-        planned_sql = f"""
+        planned_sql = """
             SELECT s.strategy_name, p.name AS portfolio_name, op.target_quantity
             FROM public.order_pipelines op
             JOIN public.strategies s ON s.id = op.strategy_id
             JOIN public.portfolios p ON p.id = op.portfolio_id
-            WHERE op.ticker_id = {int(ticker_id)} AND op.pipeline_status IN ('PENDING', 'ACTIVE')
-              AND op.strategy_id != {int(strategy_id)};
+            WHERE op.ticker_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+              AND op.strategy_id != %s;
         """
-        planned = await asyncio.to_thread(db_bot.execute_query, planned_sql)
+        planned = await asyncio.to_thread(db_bot.execute_query, planned_sql, (ticker_id, strategy_id))
         planned = planned if isinstance(planned, list) else ([planned] if planned else [])
 
         lines.append("📍 **В стратегиях семьи:**")
@@ -462,23 +464,27 @@ async def format_cross_holdings(ticker_id: int, listing_id: int, portfolio_id: i
             lines.append("   *Больше нигде нет.*")
 
     else:
-        holders_sql = f"SELECT owner_name, portfolio_name, quantity FROM public.v_assets_full WHERE listing_id = {int(listing_id)} AND quantity > 0"
+        holders_sql = "SELECT owner_name, portfolio_name, quantity FROM public.v_assets_full WHERE listing_id = %s AND quantity > 0"
+        holders_params = [listing_id]
         if portfolio_id:
-            holders_sql += f" AND portfolio_id != {int(portfolio_id)}"
-        holders = await asyncio.to_thread(db_bot.execute_query, holders_sql + ";")
+            holders_sql += " AND portfolio_id != %s"
+            holders_params.append(portfolio_id)
+        holders = await asyncio.to_thread(db_bot.execute_query, holders_sql + ";", tuple(holders_params))
         holders = holders if isinstance(holders, list) else ([holders] if holders else [])
 
-        planned_sql = f"""
+        planned_sql = """
             SELECT u.name AS owner_name, p.name AS portfolio_name, o.q, o.type, o.oper
             FROM public.orders o
             JOIN public.listings l ON o.listing_id = l.id
             JOIN public.portfolios p ON o.portfolio_id = p.id
             JOIN public.users u ON p.owner_id = u.id
-            WHERE l.ticker_id = {int(ticker_id)} AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED')
+            WHERE l.ticker_id = %s AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED')
         """
+        planned_params = [ticker_id]
         if portfolio_id:
-            planned_sql += f" AND o.portfolio_id != {int(portfolio_id)}"
-        planned = await asyncio.to_thread(db_bot.execute_query, planned_sql + ";")
+            planned_sql += " AND o.portfolio_id != %s"
+            planned_params.append(portfolio_id)
+        planned = await asyncio.to_thread(db_bot.execute_query, planned_sql + ";", tuple(planned_params))
         planned = planned if isinstance(planned, list) else ([planned] if planned else [])
 
         lines.append("📍 **В портфелях семьи:**")
@@ -529,10 +535,8 @@ async def format_market_signals(ticker_id: int) -> str:
     """
     t = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
-            SELECT signal_recommendation, signal_rsi, signal_price_to_sma200_pct
-            FROM public.tickers WHERE id = {int(ticker_id)};
-        """
+        "SELECT signal_recommendation, signal_rsi, signal_price_to_sma200_pct FROM public.tickers WHERE id = %s;",
+        (ticker_id,)
     )
     if not t:
         return ""
@@ -567,10 +571,8 @@ async def format_ticker_behavior(ticker_id: int, listing_id: int = 0, portfolio_
     """
     t = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
-            SELECT signal_pct_1d, signal_pct_1w, signal_pct_1m, signal_pct_1y
-            FROM public.tickers WHERE id = {int(ticker_id)};
-        """
+        "SELECT signal_pct_1d, signal_pct_1w, signal_pct_1m, signal_pct_1y FROM public.tickers WHERE id = %s;",
+        (ticker_id,)
     )
     if not t:
         return ""
@@ -582,15 +584,19 @@ async def format_ticker_behavior(ticker_id: int, listing_id: int = 0, portfolio_
 
     move_alert = None
     if listing_id:
-        portfolio_filter = f"AND portfolio_id = {int(portfolio_id)}" if portfolio_id else ""
+        portfolio_filter = "AND portfolio_id = %s" if portfolio_id else ""
+        alert_params = [listing_id]
+        if portfolio_id:
+            alert_params.append(portfolio_id)
         move_alert = await asyncio.to_thread(
             db_bot.execute_row,
             f"""
                 SELECT note FROM public.alerts
-                WHERE listing_id = {int(listing_id)} AND source_type = 'uport' AND is_active = true
+                WHERE listing_id = %s AND source_type = 'uport' AND is_active = true
                 {portfolio_filter}
                 ORDER BY triggered_at DESC LIMIT 1;
-            """
+            """,
+            tuple(alert_params)
         )
     move_line = f"📢 {move_alert['note']}\n" if move_alert else "✅ Резких движений нет\n"
 
@@ -615,17 +621,17 @@ async def format_strategy_header(strategy_id: int) -> str:
     (`generate_strategy_button_text`, однострочный формат для кнопки, не подходит
     для многострочной шапки) -- эта функция используется только самой карточкой.
     """
-    sql = f"""
+    sql = """
         SELECT s.strategy_name, s.strategy_share_pct, s.human_philosophy, s.is_active,
                p.name AS portfolio_name, p.id AS portfolio_id,
                u.name AS owner_name
         FROM public.strategies s
         JOIN public.portfolios p ON s.portfolio_id = p.id
         JOIN public.users u ON p.owner_id = u.id
-        WHERE s.id = {int(strategy_id)}
+        WHERE s.id = %s
         LIMIT 1;
     """
-    s = await asyncio.to_thread(db_bot.execute_row, sql)
+    s = await asyncio.to_thread(db_bot.execute_row, sql, (strategy_id,))
 
     if not s:
         return "🎯 **Стратегия UPort**\n❌ Стратегия не найдена в СУБД."
