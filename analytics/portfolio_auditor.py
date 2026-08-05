@@ -6,15 +6,15 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     Сверяет фактические метрики со стратегическими и налоговыми лимитами (IPS).
     """
     # 1. ЗАГРУЖАЕМ ЦЕЛЕВЫЕ ЛИМИТЫ (IPS) ИЗ БАЗЫ ДАННЫХ
-    p_sql = f"""
+    p_sql = """
         SELECT p.name AS portfolio_name, u.name AS owner_name, p.strategy_type, p.risk_profile,
                p.min_cash_reserve_pct, p.max_ticker_weight_pct, p.max_portfolio_div_yield_pct, p.target_return_pct
         FROM public.portfolios p
         JOIN public.users u ON p.owner_id = u.id
-        WHERE p.id = {portfolio_id};
+        WHERE p.id = %s;
     """
 
-    p_res = db_instance.execute_query(p_sql)
+    p_res = db_instance.execute_query(p_sql, (portfolio_id,))
     if not p_res:
         logging.error(f"❌ Портфель с ID {portfolio_id} не найден при аудите.")
         return {}
@@ -33,13 +33,13 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     max_div_limit = float(limits.get("max_portfolio_div_yield_pct", 2.0))
 
     # 2. СБОР ФАКТИЧЕСКИХ ОСТАТКОВ КЭША К ДОЛЛАРУ США
-    cash_sql = f"""
+    cash_sql = """
         SELECT acc.cash_available, COALESCE(r.rate, 1.0) as to_usd_rate
         FROM public.accounts acc
         LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
-        WHERE acc.portfolio_id = {portfolio_id};
+        WHERE acc.portfolio_id = %s;
     """
-    cash_res = db_instance.execute_query(cash_sql)
+    cash_res = db_instance.execute_query(cash_sql, (portfolio_id,))
     if not isinstance(cash_res, list):
         cash_res = [cash_res] if cash_res else []
 
@@ -48,7 +48,7 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
         total_cash_usd += float(c['cash_available'] or 0) * float(c['to_usd_rate'])
 
     # 3. СБОР ФАКТИЧЕСКИХ ЦЕННЫХ БУМАГ (ЧЕРЕЗ LISTINGS)
-    assets_sql = f"""
+    assets_sql = """
         SELECT
             l.broker_symbol AS full_ticker, t.company_name, a.quantity, l.last_price,
             t.pe_trailing, t.pe_forward, t.peg_ratio, t.price_to_sales, t.price_to_book, t.ev_to_ebitda,
@@ -60,9 +60,9 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
         JOIN public.listings l ON a.listing_id = l.id
         JOIN public.tickers t ON l.ticker_id = t.id
         LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-        WHERE a.portfolio_id = {portfolio_id} AND a.quantity > 0;
+        WHERE a.portfolio_id = %s AND a.quantity > 0;
     """
-    assets_res = db_instance.execute_query(assets_sql)
+    assets_res = db_instance.execute_query(assets_sql, (portfolio_id,))
     if not isinstance(assets_res, list):
         assets_res = [assets_res] if assets_res else []
 
@@ -204,13 +204,13 @@ def audit_ticker_for_portfolio(full_ticker: str, portfolio_id: int, db_instance)
     broker_symbol_clean = full_ticker.strip().upper()
 
     # 1. Запрашиваем параметры тикера через связь таблицы listings с глобальным tickers
-    t_sql = f"""
-        SELECT t.id, t.dividend_yield, t.max_ticker_div_yield_pct 
+    t_sql = """
+        SELECT t.id, t.dividend_yield, t.max_ticker_div_yield_pct
         FROM public.listings l
         JOIN public.tickers t ON l.ticker_id = t.id
-        WHERE l.broker_symbol = '{broker_symbol_clean}' LIMIT 1;
+        WHERE l.broker_symbol = %s LIMIT 1;
     """
-    t_res = db_instance.execute_query(t_sql)
+    t_res = db_instance.execute_query(t_sql, (broker_symbol_clean,))
     if not t_res:
         return []
     
@@ -229,8 +229,8 @@ def audit_ticker_for_portfolio(full_ticker: str, portfolio_id: int, db_instance)
         warnings.append(f"🛑 Налоговый риск акции: Дивиденды актива ({ticker_div:.2f}%) выше твоего личного лимита для этой бумаги (< {max_ticker_div_limit}%)")
 
     # 2. Запрашиваем лимиты портфеля
-    p_sql = f"SELECT max_ticker_weight_pct, max_portfolio_div_yield_pct FROM public.portfolios WHERE id = {portfolio_id};"
-    p_res = db_instance.execute_query(p_sql)
+    p_sql = "SELECT max_ticker_weight_pct, max_portfolio_div_yield_pct FROM public.portfolios WHERE id = %s;"
+    p_res = db_instance.execute_query(p_sql, (portfolio_id,))
     if not p_res:
         return warnings
     
@@ -248,28 +248,28 @@ def audit_ticker_for_portfolio(full_ticker: str, portfolio_id: int, db_instance)
         warnings.append(f"🛑 Налоговый риск портфеля: Дивиденды актива ({ticker_div:.2f}%) превышают допустимый порог этого счета (< {max_portfolio_div_limit}%)")
 
     # 3. Считаем общий объем капитала портфеля в USD по академической схеме v3.4
-    cash_sql = f"""
+    cash_sql = """
         SELECT acc.cash_available, COALESCE(r.rate, 1.0) as to_usd_rate
         FROM public.accounts acc
         LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
-        WHERE acc.portfolio_id = {portfolio_id};
+        WHERE acc.portfolio_id = %s;
     """
-    cash_res = db_instance.execute_query(cash_sql)
+    cash_res = db_instance.execute_query(cash_sql, (portfolio_id,))
     if not isinstance(cash_res, list):
         cash_res = [cash_res] if cash_res else []
-    
+
     portfolio_total_usd = 0.0
     for c in cash_res:
         portfolio_total_usd += float(c['cash_available'] or 0) * float(c['to_usd_rate'])
 
-    assets_sql = f"""
+    assets_sql = """
         SELECT a.quantity, l.last_price, COALESCE(r.rate, 1.0) as asset_to_usd_rate, l.broker_symbol AS full_ticker
         FROM public.assets a
         JOIN public.listings l ON a.listing_id = l.id
         LEFT JOIN public.currency_rates r ON r.from_currency = l.currency_id AND r.to_currency = 'USD'
-        WHERE a.portfolio_id = {portfolio_id} AND a.quantity > 0;
+        WHERE a.portfolio_id = %s AND a.quantity > 0;
     """
-    assets_res = db_instance.execute_query(assets_sql)
+    assets_res = db_instance.execute_query(assets_sql, (portfolio_id,))
     if not isinstance(assets_res, list):
         assets_res = [assets_res] if assets_res else []
 
