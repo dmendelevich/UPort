@@ -57,8 +57,8 @@ def detect_ticker_passport(db_instance, symbol: str) -> dict:
             logging.warning(f"⚠️ [PASSPORT DETECTOR]: Yahoo Finance не вернул код биржи для {yahoo_symbol}")
             return None
             
-        sql_lookup = f"SELECT mic, currency_id FROM public.exchanges WHERE yahoo_code = '{yf_exchange_code}' LIMIT 1;"
-        db_rows = db_instance.execute_query(sql_lookup)
+        sql_lookup = "SELECT mic, currency_id FROM public.exchanges WHERE yahoo_code = %s LIMIT 1;"
+        db_rows = db_instance.execute_query(sql_lookup, (yf_exchange_code,))
         
         if db_rows and isinstance(db_rows, list) and len(db_rows) > 0:
             match = db_rows[0] 
@@ -217,8 +217,8 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
     # 🔥 ИНТЕЛЛЕКТУАЛЬНАЯ СБОРКА ИТОГОВОГО СИСТЕМНОГО ИМЕНИ (symbol_uport) ДЛЯ ЗАЩИТЫ ОТ ДУБЛИКАТОВ
     # Если бумага международная — мы обязаны сохранить её биржевой суффикс внутри symbol, чтобы развести строки
     if target_mic:
-        sql_get_sfx = f"SELECT yahoo_suffix, currency_id FROM public.exchanges WHERE mic = '{target_mic}' LIMIT 1;"
-        res_sfx = db_instance.execute_query(sql_get_sfx)
+        sql_get_sfx = "SELECT yahoo_suffix, currency_id FROM public.exchanges WHERE mic = %s LIMIT 1;"
+        res_sfx = db_instance.execute_query(sql_get_sfx, (target_mic,))
         
         # ЖЕЛЕЗОБЕТОННО: Извлекаем первую строку [0] из списка ответов базы данных
         if res_sfx and isinstance(res_sfx, list) and len(res_sfx) > 0:
@@ -272,20 +272,20 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
                 yf_exchange_code = "UNKNOWN"
 
             # Ищем MIC в СУБД по коду ответа от Yahoo Finance
-            sql_lookup_mic = f"""
-                SELECT mic, exchange_code, currency_id FROM public.exchanges 
-                WHERE yahoo_code = '{yf_exchange_code}' OR exchange_code = '{yf_exchange_code}' 
+            sql_lookup_mic = """
+                SELECT mic, exchange_code, currency_id FROM public.exchanges
+                WHERE yahoo_code = %s OR exchange_code = %s
                 ORDER BY (mic = 'XNAS' OR mic = 'XNYS') DESC LIMIT 1;
             """
-            match_rows = db_instance.execute_query(sql_lookup_mic)
+            match_rows = db_instance.execute_query(sql_lookup_mic, (yf_exchange_code, yf_exchange_code))
             if match_rows and isinstance(match_rows, list) and len(match_rows) > 0:
                 target_mic = match_rows[0]["mic"]
                 target_exchange_code = match_rows[0]["exchange_code"]
                 target_currency_id = match_rows[0]["currency_id"]
                 logging.info(f"   [GATEWAY]: Код сопоставлен. Выдан MIC: {target_mic}")
                 
-                sql_recheck = f"SELECT yahoo_suffix FROM public.exchanges WHERE mic = '{target_mic}' LIMIT 1;"
-                res_recheck = db_instance.execute_query(sql_recheck)
+                sql_recheck = "SELECT yahoo_suffix FROM public.exchanges WHERE mic = %s LIMIT 1;"
+                res_recheck = db_instance.execute_query(sql_recheck, (target_mic,))
                 if res_recheck and isinstance(res_recheck, list) and len(res_recheck) > 0:
                     sfx_str = str(res_recheck[0].get("yahoo_suffix", "")).strip().upper()
                     if sfx_str and sfx_str != "":
@@ -362,8 +362,8 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
                     
                     # Проверяем совпадение тела (до первой точки, защищая BRK.B)
                     if exchange_ticker == body_upper or ('.' in body_upper and exchange_ticker == body_upper.split('.')[0]):
-                        sql_mkt_bridge = f"SELECT uport_default_mic FROM public.fb_markets WHERE fb_market_code = '{broker_market_code}' LIMIT 1;"
-                        mkt_bridge_rows = db_instance.execute_query(sql_mkt_bridge)
+                        sql_mkt_bridge = "SELECT uport_default_mic FROM public.fb_markets WHERE fb_market_code = %s LIMIT 1;"
+                        mkt_bridge_rows = db_instance.execute_query(sql_mkt_bridge, (broker_market_code,))
                         
                         is_exchange_match = False
                         # ЖЕЛЕЗОБЕТОННО: Извлекаем строку из ответа моста рынков брокера
@@ -390,13 +390,14 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
         t212_ticker_result = body_upper
     ticker_name_map["T212"] = t212_ticker_result
 
-    # Формируем безопасные SQL-переменные с защитой от NULL значений
-    report_date_sql = f"'{target_report_date}'" if target_report_date else "NULL"
-    fb_ticker_sql = f"'{fb_ticker_result}'" if fb_ticker_result != "UNSUPPORTED" else "NULL"
-    mic_sql = f"'{target_mic}'" if target_mic else "NULL"
-    currency_sql = f"'{target_currency_id}'" if target_currency_id else "NULL"
-    yahoo_symbol_sql = f"'{yahoo_symbol_request}'"
-    json_map_sql = f"'{json.dumps(ticker_name_map, ensure_ascii=False)}'::jsonb"
+    # Значения NULL/строка передаются параметрами напрямую -- пред-цитированные
+    # SQL-фрагменты ("'текст'"/"NULL" строкой) больше не нужны, psycopg2 сам
+    # сериализует None в SQL NULL (см. Claude/BACKLOG.md №81).
+    report_date_val = target_report_date or None
+    fb_ticker_val = fb_ticker_result if fb_ticker_result != "UNSUPPORTED" else None
+    mic_val = target_mic or None
+    currency_val = target_currency_id or None
+    json_map_str = json.dumps(ticker_name_map, ensure_ascii=False)
 
     # 🛡️ ПРЕДОХРАНИТЕЛЬ: Гарантируем наличие переменной yf_asset_type, если MIC определился без сети
     if 'yf_asset_type' not in locals():
@@ -407,8 +408,8 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
             yf_asset_type = "EQUITY"
 
     # 🕵️‍♂️ ЗРЯЧАЯ ПРОВЕРКА КЭША СУБД: Истребляем холостую накрутку ID
-    sql_check_exist = f"SELECT id FROM public.tickers WHERE symbol = '{symbol_uport}' LIMIT 1;"
-    res_exist = db_instance.execute_query(sql_check_exist)
+    sql_check_exist = "SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;"
+    res_exist = db_instance.execute_query(sql_check_exist, (symbol_uport,))
 
     # Стандарт времени: UTC с точностью до секунд без timezone
     system_now_sql = "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)"
@@ -417,35 +418,41 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
         # --- ВЕТКА UPDATE: Паспорт уже существует, обновляем точечно по его ID ---
         row_t = res_exist[0] if isinstance(res_exist, list) else res_exist
         ticker_id = int(row_t["id"])
-        
+
         sql_update_passport = f"""
-            UPDATE public.tickers 
-            SET yahoo_symbol = {yahoo_symbol_sql},
-                ticker_name_map = public.tickers.ticker_name_map || {json_map_sql},
-                signal_next_report_date = {report_date_sql},
-                asset_type = '{yf_asset_type}',
-                exchange_mic = CASE WHEN public.tickers.exchange_mic IS NULL OR public.tickers.exchange_mic = '' THEN {mic_sql} ELSE public.tickers.exchange_mic END,
-                currency_id = CASE WHEN public.tickers.currency_id IS NULL OR public.tickers.currency_id = '' THEN {currency_sql} ELSE public.tickers.currency_id END,
-                fb_ticker = CASE WHEN public.tickers.fb_ticker IS NULL OR public.tickers.fb_ticker = '' THEN {fb_ticker_sql} ELSE public.tickers.fb_ticker END,
+            UPDATE public.tickers
+            SET yahoo_symbol = %s,
+                ticker_name_map = public.tickers.ticker_name_map || %s::jsonb,
+                signal_next_report_date = %s,
+                asset_type = %s,
+                exchange_mic = CASE WHEN public.tickers.exchange_mic IS NULL OR public.tickers.exchange_mic = '' THEN %s ELSE public.tickers.exchange_mic END,
+                currency_id = CASE WHEN public.tickers.currency_id IS NULL OR public.tickers.currency_id = '' THEN %s ELSE public.tickers.currency_id END,
+                fb_ticker = CASE WHEN public.tickers.fb_ticker IS NULL OR public.tickers.fb_ticker = '' THEN %s ELSE public.tickers.fb_ticker END,
                 last_updated_at = {system_now_sql}
-            WHERE id = {ticker_id};
+            WHERE id = %s;
         """
-        db_instance.execute_query(sql_update_passport)
+        db_instance.execute_query(sql_update_passport, (
+            yahoo_symbol_request, json_map_str, report_date_val, yf_asset_type,
+            mic_val, currency_val, fb_ticker_val, ticker_id
+        ))
         logging.info(f"📝 [PASSPORT]: Паспорт бумаги {symbol_uport} успешно актуализирован (ID: {ticker_id}).")
     else:
         # --- ВЕТКА INSERT: Новый уникальный паспорт в системе, берем чистый ID ---
         sql_insert_passport = f"""
             INSERT INTO public.tickers (
                 symbol, yahoo_symbol, exchange_mic, currency_id, fb_ticker, ticker_name_map, signal_next_report_date, asset_type, last_updated_at
-            ) 
+            )
             VALUES (
-                '{symbol_uport}', {yahoo_symbol_sql}, {mic_sql}, {currency_sql}, {fb_ticker_sql}, {json_map_sql}, {report_date_sql}, '{yf_asset_type}', {system_now_sql}
+                %s, %s, %s, %s, %s, %s::jsonb, %s, %s, {system_now_sql}
             );
         """
-        db_instance.execute_query(sql_insert_passport)
-        
+        db_instance.execute_query(sql_insert_passport, (
+            symbol_uport, yahoo_symbol_request, mic_val, currency_val, fb_ticker_val,
+            json_map_str, report_date_val, yf_asset_type
+        ))
+
         # Надежно забираем свежесгенерированный ID
-        res_new_id = db_instance.execute_query(f"SELECT id FROM public.tickers WHERE symbol = '{symbol_uport}' LIMIT 1;")
+        res_new_id = db_instance.execute_query("SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;", (symbol_uport,))
         row_n = res_new_id[0] if res_new_id and isinstance(res_new_id, list) and len(res_new_id) > 0 else (res_new_id if isinstance(res_new_id, dict) else {})
         ticker_id = int(row_n.get("id", 0))
         logging.info(f"➕ [PASSPORT]: Впервые создан эталонный паспорт для {symbol_uport} (ID: {ticker_id}).")
@@ -468,39 +475,41 @@ def manage_provenance(db_instance, ticker_id: int, source_key: str, action: str 
     current_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     
     action_clean = str(action).strip().lower()
-    source_key_clean = str(source_key).strip().replace("'", "''")
-    
+    source_key_clean = str(source_key).strip()
+
     if action_clean == "add":
         # 🛡️ ЖЕЛЕЗОБЕТОННАЯ ЗАЩИТА СТАТИЧЕСКОЙ ДАТЫ:
         # С помощью оператора '?' проверяем, есть ли уже такой ключ в JSONB.
         # Если ЕСТЬ (CASE WHEN ... ? THEN) — оставляем старый provenance без изменений.
         # Если НЕТ — безопасно конкатенируем (||) новый ключ.
-        sql_manage = f"""
+        sql_manage = """
             UPDATE public.tickers
-            SET provenance = CASE 
-                WHEN COALESCE(provenance, '{{}}'::jsonb) ? '{source_key_clean}' THEN provenance
-                ELSE COALESCE(provenance, '{{}}'::jsonb) || '{{"{source_key_clean}": "{current_timestamp}"}}'::jsonb
+            SET provenance = CASE
+                WHEN COALESCE(provenance, '{}'::jsonb) ? %s THEN provenance
+                ELSE COALESCE(provenance, '{}'::jsonb) || jsonb_build_object(%s, %s)
             END
-            WHERE id = {int(ticker_id)};
+            WHERE id = %s;
         """
+        params = (source_key_clean, source_key_clean, current_timestamp, ticker_id)
         # На DEBUG (Claude/BACKLOG.md №28) -- вызывается на КАЖДЫЙ тикер при каждой синхронизации
         # алертов/вотчлиста, а SQL ниже и так no-op, если метка уже стоит (WHEN ... ? THEN provenance)
         logging.debug(f"💾 [PROVENANCE]: Попытка фиксации метки '{source_key_clean}' для ticker_id = {ticker_id}")
 
     elif action_clean == "remove":
-        sql_manage = f"""
+        sql_manage = """
             UPDATE public.tickers
-            SET provenance = COALESCE(provenance, '{{}}'::jsonb) - '{source_key_clean}'
-            WHERE id = {int(ticker_id)};
+            SET provenance = COALESCE(provenance, '{}'::jsonb) - %s
+            WHERE id = %s;
         """
+        params = (source_key_clean, ticker_id)
         logging.debug(f"🧹 [PROVENANCE]: Команда удаления метки '{source_key_clean}' для ticker_id = {ticker_id}")
-        
+
     else:
         logging.error(f"❌ [PROVENANCE ERROR]: Передана неподдерживаемая операция: '{action}'")
         return False
 
     try:
-        db_instance.execute_query(sql_manage)
+        db_instance.execute_query(sql_manage, params)
         return True
     except Exception as err:
         logging.error(f"🚨 [PROVENANCE CRITICAL СБОЙ СУБД]: Не удалось выполнить {action_clean} для {source_key_clean}: {err}")
