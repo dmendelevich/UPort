@@ -54,7 +54,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
-        f"SELECT name FROM public.portfolios WHERE id = {int(portfolio_id)};"
+        "SELECT name FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
     portfolio_name = (portfolio_row or {}).get("name") or f"Портфель {portfolio_id}"
 
@@ -78,12 +78,12 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # точное совпадение количества/цены с конкретным планом (это отдельная, более глубокая
     # задача). Помечаем, не скрываем -- "система только советует", у уже стоящего приказа
     # может быть другое количество/причина, прятать рекомендацию рискованно.
-    active_orders_rows = db_instance.execute_query(f"""
+    active_orders_rows = db_instance.execute_query("""
         SELECT o.oper, l.ticker_id
         FROM public.orders o
         JOIN public.listings l ON o.listing_id = l.id
-        WHERE o.portfolio_id = {int(portfolio_id)} AND o.status = 'active';
-    """)
+        WHERE o.portfolio_id = %s AND o.status = 'active';
+    """, (portfolio_id,))
     active_orders_rows = active_orders_rows if isinstance(active_orders_rows, list) else ([active_orders_rows] if active_orders_rows else [])
     active_buy_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) in (1, 2)}
     active_sell_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) == 3}
@@ -163,7 +163,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # котировок (analytics/ladder_step_watcher.py::check_ladder_step_triggers), не в дайджесте
     # (обсуждено 2026-07-24). Дайджест только читает уже проставленный флаг, свежие цифры для
     # отображения считает на лету (listings.last_price), сам условие не пересчитывает.
-    ladder_rows = db_instance.execute_query(f"""
+    ladder_rows = db_instance.execute_query("""
         SELECT op.listing_id, t.symbol, s.strategy_name, op.current_step, op.target_quantity,
                st.budget_share_pct, l.last_price
         FROM public.order_pipelines op
@@ -171,9 +171,9 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         JOIN public.strategies s ON s.id = op.strategy_id
         JOIN public.listings l ON l.id = op.listing_id
         JOIN public.strategy_tactics st ON st.strategy_id = op.strategy_id AND st.step_number = op.current_step
-        WHERE op.portfolio_id = {int(portfolio_id)} AND op.step_ready_notified_at IS NOT NULL
+        WHERE op.portfolio_id = %s AND op.step_ready_notified_at IS NOT NULL
           AND op.pending_broker_order_id IS NULL;
-    """)
+    """, (portfolio_id,))
     ladder_rows = ladder_rows if isinstance(ladder_rows, list) else ([ladder_rows] if ladder_rows else [])
     for step in ladder_rows:
         qty = expected_step_quantity(step["target_quantity"], step["budget_share_pct"])
@@ -218,15 +218,15 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # Claude/13_portfolio_construction_and_rebalancing_rules.md) -- только факты, ничего
     # не меняет сам, решение (поднять сумму или копить число слотов) -- за пользователем.
     if datetime.date.today().day == settings.MONTHLY_SLOT_REVIEW_DAY:
-        review_rows = db_instance.execute_query(f"""
+        review_rows = db_instance.execute_query("""
             SELECT s.id AS strategy_id, s.strategy_name, s.rules_config,
                    (SELECT COUNT(*) FROM public.strategy_assets sa
                      WHERE sa.strategy_id = s.id AND sa.allocated_quantity > 0) AS position_count
             FROM public.strategies s
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            WHERE s.portfolio_id = {int(portfolio_id)} AND s.is_active = true
+            WHERE s.portfolio_id = %s AND s.is_active = true
               AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING');
-        """)
+        """, (portfolio_id,))
         review_rows = review_rows if isinstance(review_rows, list) else ([review_rows] if review_rows else [])
         for row in review_rows:
             slot_fixed = (row.get("rules_config") or {}).get("tactic_slot_fixed_usd")
