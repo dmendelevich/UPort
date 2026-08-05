@@ -71,15 +71,15 @@ def run_quotes_update(db_instance):
             
         # Обработка Trading 212 (ID: 2) по старой схеме до ее модернизации
         elif b_id == 2:
-            sql_tickers = f"""
-                SELECT DISTINCT ON (l.broker_symbol) l.id AS listing_id, l.broker_symbol AS full_ticker, c.multiplier 
+            sql_tickers = """
+                SELECT DISTINCT ON (l.broker_symbol) l.id AS listing_id, l.broker_symbol AS full_ticker, c.multiplier
                 FROM public.watchlist w
                 JOIN public.listings l ON w.listing_id = l.id
                 JOIN public.portfolios p ON w.portfolio_id = p.id
                 JOIN public.currencies c ON l.currency_id = c.id
-                WHERE p.broker_id = {b_id} AND (w.watched_at IS NOT NULL OR w.ordered_at IS NOT NULL OR w.bought_at IS NOT NULL);
+                WHERE p.broker_id = %s AND (w.watched_at IS NOT NULL OR w.ordered_at IS NOT NULL OR w.bought_at IS NOT NULL);
             """
-            tickers_data = db_instance.execute_query(sql_tickers)
+            tickers_data = db_instance.execute_query(sql_tickers, (b_id,))
             if not tickers_data:
                 continue
                 
@@ -155,7 +155,8 @@ async def send_daily_digests(db_instance, bot):
         if owner_id in OWNERS_WITH_DIGEST_DELIVERY:
             owner_row = await asyncio.to_thread(
                 db_instance.execute_row,
-                f"SELECT telegram_id FROM public.users WHERE id = {int(owner_id)};"
+                "SELECT telegram_id FROM public.users WHERE id = %s;",
+                (owner_id,)
             )
             owner_telegram_id = (owner_row or {}).get("telegram_id")
             if owner_telegram_id:
@@ -200,11 +201,12 @@ async def snapshot_portfolio_values(db_instance):
             total_value = await asyncio.to_thread(inspector.calculate_total_capital)
             await asyncio.to_thread(
                 db_instance.execute_query,
-                f"""
-                    INSERT INTO public.portfolio_value_history (portfolio_id, snapshot_date, total_value)
-                    VALUES ({p_id}, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, {float(total_value)})
-                    ON CONFLICT (portfolio_id, snapshot_date) DO UPDATE SET total_value = EXCLUDED.total_value;
                 """
+                    INSERT INTO public.portfolio_value_history (portfolio_id, snapshot_date, total_value)
+                    VALUES (%s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, %s)
+                    ON CONFLICT (portfolio_id, snapshot_date) DO UPDATE SET total_value = EXCLUDED.total_value;
+                """,
+                (p_id, float(total_value))
             )
             logging.info(f"📸 [NAV Snapshot]: '{p['name']}' (ID: {p_id}) -- ${float(total_value):,.2f}")
         except Exception as e:
@@ -231,7 +233,8 @@ async def run_daily_job_once(db_instance, job_name: str, coro_factory):
 
     row = await asyncio.to_thread(
         db_instance.execute_row,
-        f"SELECT last_started_at FROM public.cron_job_runs WHERE job_name = '{job_name}';"
+        "SELECT last_started_at FROM public.cron_job_runs WHERE job_name = %s;",
+        (job_name,)
     )
     last_started_raw = (row or {}).get("last_started_at")
     if last_started_raw:
@@ -243,27 +246,27 @@ async def run_daily_job_once(db_instance, job_name: str, coro_factory):
             logging.info(f"⏭️ [Cron]: '{job_name}' уже выполнялась сегодня ({today_utc}), пропускаю повтор.")
             return
 
-    await asyncio.to_thread(db_instance.execute_query, f"""
+    await asyncio.to_thread(db_instance.execute_query, """
         INSERT INTO public.cron_job_runs (job_name, last_started_at, last_status, last_error_message)
-        VALUES ('{job_name}', (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), 'RUNNING', NULL)
+        VALUES (%s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0), 'RUNNING', NULL)
         ON CONFLICT (job_name) DO UPDATE SET
             last_started_at = EXCLUDED.last_started_at,
             last_status = 'RUNNING',
             last_finished_at = NULL,
             last_error_message = NULL;
-    """)
+    """, (job_name,))
 
     try:
         result = await coro_factory()
     except Exception as e:
-        error_text = str(e).replace("'", "''")[:2000]
-        await asyncio.to_thread(db_instance.execute_query, f"""
+        error_text = str(e)[:2000]
+        await asyncio.to_thread(db_instance.execute_query, """
             UPDATE public.cron_job_runs
             SET last_finished_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
                 last_status = 'FAILED',
-                last_error_message = '{error_text}'
-            WHERE job_name = '{job_name}';
-        """)
+                last_error_message = %s
+            WHERE job_name = %s;
+        """, (error_text, job_name))
         raise
     else:
         # Честная статистика (Claude/BACKLOG.md, п.25, 2026-08-03): раньше "упало ли всё
@@ -273,19 +276,18 @@ async def run_daily_job_once(db_instance, job_name: str, coro_factory):
         # не все синхронизаторы ещё дают эту структуру) -- если errors>0, пишем PARTIAL,
         # иначе (в т.ч. старое поведение "вернул None") -- SUCCESS, как раньше.
         status = "SUCCESS"
-        error_note = "NULL"
+        error_note = None
         if isinstance(result, dict) and int(result.get("errors") or 0) > 0:
             status = "PARTIAL"
-            note_text = f"{result['errors']} из {result.get('processed', '?')} не обработалось".replace("'", "''")
-            error_note = f"'{note_text}'"
+            error_note = f"{result['errors']} из {result.get('processed', '?')} не обработалось"
 
-        await asyncio.to_thread(db_instance.execute_query, f"""
+        await asyncio.to_thread(db_instance.execute_query, """
             UPDATE public.cron_job_runs
             SET last_finished_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
-                last_status = '{status}',
-                last_error_message = {error_note}
-            WHERE job_name = '{job_name}';
-        """)
+                last_status = %s,
+                last_error_message = %s
+            WHERE job_name = %s;
+        """, (status, error_note, job_name))
 
 
 # === ПЕТЛИ ВРЕМЕНИ (РЕЛЕ БОЕВЫХ ЦИКЛОВ) ===
