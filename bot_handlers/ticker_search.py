@@ -126,8 +126,8 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
     # 4. ШАГ 4: СБОР АНАЛИТИЧЕСКИХ ДАННЫХ ИЗ ТАБЛИЦЫ TICKERS
     try:
         # 🔥 РЕФАКТОРИНГ: Заменяем на метод одной строки execute_row
-        sql_get_ticker = f"SELECT * FROM public.tickers WHERE id = {int(ticker_id)} LIMIT 1;"
-        t = await asyncio.to_thread(db_bot.execute_row, sql_get_ticker)
+        sql_get_ticker = "SELECT * FROM public.tickers WHERE id = %s LIMIT 1;"
+        t = await asyncio.to_thread(db_bot.execute_row, sql_get_ticker, (ticker_id,))
         
         if not t:
             await target_message.edit_text("❌ Ошибка: не удалось извлечь паспорт бумаги из СУБД.")
@@ -146,19 +146,19 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
     
     try:
         # 1. Вытаскиваем символы топ-5 компонентов фонда, если они уже есть в СУБД
-        sql_comp = f"""
+        sql_comp = """
             SELECT t.symbol FROM public.etf_holdings h
             JOIN public.tickers t ON h.component_ticker_id = t.id
-            WHERE h.etf_ticker_id = {int(ticker_id)}
+            WHERE h.etf_ticker_id = %s
             ORDER BY h.weight_percentage DESC LIMIT 5;
         """
-        comp_rows = await asyncio.to_thread(db_bot.execute_query, sql_comp)
+        comp_rows = await asyncio.to_thread(db_bot.execute_query, sql_comp, (ticker_id,))
         if comp_rows:
             etf_components_str = ", ".join([r['symbol'] for r in comp_rows])
-            
+
         # 2. 🔥 НОВАЯ ЗРЯЧАЯ ПРОВЕРА: Смотрим, добавлен ли фонд в реальные листинги портфелей
-        sql_list_check = f"SELECT 1 FROM public.listings WHERE ticker_id = {int(ticker_id)} LIMIT 1;"
-        list_res = await asyncio.to_thread(db_bot.execute_query, sql_list_check)
+        sql_list_check = "SELECT 1 FROM public.listings WHERE ticker_id = %s LIMIT 1;"
+        list_res = await asyncio.to_thread(db_bot.execute_query, sql_list_check, (ticker_id,))
         is_in_listings = True if list_res else False
 
     except Exception as e:
@@ -238,13 +238,13 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
     # показывать ли вообще "Добавить"/"Оставить в покое" (см. docstring выше).
     watched_portfolios = []
     if user_db_id:
-        watched_rows = await asyncio.to_thread(db_bot.execute_query, f"""
+        watched_rows = await asyncio.to_thread(db_bot.execute_query, """
             SELECT w.portfolio_id, p.name AS portfolio_name, w.listing_id
             FROM public.watchlist w
             JOIN public.listings l ON w.listing_id = l.id
             JOIN public.portfolios p ON w.portfolio_id = p.id
-            WHERE l.ticker_id = {int(ticker_id)} AND p.owner_id = {int(user_db_id)};
-        """)
+            WHERE l.ticker_id = %s AND p.owner_id = %s;
+        """, (ticker_id, user_db_id))
         watched_portfolios = watched_rows if isinstance(watched_rows, list) else ([watched_rows] if watched_rows else [])
 
     # 6. ШАГ 6: СБОРКА СМАРТ-ПУЛЬТА
