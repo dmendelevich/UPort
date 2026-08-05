@@ -30,15 +30,15 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
         
     # 2. УНИВЕРСАЛЬНАЯ СЕЛЕКЦИЯ: Выгребаем либо один целевой фонд, либо все активные из листингов
     # Полностью очищено от старых костылей provenance и asset_metadata
-    sql_get_active_etfs = f"""
+    sql_get_active_etfs = """
         SELECT DISTINCT t.id AS ticker_id, t.symbol, t.ticker_name_map ->> 'YAHOO' AS yahoo_symbol
         FROM public.tickers t
         INNER JOIN public.listings l ON l.ticker_id = t.id
         WHERE t.asset_type = 'ETF'
-          AND ({'NULL' if target_ticker_id is None else int(target_ticker_id)} IS NULL OR t.id = {'NULL' if target_ticker_id is None else int(target_ticker_id)});
+          AND (%s::int IS NULL OR t.id = %s);
     """
-    
-    active_etfs = db_sys.execute_query(sql_get_active_etfs)
+
+    active_etfs = db_sys.execute_query(sql_get_active_etfs, (target_ticker_id, target_ticker_id))
     
     if not active_etfs:
         logging.warning("info: Целевых фондов ETF для раскрытия в СУБД прямо сейчас не обнаружено.")
@@ -122,13 +122,13 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                         continue
 
                     # Прицельно проверяем кэш СУБД по составному первичному ключу фонда и компонента
-                    sql_check_holding = f"""
-                        SELECT weight_percentage FROM public.etf_holdings 
-                        WHERE etf_ticker_id = {t_id} 
-                          AND component_ticker_id = {int(comp_id)} 
+                    sql_check_holding = """
+                        SELECT weight_percentage FROM public.etf_holdings
+                        WHERE etf_ticker_id = %s
+                          AND component_ticker_id = %s
                         LIMIT 1;
                     """
-                    existing_holding = db_sys.execute_query(sql_check_holding)
+                    existing_holding = db_sys.execute_query(sql_check_holding, (t_id, comp_id))
 
                     if existing_holding and len(existing_holding) > 0:
                         # ВЕТКА UPDATE: Извлекаем первый элемент из списка ответов СУБД
@@ -137,24 +137,24 @@ async def run_etf_look_through_decomposition(target_ticker_id=None):
                         
                         # Перезаписываем диск только если вес компонента реально изменился
                         if abs(old_weight - weight) > 0.001:
-                            sql_update_holding = f"""
-                                UPDATE public.etf_holdings 
-                                SET weight_percentage = {weight:.2f},
+                            sql_update_holding = """
+                                UPDATE public.etf_holdings
+                                SET weight_percentage = %s,
                                     last_updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-                                WHERE etf_ticker_id = {t_id} 
-                                  AND component_ticker_id = {int(comp_id)};
+                                WHERE etf_ticker_id = %s
+                                  AND component_ticker_id = %s;
                             """
-                            db_sys.execute_query(sql_update_holding)
+                            db_sys.execute_query(sql_update_holding, (round(weight, 2), t_id, comp_id))
                     else:
                         # ВЕТКА INSERT: Впервые заносим новый компонент в структуру фонда (сберегая ID)
-                        sql_insert_holding = f"""
+                        sql_insert_holding = """
                             INSERT INTO public.etf_holdings (
                                 etf_ticker_id, component_ticker_id, weight_percentage, last_updated_at
                             ) VALUES (
-                                {t_id}, {int(comp_id)}, {weight:.2f}, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
+                                %s, %s, %s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
                             );
                         """
-                        db_sys.execute_query(sql_insert_holding)
+                        db_sys.execute_query(sql_insert_holding, (t_id, comp_id, round(weight, 2)))
                         
                 except Exception as comp_err:
                     # Изолируем экзотический мусор — фонд продолжает обрабатываться!
