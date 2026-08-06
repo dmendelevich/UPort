@@ -21,40 +21,42 @@ def run_forced_global_fundamentals():
     print("="*110)
 
     # 📡 ЗАПРОС НА ВЕСЬ ОЧИЩЕННЫЙ UNIVERSE, ГДЕ ФУНДАМЕНТАЛ ЕЩЕ ПУСТ ОПОСЛЯ ЧИСТКИ
+    # id нужен явно -- sync_fundamentals с "Renovated Core" (be7f1ef) принимает
+    # single_ticker_id (число), а не символ строкой, ищет WHERE id = %s.
     sql_get_empty = """
-        SELECT symbol FROM public.tickers 
+        SELECT id, symbol FROM public.tickers
         WHERE fundamentals_last_synced_at IS NULL
           AND (provenance::text LIKE '%"MS_%' OR provenance::text LIKE '%LST_ID=%' OR provenance::text LIKE '%TG_USR_ID=%')
         ORDER BY symbol;
     """
     raw_rows = db_sys.execute_query(sql_get_empty)
-    
+
     if not raw_rows or not isinstance(raw_rows, list):
         logging.info("ℹ️ Пустых или необновленных фундаментальных паспортов в СУБД не обнаружено. Прогон не требуется.")
         return
 
-    all_symbols = [str(row["symbol"]).strip().upper() for row in raw_rows]
-    total_tickers = len(all_symbols)
+    all_tickers = [(int(row["id"]), str(row["symbol"]).strip().upper()) for row in raw_rows]
+    total_tickers = len(all_tickers)
     logging.info(f"📊 Обнаружено {total_tickers} акций с пустым фундаменталом. Нарезаю на эшелоны...")
 
     # Нарезаем плоский список на эшелоны по 30 акций (получится примерно 31 эшелон)
     # Используем ваш родной и проверенный Chunker из utils
-    echelons = list(utils.create_echelons(all_symbols, chunk_size=30))
+    echelons = list(utils.create_echelons(all_tickers, chunk_size=30))
     total_echelons = len(echelons)
     logging.info(f"📦 Сформировано {total_echelons} эшелонов для бережной загрузки.")
 
     processed_count = 0
-    
+
     # 🔄 КА СКАДНЫЙ ПАКЕТНЫЙ КОНВЕЙЕР
     # 🔥 ИСПРАВЛЕНО: Явно распаковываем кортеж чанкера (номер пачки нам не нужен, берем только batch)
     for _, batch in echelons:
-        # Теперь внутренний цикл будет бежать строго по текстовым буквам акций внутри текущей пачки
-        for sym in batch:
+        # Теперь внутренний цикл будет бежать строго по (id, symbol) парам внутри текущей пачки
+        for t_id, sym in batch:
             processed_count += 1
-            logging.info(f"   👉 [{processed_count}/{total_tickers}] Отправка в одиночный боевой шлюз: '{sym}'")
-            
+            logging.info(f"   👉 [{processed_count}/{total_tickers}] Отправка в одиночный боевой шлюз: '{sym}' (id={t_id})")
+
             try:
-                sync_fundamentals(db_sys, single_symbol=sym)
+                sync_fundamentals(db_sys, single_ticker_id=t_id)
             except Exception as single_err:
                 logging.error(f"   🚨 Сбой обработки фундаментала для '{sym}': {single_err}")
 
