@@ -1,4 +1,5 @@
 import logging
+from analytics.analytics_utils import normalize_debt_to_equity
 
 def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     """
@@ -153,7 +154,7 @@ def generate_portfolio_passport(portfolio_id: int, db_instance) -> dict:
     final_ps = normalize_weighted(weighted_ps, 'ps')
     final_pb = normalize_weighted(weighted_pb, 'pb')
     final_ev_ebitda = normalize_weighted(weighted_ev_ebitda, 'ev')
-    final_debt_equity = normalize_weighted(weighted_debt_equity, 'debt')
+    final_debt_equity = normalize_debt_to_equity(normalize_weighted(weighted_debt_equity, 'debt'))
     final_current_ratio = normalize_weighted(weighted_current_ratio, 'curr')
     final_profit_margin = normalize_weighted(weighted_profit_margin, 'margin')
     final_roe = normalize_weighted(weighted_roe, 'roe')

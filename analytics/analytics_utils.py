@@ -24,6 +24,17 @@ def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:
     return sign * max(1, round(abs(raw_step_qty)))
 
 
+def normalize_debt_to_equity(raw_value):
+    """
+    Yahoo отдаёт debtToEquity в процентных пунктах (17.6 значит коэффициент 0.176), не
+    голым мультипликатором -- проверено сверкой с реальным балансом по нескольким тикерам
+    (2026-08-06). `tickers.debt_to_equity` хранит сырое значение источника как есть (тот же
+    принцип, что и `currencies.multiplier` -- канонический слой в нативных единицах, перевод
+    в общепринятый коэффициент делается здесь, в момент использования, единой точкой).
+    """
+    return float(raw_value) / 100.0 if raw_value is not None else None
+
+
 def conservative_fundamental_break_reasons(f: dict) -> list:
     """
     Единый источник правды "фундаментал Консервативной сломан" -- переиспользуется
@@ -37,7 +48,7 @@ def conservative_fundamental_break_reasons(f: dict) -> list:
     """
     reasons = []
     roe_raw = f.get("return_on_equity")
-    debt_to_equity_raw = f.get("debt_to_equity")
+    debt_to_equity_raw = normalize_debt_to_equity(f.get("debt_to_equity"))
     pe_trailing_raw = f.get("pe_trailing")
 
     if roe_raw is not None and float(roe_raw) < 0.10:
@@ -352,7 +363,7 @@ class TickerEvaluator:
             return ("PASS" if check_fn(val) else "FAIL"), val
 
         roe_status, roe_val = _na_or_check(f.get("return_on_equity"), lambda v: v > 0.15)
-        debt_status, debt_val = _na_or_check(f.get("debt_to_equity"), lambda v: v < 1.5)
+        debt_status, debt_val = _na_or_check(normalize_debt_to_equity(f.get("debt_to_equity")), lambda v: v < 1.5)
         cagr_status, cagr_val = _na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
         growth_status, growth_val = _na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
         pe_status, pe_val = _na_or_check(f.get("pe_trailing"), lambda v: v > 0)
