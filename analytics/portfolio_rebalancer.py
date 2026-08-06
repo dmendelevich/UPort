@@ -40,13 +40,13 @@ class PortfolioRebalancer:
         inspector = PortfolioInspector(self.db, portfolio_id)
         balances = inspector.get_virtual_cash_balances()
 
-        strat_rows = self.db.execute_query(f"""
+        strat_rows = self.db.execute_query("""
             SELECT s.id, s.strategy_name, s.rules_config
             FROM public.strategies s
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            WHERE s.portfolio_id = {int(portfolio_id)} AND tpl.system_key = 'CONSERVATIVE_ACCUMULATION'
+            WHERE s.portfolio_id = %s AND tpl.system_key = 'CONSERVATIVE_ACCUMULATION'
               AND s.is_active = true;
-        """)
+        """, (portfolio_id,))
         strat_rows = strat_rows if isinstance(strat_rows, list) else ([strat_rows] if strat_rows else [])
 
         alerts = []
@@ -66,7 +66,7 @@ class PortfolioRebalancer:
             underweight_threshold = target_slot * self.UNDERWEIGHT_MULTIPLIER
             remaining_slack = float(bal.get("virtual_free_cash_usd") or 0.0)
 
-            sql_positions = f"""
+            sql_positions = """
                 SELECT a.id AS asset_id, a.listing_id, lt.id AS ticker_id, lt.symbol,
                        sa.allocated_quantity, l.last_price, l.currency_id, lt.signal_ema20_streak_days,
                        (SELECT op.id FROM public.order_pipelines op
@@ -78,9 +78,9 @@ class PortfolioRebalancer:
                 JOIN public.assets a ON sa.asset_id = a.id
                 JOIN public.listings l ON a.listing_id = l.id
                 JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
-                WHERE sa.strategy_id = {s_id} AND sa.allocated_quantity > 0;
+                WHERE sa.strategy_id = %s AND sa.allocated_quantity > 0;
             """
-            positions = self.db.execute_query(sql_positions) or []
+            positions = self.db.execute_query(sql_positions, (s_id,)) or []
             positions = positions if isinstance(positions, list) else [positions]
 
             for pos in positions:
