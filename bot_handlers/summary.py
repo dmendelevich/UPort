@@ -28,7 +28,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     try:
         # 🔥 РЕФАКТОРИНГ: Заменяем на execute_row и полностью убираем проверку списков [0]
         user_row = db_bot.execute_row(
-            f"SELECT id, is_admin FROM public.users WHERE telegram_id = {message.from_user.id} LIMIT 1;"
+            "SELECT id, is_admin FROM public.users WHERE telegram_id = %s LIMIT 1;",
+            (message.from_user.id,)
         )
         if user_row:
             # Извлекаем внутренний числовой ID пользователя напрямую из словаря
@@ -183,26 +184,28 @@ async def process_view_accounts(callback: types.CallbackQuery, callback_data: Me
 
     header_row = await asyncio.to_thread(
         db_bot.execute_row,
-        f"""
+        """
             SELECT u.name AS owner_name, b.name AS broker_name
             FROM public.users u, public.brokers b
-            WHERE u.id = {int(owner_id)} AND b.id = {int(broker_id)};
-        """
+            WHERE u.id = %s AND b.id = %s;
+        """,
+        (owner_id, broker_id)
     )
     owner_name = header_row.get("owner_name", "Unknown") if header_row else "Unknown"
     broker_name = header_row.get("broker_name", "Unknown") if header_row else "Unknown"
 
     accounts_rows = await asyncio.to_thread(
         db_bot.execute_query,
-        f"""
+        """
             SELECT a.account_type, a.portfolio_id, p.name AS portfolio_name,
                    a.currency_id, cur.sign, a.cash_available, a.cash_reserved
             FROM public.accounts a
             JOIN public.currencies cur ON a.currency_id = cur.id
             LEFT JOIN public.portfolios p ON a.portfolio_id = p.id
-            WHERE a.user_id = {int(owner_id)} AND a.broker_id = {int(broker_id)}
+            WHERE a.user_id = %s AND a.broker_id = %s
             ORDER BY a.account_type DESC, a.portfolio_id, a.currency_id;
-        """
+        """,
+        (owner_id, broker_id)
     )
     accounts_rows = accounts_rows if isinstance(accounts_rows, list) else ([accounts_rows] if accounts_rows else [])
 
