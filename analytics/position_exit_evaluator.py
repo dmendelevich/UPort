@@ -39,7 +39,7 @@ class PositionExitEvaluator:
         для которых сработало правило выхода их стратегии (не для всех позиций,
         только для тех, где есть что сказать).
         """
-        sql = f"""
+        sql = """
             SELECT
                 a.id AS asset_id, a.portfolio_id, a.listing_id, a.quantity, a.avg_price, a.position_opened_at,
                 lt.id AS ticker_id, lt.symbol, lt.current_price,
@@ -56,9 +56,9 @@ class PositionExitEvaluator:
                 ON op.portfolio_id = a.portfolio_id AND op.listing_id = a.listing_id
                AND op.strategy_id = s.id AND op.pipeline_status IN ('PENDING', 'ACTIVE')
                AND op.target_quantity > 0
-            WHERE a.portfolio_id = {int(portfolio_id)} AND a.quantity > 0;
+            WHERE a.portfolio_id = %s AND a.quantity > 0;
         """
-        rows = self.db.execute_query(sql) or []
+        rows = self.db.execute_query(sql, (portfolio_id,)) or []
         clean_rows = rows if isinstance(rows, list) else [rows]
 
         alerts = []
