@@ -765,3 +765,5 @@
     - **`bot_handlers/digest.py`** — единственный вызов (`sql_portfolios` в `process_digest_focus_menu`) проверен и найден УЖЕ безопасным — полностью статический текст без единого динамического значения, менять нечего. Изменений в файл не вносилось.
 
     - **`bot_handlers/bot_keyboards.py`** — единственный вызов параметризован (`generate_target_strategies_keyboard` — пульт выбора стратегии-приёмника при переносе). Протестировано реальным вызовом на портфеле «ПБум» (исходная стратегия 31/Тренд корректно исключена, показаны 4 остальные реальные стратегии). `restart_uport.sh` + `systemctl restart uport_gateway.service`, лог чистый, реальное тестовое сообщение через `uport_ai_bot.bot`. *(2026-08-06, Трек C)*
+
+    - **`analytics/position_exit_evaluator.py`** — единственный вызов параметризован (`PositionExitEvaluator.evaluate_portfolio_exits`). Протестировано на реальных данных: 0 алертов для ПБум (ожидаемо), 3 реальные SELL-рекомендации для П10 (GLDM/UBER/PG). `restart_uport.sh` + `systemctl restart uport_gateway.service`, лог чистый, реальное тестовое сообщение через `uport_ai_bot.bot`. *(2026-08-06, Трек C)*
