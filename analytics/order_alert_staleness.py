@@ -38,14 +38,13 @@ def is_broker_order_price_stale(db_instance, broker_order_id) -> bool:
     привязанного приказа, не всего портфеля. Та же формула, что и в
     evaluate_portfolio_staleness, просто на одну строку вместо пакета.
     """
-    safe_id = str(broker_order_id).replace("'", "''")
-    row = db_instance.execute_row(f"""
+    row = db_instance.execute_row("""
         SELECT o.p, o.stop_price, o.type, l.last_price, t.signal_daily_volatility_pct
         FROM public.orders o
         JOIN public.listings l ON o.listing_id = l.id
         JOIN public.tickers t ON l.ticker_id = t.id
-        WHERE o.broker_order_id = '{safe_id}' LIMIT 1;
-    """)
+        WHERE o.broker_order_id = %s LIMIT 1;
+    """, (broker_order_id,))
     if not row:
         return False
     ref_price = _order_reference_price(row)
@@ -75,15 +74,15 @@ def evaluate_portfolio_staleness(db_instance, portfolio_id: int) -> dict:
     price_items = []
     time_items = []
 
-    order_rows = db_instance.execute_query(f"""
+    order_rows = db_instance.execute_query("""
         SELECT o.id AS order_id, o.p, o.stop_price, o.type, o.created_at,
                l.id AS listing_id, l.last_price, t.symbol, t.signal_daily_volatility_pct
         FROM public.orders o
         JOIN public.listings l ON o.listing_id = l.id
         JOIN public.tickers t ON l.ticker_id = t.id
-        WHERE o.portfolio_id = {int(portfolio_id)}
+        WHERE o.portfolio_id = %s
           AND o.status IN ('active', 'NEW', 'PARTIALLY_FILLED');
-    """)
+    """, (portfolio_id,))
     order_rows = order_rows if isinstance(order_rows, list) else ([order_rows] if order_rows else [])
 
     for o in order_rows:
@@ -105,15 +104,15 @@ def evaluate_portfolio_staleness(db_instance, portfolio_id: int) -> dict:
         if age > settings.STALE_ORDER_TIME_LIMIT_DAYS:
             time_items.append({"kind": "order", "symbol": symbol, "listing_id": listing_id, "age_days": age})
 
-    alert_rows = db_instance.execute_query(f"""
+    alert_rows = db_instance.execute_query("""
         SELECT al.id AS alert_id, al.trigger_price, al.created_at,
                l.id AS listing_id, l.last_price, t.symbol, t.signal_daily_volatility_pct
         FROM public.alerts al
         JOIN public.listings l ON al.listing_id = l.id
         JOIN public.tickers t ON l.ticker_id = t.id
-        WHERE al.portfolio_id = {int(portfolio_id)} AND al.is_active = true
+        WHERE al.portfolio_id = %s AND al.is_active = true
           AND al.trigger_price IS NOT NULL;
-    """)
+    """, (portfolio_id,))
     alert_rows = alert_rows if isinstance(alert_rows, list) else ([alert_rows] if alert_rows else [])
 
     for a in alert_rows:
