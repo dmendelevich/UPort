@@ -27,10 +27,10 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
     if single_ticker_id:
         logging.info(f"🎯 [ФУНДАМЕНТАЛ ШЛЮЗ]: Экстренный сбор показателей для одиночной новой бумаги с ticker_id: {single_ticker_id}")
         # Извлекаем yahoo_symbol из JSONB-карты по ключу "YAHOO" для конкретного тикера
-        sql_tickers = f"""
+        sql_tickers = """
             SELECT id, symbol, (ticker_name_map->>'YAHOO') AS yahoo_symbol
             FROM public.tickers
-            WHERE id = {int(single_ticker_id)};
+            WHERE id = %s;
         """
     else:
         logging.info("📡 [УМНЫЙ ТРИГГЕР]: Формирую двухконтурную ночную выборку Universe...")
@@ -67,7 +67,7 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
             ORDER BY priority ASC, id ASC;
         """
 
-    tickers_data = db_instance.execute_query(sql_tickers)
+    tickers_data = db_instance.execute_query(sql_tickers, (single_ticker_id,) if single_ticker_id else None)
 
     if not tickers_data or not isinstance(tickers_data, list):
         logging.info("ℹ️ [Yahoo Fundamentals]: На сегодняшнюю ночь плановых или постотчетных бумаг не обнаружено. Отдыхаем.")
@@ -108,11 +108,12 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
                 error_count += 1
                 continue
 
-            # Безопасный перевод сущностей в SQL-формат
+            # Безопасное извлечение значения -- None передаётся параметром напрямую,
+            # psycopg2 сам сериализует в SQL NULL (см. Claude/BACKLOG.md №81).
             def get_sql_val(key, multiply_100=False):
                 val = info.get(key)
                 if val is None:
-                    return "NULL"
+                    return None
                 if multiply_100:
                     val = float(val) * 100
                 return float(val)
@@ -126,10 +127,10 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
 
             # 🎯 ТЕКСТОВЫЙ ПАСПОРТ: Извлекаем полное имя компании из longName
             raw_comp_name = info.get('longName') or info.get('shortName') or pure_symbol
-            comp_name_val = str(raw_comp_name).strip().replace("'", "''")
+            comp_name_val = str(raw_comp_name).strip()
 
-            sector_val = str(info.get('sector', 'Unknown Sector')).replace("'", "''")
-            industry_val = str(info.get('industry', 'Unknown Industry')).replace("'", "''")
+            sector_val = str(info.get('sector', 'Unknown Sector'))
+            industry_val = str(info.get('industry', 'Unknown Industry'))
 
             debt_to_equity = get_sql_val('debtToEquity')
             current_ratio = get_sql_val('currentRatio')
@@ -152,7 +153,7 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
             target_high_price = get_sql_val('targetHighPrice')
 
             # 🔥 МАТЕМАТИЧЕСКИЙ РАСЧЕТ CAGR ВЫРУЧКИ ЗА 3 ГОДА
-            revenue_cagr_3y = "NULL"
+            revenue_cagr_3y = None
             try:
                 financials = ticker_obj.financials
                 if financials is not None and 'Total Revenue' in financials.index:
@@ -161,46 +162,57 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
                         revenue_current = float(rev_series.iloc[0])
                         revenue_3y_ago = float(rev_series.iloc[3])
                         if revenue_current > 0 and revenue_3y_ago > 0:
-                            cagr_val = ((revenue_current / revenue_3y_ago) ** (1 / 3) - 1) * 100
-                            revenue_cagr_3y = str(float(cagr_val))
+                            revenue_cagr_3y = ((revenue_current / revenue_3y_ago) ** (1 / 3) - 1) * 100
             except Exception as cagr_err:
                 logging.warning(f"   ⚠️ Не удалось рассчитать CAGR выручки для {yf_symbol}: {cagr_err}")
 
             val_exp = get_sql_val('expenseRatio')
-            if val_exp != "NULL":
-                expense_ratio_sql = str(float(val_exp))
+            if val_exp is not None:
+                expense_ratio_val = val_exp
             else:
                 val_net_exp = get_sql_val('netExpenseRatio')
-                if val_net_exp != "NULL":
-                    expense_ratio_sql = str(float(val_net_exp) / 100)
-                else:
-                    expense_ratio_sql = "NULL"
-                                
+                expense_ratio_val = (val_net_exp / 100) if val_net_exp is not None else None
+
             raw_summary = info.get('longBusinessSummary')
-            summary_val = str(raw_summary).strip().replace("'", "''") if raw_summary else "No summary available"
+            summary_val = str(raw_summary).strip() if raw_summary else "No summary available"
 
             # 🔥 ТОЧЕЧНЫЙ UPDATE-ЗАПРОС С ФИКСАЦИЕЙ ТАЙМСТЕМПА КЭША В СУБД
-            sql_update = f"""
-                UPDATE public.tickers 
+            sql_update = """
+                UPDATE public.tickers
                 SET
-                    company_name = '{comp_name_val}', 
-                    pe_trailing = {pe_trailing}, pe_forward = {pe_forward}, peg_ratio = {peg_ratio},
-                    price_to_sales = {price_to_sales}, price_to_book = {price_to_book}, ev_to_ebitda = {ev_to_ebitda},
-                    debt_to_equity = {debt_to_equity}, current_ratio = {current_ratio}, quick_ratio = {quick_ratio},
-                    profit_margin = {profit_margin}, operating_margin = {operating_margin}, 
-                    return_on_equity = {return_on_equity}, return_on_assets = {return_on_assets},
-                    dividend_yield = {dividend_yield}, payout_ratio = {payout_ratio}, free_cash_flow = {free_cash_flow},
-                    target_mean_price = {target_mean_price}, recommendation_mean = {recommendation_mean},
-                    target_low_price = {target_low_price}, target_high_price = {target_high_price},
-                    revenue_cagr_3y = {revenue_cagr_3y}, expense_ratio = {expense_ratio_sql},
-                    sector = '{sector_val}', industry = '{industry_val}',
-                    long_business_summary = '{summary_val}',
-                    revenue_growth = {revenue_growth_sql}, earnings_growth = {earnings_growth_sql},
+                    company_name = %s,
+                    pe_trailing = %s, pe_forward = %s, peg_ratio = %s,
+                    price_to_sales = %s, price_to_book = %s, ev_to_ebitda = %s,
+                    debt_to_equity = %s, current_ratio = %s, quick_ratio = %s,
+                    profit_margin = %s, operating_margin = %s,
+                    return_on_equity = %s, return_on_assets = %s,
+                    dividend_yield = %s, payout_ratio = %s, free_cash_flow = %s,
+                    target_mean_price = %s, recommendation_mean = %s,
+                    target_low_price = %s, target_high_price = %s,
+                    revenue_cagr_3y = %s, expense_ratio = %s,
+                    sector = %s, industry = %s,
+                    long_business_summary = %s,
+                    revenue_growth = %s, earnings_growth = %s,
                     last_updated_at = CURRENT_TIMESTAMP,
                     fundamentals_last_synced_at = CURRENT_TIMESTAMP
-                WHERE id = {t_id};
+                WHERE id = %s;
             """
-            db_instance.execute_query(sql_update)
+            db_instance.execute_query(sql_update, (
+                comp_name_val,
+                pe_trailing, pe_forward, peg_ratio,
+                price_to_sales, price_to_book, ev_to_ebitda,
+                debt_to_equity, current_ratio, quick_ratio,
+                profit_margin, operating_margin,
+                return_on_equity, return_on_assets,
+                dividend_yield, payout_ratio, free_cash_flow,
+                target_mean_price, recommendation_mean,
+                target_low_price, target_high_price,
+                revenue_cagr_3y, expense_ratio_val,
+                sector_val, industry_val,
+                summary_val,
+                revenue_growth_sql, earnings_growth_sql,
+                t_id
+            ))
             
             # Вежливая защитная пауза для Rate Limit
             time.sleep(1.5)
