@@ -25,9 +25,9 @@ class FreedomBrokerClient:
         # рутинная сборка на DEBUG, реальные проблемы (пользователь/ключи не найдены) на WARNING.
         logging.debug(f"🏭 [FB CLIENT FACTORY]: Сборка клиента для пользователя ID: {user_id}...")
 
-        # 1. Запрашиваем префикс пользователя из базы данных через f-строку (безопасно для int)
-        sql = f"SELECT prefix FROM public.users WHERE id = {int(user_id)} LIMIT 1;"
-        user_rows = db_instance.execute_query(sql)
+        # 1. Запрашиваем префикс пользователя из базы данных
+        sql = "SELECT prefix FROM public.users WHERE id = %s LIMIT 1;"
+        user_rows = db_instance.execute_query(sql, (user_id,))
 
         # Проверяем, что база вернула непустой список
         if not user_rows or len(user_rows) == 0:
