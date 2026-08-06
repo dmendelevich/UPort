@@ -521,15 +521,15 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if is_owner_view:
         # Вариант 1: В портфеле конкретного счета -- Блок 1 стандарта body
         # (см. Claude/05_strategy_screen_and_kubiki.md): финансовая характеристика,
-        # несёт собственную подпись портфеля/стратегии вместо убранной строки-контекста.
-        # p_name нужен ниже (раздел ордеров) для фильтрации по названию портфеля.
+        # несёт собственную подпись портфеля + таблицу-разбивку по стратегиям вместо
+        # убранной строки-контекста. p_name нужен ниже (раздел ордеров) для фильтрации
+        # по названию портфеля.
         owner_row = next((h for h in all_holders if h['portfolio_id'] == p_id), None)
         p_name = owner_row['portfolio_name'] if owner_row else f"П{p_id}"
 
         text = header_text
         text += await format_position_financials(
-            portfolio_id=p_id, listing_id=l_id, last_price=last_price_display, sign=target_sign,
-            strategy_id=strategy_id, fx_rate=fx_rate
+            portfolio_id=p_id, listing_id=l_id, last_price=last_price_display, sign=target_sign, fx_rate=fx_rate
         )
         # Блок 6 стандарта body: где ещё в семье есть/запланировано, за вычетом
         # текущего портфеля/стратегии (уже показан Блоком 1 выше)

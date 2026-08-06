@@ -216,47 +216,47 @@ STRATEGY_MICRO_LABELS = {
 }
 
 
-async def format_position_financials(portfolio_id: int, listing_id: int, last_price: float, sign: str, strategy_id: int = 0, fx_rate: float = 1.0) -> str:
+# Порядок строк таблицы-разбивки по стратегиям в Блоке 1 (см. format_position_financials)
+# -- фиксированный, не по объёму, чтобы порядок строк не прыгал между рендерами.
+# CASH_RESERVE не входит -- служебная стратегия денег, физически не может держать бумаги
+# (см. bot_handlers/order_pipelines.py). UNALLOCATED -- всегда последней (та же причина,
+# по которой она получает предупреждающий бейдж: "деньги вне стратегии" -- не основной случай).
+STRATEGY_BREAKDOWN_ORDER = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "UNALLOCATED")
+
+
+async def format_position_financials(portfolio_id: int, listing_id: int, last_price: float, sign: str, fx_rate: float = 1.0) -> str:
     """
     Блок 1 стандарта body тикера (см. Claude/05_strategy_screen_and_kubiki.md): финансовая
     характеристика позиции -- количество, цена входа vs баланс, вложено vs сейчас,
     прибыль, срок владения, годовая доходность. Несёт собственную подпись владения
-    (портфель или стратегия) -- заменяет отдельную строку-контекст, от которой решили
-    отказаться (обсуждение 2026-07-26): подпись естественно принадлежит этому блоку,
-    а не отдельной строке над всеми блоками.
+    (портфель) -- заменяет отдельную строку-контекст, от которой решили отказаться
+    (обсуждение 2026-07-26): подпись естественно принадлежит этому блоку, а не отдельной
+    строке над всеми блоками.
 
-    strategy_id=0 -> считаем по всему портфелю (v_assets_full.quantity), strategy_id>0
-    -> по доле, закреплённой за стратегией (v_strategy_assets_full.allocated_quantity).
-    Цена входа (avg_price) в обоих случаях ОДНА И ТА ЖЕ портфельная -- у strategy_assets
-    нет собственной цены входа, это осознанное упрощение модели данных, не баг.
+    Всегда считается на ВЕСЬ объём портфельной позиции (v_assets_full.quantity), не по
+    отдельной стратегии -- у strategy_assets нет собственной цены входа (avg_price всегда
+    портфельная), поэтому "Вход/Сейчас/прибыль" по одной стратегии физически нечего было
+    бы показать отдельно от остальных. Раньше это решалось параметром strategy_id (заход
+    из карточки стратегии показывал только её долю) -- отказались от развилки (обсуждение
+    2026-08-06): бумага может держаться сразу в нескольких стратегиях портфеля одновременно
+    (живой случай -- GOOGL, Револьверная+Неопределённая), общий список активов портфеля не
+    может знать "стратегию" бумаги, потому что её может не быть одной. Вместо развилки --
+    под шапкой всегда таблица-разбивка по стратегиям (переменное число строк, только те,
+    где реально есть объём), тем же моноширинным приёмом, что и в Блоке 2 ("Поведение").
 
     Мультивалютность (BACKLOG.md #30): last_price/sign вызывающий код (tickers.py) уже
     передаёт в валюте СМОТРЯЩЕГО пользователя; fx_rate -- тот же курс (нативная валюта
     листинга -> валюта смотрящего), посчитанный один раз за рендер, применяется здесь
     только к avg_price (единственная сумма, которую эта функция достаёт из БД сама).
     """
-    if strategy_id > 0:
-        sql = """
-            SELECT vsaf.allocated_quantity AS quantity, vsaf.avg_price, vsaf.portfolio_name, st.system_key,
-                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(vsaf.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
-            FROM public.v_strategy_assets_full vsaf
-            JOIN public.strategies s ON s.id = vsaf.strategy_id
-            JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE vsaf.strategy_id = %s AND vsaf.listing_id = %s
-            LIMIT 1;
-        """
-        params = (strategy_id, listing_id)
-    else:
-        sql = """
-            SELECT quantity, avg_price, portfolio_name,
-                   EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
-            FROM public.v_assets_full
-            WHERE portfolio_id = %s AND listing_id = %s AND quantity > 0
-            LIMIT 1;
-        """
-        params = (portfolio_id, listing_id)
-
-    row = await asyncio.to_thread(db_bot.execute_row, sql, params)
+    sql = """
+        SELECT quantity, avg_price, portfolio_name,
+               EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days
+        FROM public.v_assets_full
+        WHERE portfolio_id = %s AND listing_id = %s AND quantity > 0
+        LIMIT 1;
+    """
+    row = await asyncio.to_thread(db_bot.execute_row, sql, (portfolio_id, listing_id))
     if not row:
         return "❌ Позиция по этой бумаге не найдена.\n"
 
@@ -271,13 +271,31 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     p_sign = "+" if profit >= 0 else "-"
     clean_qty = int(qty) if qty.is_integer() else f"{qty:.2f}"
 
-    if strategy_id > 0:
-        short_name = STRATEGY_MICRO_LABELS.get(row.get("system_key"), row.get("strategy_name", ""))
-        left_label = f"🎯 {short_name} в {row.get('portfolio_name', '')}"
-    else:
-        left_label = f"💼 {row.get('portfolio_name', '')}"
+    label_line = justify_line(f"💼 {row.get('portfolio_name', '')}", f"📦 {clean_qty} шт.")
 
-    label_line = justify_line(left_label, f"📦 {clean_qty} шт.")
+    breakdown_sql = """
+        SELECT st.system_key, sa.allocated_quantity AS quantity
+        FROM public.strategy_assets sa
+        JOIN public.assets a ON sa.asset_id = a.id
+        JOIN public.strategies s ON sa.strategy_id = s.id
+        JOIN public.strategy_templates st ON s.template_id = st.id
+        WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0;
+    """
+    breakdown_rows = await asyncio.to_thread(db_bot.execute_query, breakdown_sql, (portfolio_id, listing_id))
+    breakdown_rows = breakdown_rows if isinstance(breakdown_rows, list) else ([breakdown_rows] if breakdown_rows else [])
+    breakdown_by_key = {r["system_key"]: float(r["quantity"]) for r in breakdown_rows}
+
+    breakdown_lines = ""
+    for key in STRATEGY_BREAKDOWN_ORDER:
+        b_qty = breakdown_by_key.get(key)
+        if not b_qty:
+            continue
+        short_name = STRATEGY_MICRO_LABELS.get(key, key)
+        if key == "UNALLOCATED":
+            short_name += "⚠️"
+        clean_b_qty = int(b_qty) if b_qty.is_integer() else f"{b_qty:.2f}"
+        breakdown_lines += f"`{justify_line(f'🎯 {short_name}', str(clean_b_qty), width=SCREEN_WIDTH_CHARS - 2)}`\n"
+
     entry_line = f"💵 Вход:\nпо {sign}{avg_price:,.2f} на {sign}{cost_basis:,.2f}"
     current_line = f"💰 Сейчас:\nпо {sign}{last_price:,.2f} на {sign}{market_val:,.2f}"
     profit_line = wrap_screen_line("📈 ", f"{p_sign}{sign}{abs(profit):,.2f} ({p_sign}{abs(profit_pct):.1f}%)")
@@ -289,7 +307,7 @@ async def format_position_financials(portfolio_id: int, listing_id: int, last_pr
     else:
         holding_line = wrap_screen_line("⏱️ ", f"{holding_days} дн.")
 
-    return f"{label_line}\n{entry_line}\n{current_line}\n{profit_line}\n{holding_line}\n"
+    return f"{label_line}\n{breakdown_lines}{entry_line}\n{current_line}\n{profit_line}\n{holding_line}\n"
 
 
 def format_broker_link_summary(alerts_count: int, orders_count: int) -> str:
