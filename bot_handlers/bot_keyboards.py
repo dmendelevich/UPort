@@ -31,14 +31,14 @@ async def generate_target_strategies_keyboard(portfolio_id: int, ticker_id: int,
     """
     builder = InlineKeyboardBuilder()
     
-    sql = f"""
-        SELECT id, strategy_name 
-        FROM public.strategies 
-        WHERE portfolio_id = {int(portfolio_id)} 
-          AND is_active = true 
-          AND id != {int(source_strategy_id)};
+    sql = """
+        SELECT id, strategy_name
+        FROM public.strategies
+        WHERE portfolio_id = %s
+          AND is_active = true
+          AND id != %s;
     """
-    strategies = await asyncio.to_thread(db_bot.execute_query, sql)
+    strategies = await asyncio.to_thread(db_bot.execute_query, sql, (portfolio_id, source_strategy_id))
     
     if isinstance(strategies, list):
         for strat in strategies:
