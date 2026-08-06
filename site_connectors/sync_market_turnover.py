@@ -82,19 +82,19 @@ def sync_all_universe_turnover():
                         fb_symbol = ticker_map[yf_sym]
                         
                         # МОНОЛИТНЫЙ SQL-АПДЕЙТ ЯДРА: Наливаем доллары напрямую в tickers!
-                        sql_update = f"""
+                        sql_update = """
                             UPDATE public.tickers t
-                            SET 
-                                daily_turnover_usd = ROUND({volume} * {close_price} * c.multiplier * r.rate),
+                            SET
+                                daily_turnover_usd = ROUND(%s * %s * c.multiplier * r.rate),
                                 turnover_last_synced_at = CURRENT_TIMESTAMP
                             FROM public.exchanges ex
                             JOIN public.currencies c ON ex.currency_id = c.id
                             JOIN public.currency_rates r ON c.id = r.from_currency
-                            WHERE t.exchange_mic = ex.mic 
-                              AND t.symbol = '{fb_symbol}' 
+                            WHERE t.exchange_mic = ex.mic
+                              AND t.symbol = %s
                               AND r.to_currency = 'USD';
                         """
-                        db_sys.execute_query(sql_update)
+                        db_sys.execute_query(sql_update, (volume, close_price, fb_symbol))
                         updated_count += 1
                         total_updated += 1
                         
