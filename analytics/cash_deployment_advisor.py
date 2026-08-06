@@ -21,30 +21,31 @@ class CashDeploymentAdvisor:
         # is_screening_active = false -- пассивная стратегия (заводской набор шаблонов,
         # см. Claude/BACKLOG.md п.9, 2026-07-31): не предлагаем в неё докупку, пока
         # пользователь сам её не включит. is_active отдельно -- жива ли строка вообще.
-        sql = f"""
+        sql = """
             SELECT s.id, s.strategy_name, s.strategy_share_pct, s.rules_config, tpl.system_key
             FROM public.strategies s
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            WHERE s.portfolio_id = {int(portfolio_id)} AND s.is_active = true AND s.is_screening_active = true;
+            WHERE s.portfolio_id = %s AND s.is_active = true AND s.is_screening_active = true;
         """
-        rows = self.db.execute_query(sql) or []
+        rows = self.db.execute_query(sql, (portfolio_id,)) or []
         return rows if isinstance(rows, list) else [rows]
 
     def _get_held_ticker_ids(self, portfolio_id: int) -> set:
-        sql = f"""
+        sql = """
             SELECT DISTINCT lt.id AS ticker_id
             FROM public.assets a
             JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
-            WHERE a.portfolio_id = {int(portfolio_id)} AND a.quantity > 0;
+            WHERE a.portfolio_id = %s AND a.quantity > 0;
         """
-        rows = self.db.execute_query(sql) or []
+        rows = self.db.execute_query(sql, (portfolio_id,)) or []
         clean_rows = rows if isinstance(rows, list) else [rows]
         return {int(r["ticker_id"]) for r in clean_rows if r}
 
     def _get_step1_tactic(self, strategy_id: int) -> dict:
         row = self.db.execute_row(
-            f"SELECT budget_share_pct, trigger_conditions FROM public.strategy_tactics "
-            f"WHERE strategy_id = {int(strategy_id)} AND step_number = 1;"
+            "SELECT budget_share_pct, trigger_conditions FROM public.strategy_tactics "
+            "WHERE strategy_id = %s AND step_number = 1;",
+            (strategy_id,)
         )
         return row or {}
 
