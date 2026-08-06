@@ -72,33 +72,34 @@ class StockDonorsScanner:
                     mic = passport["mic"]
                     
                     # 🔥 НАШ КВАНТОВЫЙ UPDATE: Вживляем 'MS_SP500', сохраняя старую дату первичного залета!
-                    sql_save = f"""
+                    sql_save = """
                         INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, provenance)
-                        VALUES ('{clean_sym}', '{yahoo_symbol}', '{mic}', '{{"MS_SP500": "{timestamp_str}"}}'::jsonb)
-                        ON CONFLICT (symbol) 
-                        DO UPDATE SET 
+                        VALUES (%s, %s, %s, jsonb_build_object('MS_SP500', %s))
+                        ON CONFLICT (symbol)
+                        DO UPDATE SET
                             provenance = jsonb_set(
-                                public.tickers.provenance, 
-                                '{{MS_SP500}}', 
-                                '"{timestamp_str}"'::jsonb, 
+                                public.tickers.provenance,
+                                '{MS_SP500}',
+                                to_jsonb(%s::text),
                                 false
                             ),
-                            yahoo_symbol = EXCLUDED.yahoo_symbol, 
+                            yahoo_symbol = EXCLUDED.yahoo_symbol,
                             exchange_mic = EXCLUDED.exchange_mic;
                     """
-                    self.db_instance.execute_query(sql_save)
+                    self.db_instance.execute_query(sql_save, (clean_sym, yahoo_symbol, mic, timestamp_str, timestamp_str))
                     inserted_count += 1
                     
                 logging.info(f"✅ [Контур {index_name}]: Влить в tickers: {inserted_count} шт. Провожу дельта-очистку вылетевших...")
                 
                 # 🔥 ДЕЛЬТА-ОЧИСТКА ВЫЛЕТЕВШИХ: Снайперски срезаем ключ у тех, кого больше нет в индексе!
-                escaped_quoted = ", ".join(f"'{ts}'" for ts in raw_tickers)
-                sql_delta_cleanup = f"""
-                    UPDATE public.tickers 
-                    SET provenance = provenance - 'MS_SP500' 
-                    WHERE provenance ? 'MS_SP500' AND symbol NOT IN ({escaped_quoted});
+                # NOT IN со списком не работает через JSON-параметризацию (список становится
+                # ARRAY[...], не набором для IN) -- NOT (x = ANY(%s)) вместо NOT IN (Claude/BACKLOG.md №81).
+                sql_delta_cleanup = """
+                    UPDATE public.tickers
+                    SET provenance = provenance - 'MS_SP500'
+                    WHERE provenance ? 'MS_SP500' AND NOT (symbol = ANY(%s));
                 """
-                self.db_instance.execute_query(sql_delta_cleanup)
+                self.db_instance.execute_query(sql_delta_cleanup, ([str(ts) for ts in raw_tickers],))
                 logging.info(f"🧹 [Контур {index_name}]: Дельта-очистка вылетевших акций успешно завершена.")
                 
             except Exception as err:
@@ -147,37 +148,37 @@ class EtfLeadersScanner:
                 mic = passport["mic"]
                 
                 asset_json_str = json.dumps(asset, ensure_ascii=False)
-                safe_json_str = asset_json_str.replace("'", "''")
-                
+
                 # 🔥 КВАНТОВЫЙ UPDATE ФОНДОВ: Вживляем 'MS_TOP100_ETF' и сохраняем его вложенный JSON!
-                sql_save = f"""
+                sql_save = """
                     INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, asset_metadata, provenance)
-                    VALUES ('{clean_ticker}', '{yahoo_symbol}', '{mic}', '{safe_json_str}'::jsonb, '{{"MS_TOP100_ETF": "{timestamp_str}"}}'::jsonb)
-                    ON CONFLICT (symbol) 
-                    DO UPDATE SET 
+                    VALUES (%s, %s, %s, %s::jsonb, jsonb_build_object('MS_TOP100_ETF', %s))
+                    ON CONFLICT (symbol)
+                    DO UPDATE SET
                         provenance = jsonb_set(
-                            public.tickers.provenance, 
-                            '{{MS_TOP100_ETF}}', 
-                            '"{timestamp_str}"'::jsonb, 
+                            public.tickers.provenance,
+                            '{MS_TOP100_ETF}',
+                            to_jsonb(%s::text),
                             false
                         ),
                         asset_metadata = EXCLUDED.asset_metadata,
                         yahoo_symbol = EXCLUDED.yahoo_symbol,
                         exchange_mic = EXCLUDED.exchange_mic;
                 """
-                self.db_instance.execute_query(sql_save)
+                self.db_instance.execute_query(sql_save, (
+                    clean_ticker, yahoo_symbol, mic, asset_json_str, timestamp_str, timestamp_str
+                ))
                 inserted_count += 1
                 
             logging.info(f"✅ [ETF SCANNER]: Влито фондов в tickers: {inserted_count} шт. Запускаю дельта-очистку...")
             
             # 🔥 ДЕЛЬТА-ОЧИСТКА ВЫЛЕТЕВШИХ ФОНДОВ:
-            escaped_etfs = ", ".join(f"'{etf}'" for etf in active_etfs)
-            sql_etf_cleanup = f"""
-                UPDATE public.tickers 
-                SET provenance = provenance - 'MS_TOP100_ETF', asset_metadata = NULL 
-                WHERE provenance ? 'MS_TOP100_ETF' AND symbol NOT IN ({escaped_etfs});
+            sql_etf_cleanup = """
+                UPDATE public.tickers
+                SET provenance = provenance - 'MS_TOP100_ETF', asset_metadata = NULL
+                WHERE provenance ? 'MS_TOP100_ETF' AND NOT (symbol = ANY(%s));
             """
-            self.db_instance.execute_query(sql_etf_cleanup)
+            self.db_instance.execute_query(sql_etf_cleanup, (active_etfs,))
             logging.info("🧹 [ETF SCANNER]: Дельта-очистка вылетевших фондов успешно завершена.")
             
         except Exception as err:
