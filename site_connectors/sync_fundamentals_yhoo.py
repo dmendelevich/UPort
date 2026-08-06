@@ -162,7 +162,10 @@ def sync_fundamentals(db_instance, single_ticker_id=None):
                         revenue_current = float(rev_series.iloc[0])
                         revenue_3y_ago = float(rev_series.iloc[3])
                         if revenue_current > 0 and revenue_3y_ago > 0:
-                            revenue_cagr_3y = ((revenue_current / revenue_3y_ago) ** (1 / 3) - 1) * 100
+                            # Доля, не число-проценты (0.1251 = 12.51%) -- та же конвенция, что и у
+                            # соседнего revenue_growth (Yahoo revenueGrowth), порог в analytics_utils.py
+                            # рассчитан на долю (см. Claude/BACKLOG.md).
+                            revenue_cagr_3y = (revenue_current / revenue_3y_ago) ** (1 / 3) - 1
             except Exception as cagr_err:
                 logging.warning(f"   ⚠️ Не удалось рассчитать CAGR выручки для {yf_symbol}: {cagr_err}")
 
