@@ -58,17 +58,16 @@ def load_uport_exchanges_manifest():
                     skipped_count += 1
                     continue
                     
-                # 🔥 КВАНТОВАЯ УПАКОВКА: Схлопываем весь объект (включая сессии, DST, weekmask) 
+                # 🔥 КВАНТОВАЯ УПАКОВКА: Схлопываем весь объект (включая сессии, DST, weekmask)
                 # в чистую JSON-строку для записи в ячейку jsonb СУБД!
                 metadata_str = json.dumps(ex, ensure_ascii=False)
-                safe_metadata_str = metadata_str.replace("'", "''") # Защита от одинарных кавычек в SQL
-                
+
                 # Бронебойный SQL-запрос налива с каскадным апдейтом
-                sql_save = f"""
+                sql_save = """
                     INSERT INTO public.exchanges (mic, exchange_code, exchange_name, currency_id, exchange_timezone, yahoo_suffix, market_metadata)
-                    VALUES ('{mic}', '{code}', '{name}', '{currency}', '{timezone}', '{yahoo_suffix}', '{safe_metadata_str}'::jsonb)
-                    ON CONFLICT (mic) 
-                    DO UPDATE SET 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (mic)
+                    DO UPDATE SET
                         exchange_code = EXCLUDED.exchange_code,
                         exchange_name = EXCLUDED.exchange_name,
                         currency_id = EXCLUDED.currency_id,
@@ -76,7 +75,7 @@ def load_uport_exchanges_manifest():
                         yahoo_suffix = EXCLUDED.yahoo_suffix,
                         market_metadata = EXCLUDED.market_metadata;
                 """
-                db_sys.execute_query(sql_save)
+                db_sys.execute_query(sql_save, (mic, code, name, currency, timezone, yahoo_suffix, metadata_str))
                 inserted_count += 1
                 print(f"   🏛️  Площадка {mic:4} ({code:7}) ➡️ Успешно залита! Валюта: {currency} | Таймзона: {timezone}")
                 

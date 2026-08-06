@@ -78,14 +78,13 @@ def load_international_exchanges_part2():
                 
                 # Упаковываем сессии торгов, DST и weekmask в jsonb
                 metadata_str = json.dumps(ex, ensure_ascii=False)
-                safe_metadata_str = metadata_str.replace("'", "''")
-                
+
                 # Безопасный реляционный налив биржи
-                sql_save = f"""
+                sql_save = """
                     INSERT INTO public.exchanges (mic, exchange_code, exchange_name, currency_id, exchange_timezone, yahoo_suffix, market_metadata, yahoo_code)
-                    VALUES ('{mic}', '{code}', '{name}', '{currency}', '{timezone}', '{yahoo_suffix}', '{safe_metadata_str}'::jsonb, '{yahoo_code}')
-                    ON CONFLICT (mic) 
-                    DO UPDATE SET 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                    ON CONFLICT (mic)
+                    DO UPDATE SET
                         exchange_code = EXCLUDED.exchange_code,
                         exchange_name = EXCLUDED.exchange_name,
                         currency_id = EXCLUDED.currency_id,
@@ -94,7 +93,7 @@ def load_international_exchanges_part2():
                         market_metadata = EXCLUDED.market_metadata,
                         yahoo_code = EXCLUDED.yahoo_code;
                 """
-                db_sys.execute_query(sql_save)
+                db_sys.execute_query(sql_save, (mic, code, name, currency, timezone, yahoo_suffix, metadata_str, yahoo_code))
                 inserted_count += 1
                 
         logging.info(f"🏆 [МЕЖДУНАРОДНЫЙ НАЛИВ УСПЕШЕН]: В базу добавлено/обновлено бирж: {inserted_count} шт. (Пропущено: {skipped_count})")
