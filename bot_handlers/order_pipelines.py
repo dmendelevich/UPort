@@ -17,7 +17,7 @@ from brokers_connectors.sync_strategy_asset_fb import SyncStrategyAssetFB
 router = Router()
 
 # Содержательные стратегии, для которых вообще имеет смысл план входа (см. Claude/03_strategies_and_templates.md)
-CONTENT_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING")
+CONTENT_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "INDEX_CORE")
 
 
 class NewPipelineStates(StatesGroup):

@@ -11,7 +11,7 @@ class CashDeploymentAdvisor:
     Только рекомендации -- ничего не покупает и не переводит само.
     """
 
-    CONTENT_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING")
+    CONTENT_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "INDEX_CORE")
 
     def __init__(self, db_instance):
         self.db = db_instance
@@ -90,6 +90,52 @@ class CashDeploymentAdvisor:
         ) or None
         return best, warning
 
+    def _get_index_core_leg_values(self, strategy_id: int, symbols: list) -> dict:
+        """$-стоимость каждой ноги Индексного ядра (VTI/VXUS/BND), уже держимой этой стратегией."""
+        sql = """
+            SELECT t.symbol, sa.allocated_quantity * l.last_price AS usd
+            FROM public.strategy_assets sa
+            JOIN public.assets a ON a.id = sa.asset_id
+            JOIN public.listings l ON l.id = a.listing_id
+            JOIN public.tickers t ON t.id = l.ticker_id
+            WHERE sa.strategy_id = %s AND t.symbol = ANY(%s) AND sa.allocated_quantity > 0;
+        """
+        rows = self.db.execute_query(sql, (strategy_id, symbols)) or []
+        clean_rows = rows if isinstance(rows, list) else [rows]
+        return {r["symbol"]: float(r["usd"] or 0.0) for r in clean_rows if r}
+
+    def _find_index_core_leg(self, strategy_id: int, rules_config: dict, ideal_budget_usd: float) -> dict:
+        """
+        Индексное ядро (Claude/15_index_core.md) -- не конкурс кандидатов через экран,
+        а выбор ОДНОЙ из фиксированных курируемых ног (VTI/VXUS/BND, `rules_config
+        ["index_core_target_weights"]`), дальше всего отставшей от своего целевого
+        веса от ЦЕЛЕВОГО бюджета всей стратегии. Никакого ранжирования/скрининга --
+        сектор сознательно не проверяется (широкие индексные фонды пока не участвуют
+        в секторальном аудите, см. Claude/16_selection_logic_audit.md, находка G).
+        Возвращает {"ticker_id", "symbol", "ranking_value": None} или None.
+        """
+        weights = rules_config.get("index_core_target_weights") or {}
+        if not weights:
+            return None
+        symbols = list(weights.keys())
+        held_values = self._get_index_core_leg_values(strategy_id, symbols)
+
+        best_symbol, best_deficit = None, 0.0
+        for symbol, weight_pct in weights.items():
+            target_usd = ideal_budget_usd * float(weight_pct) / 100.0
+            current_usd = held_values.get(symbol, 0.0)
+            deficit = target_usd - current_usd
+            if deficit > best_deficit:
+                best_deficit = deficit
+                best_symbol = symbol
+        if not best_symbol:
+            return None
+
+        ticker_row = self.db.execute_row("SELECT id FROM public.tickers WHERE symbol = %s;", (best_symbol,))
+        if not ticker_row:
+            return None
+        return {"ticker_id": int(ticker_row["id"]), "symbol": best_symbol, "ranking_value": None}
+
     def _compute_slot_cap(self, rules_config: dict, ideal_budget_usd: float, total_capital: float) -> float:
         """
         Целевой размер слота (ДО применения share_pct шага 1) -- приоритет сверху вниз
@@ -146,6 +192,16 @@ class CashDeploymentAdvisor:
         )
         ideal_budget_usd = float((bal or {}).get("ideal_budget_usd") or 0.0)
 
+        if strat_row.get("system_key") == "INDEX_CORE":
+            # Ядро не пользуется лесенкой/слотом -- весь доступный слэк стратегии разом
+            # (Claude/15_index_core.md), та же логика, что и ветка INDEX_CORE в
+            # evaluate_deployment ниже. _compute_slot_cap здесь неприменима (её потолок
+            # portfolio_max_asset_pct рассчитан на ОДНУ бумагу, не на курируемую тройку
+            # с фиксированными весами) -- используя её, process_paper_buy_yes считал бы
+            # неверную (заниженную) сумму сделки для ядра.
+            slack = float((bal or {}).get("virtual_free_cash_usd") or 0.0)
+            return round(max(slack, 0.0), 2)
+
         slot_cap = self._compute_slot_cap(rules_config, ideal_budget_usd, total_capital)
 
         tactic = self._get_step1_tactic(strategy_id)
@@ -186,6 +242,23 @@ class CashDeploymentAdvisor:
         slack = float((bal or {}).get("virtual_free_cash_usd") or 0.0)
         if slack <= 0:
             return {}
+
+        if strat_row.get("system_key") == "INDEX_CORE":
+            # У ядра нет экрана совместимости (evaluate_ticker_strategy её не знает) --
+            # вместо этого проверяем, что тикер вообще одна из курируемых ног ядра И у
+            # неё всё ещё положительный дефицит от целевого веса (Claude/15_index_core.md).
+            ideal_budget_usd = float((bal or {}).get("ideal_budget_usd") or 0.0)
+            rules_config = strat_row.get("rules_config") or {}
+            weights = rules_config.get("index_core_target_weights") or {}
+            symbol_row = self.db.execute_row("SELECT symbol FROM public.tickers WHERE id = %s;", (ticker_id,))
+            symbol = (symbol_row or {}).get("symbol")
+            if not symbol or symbol not in weights:
+                return {}
+            held_values = self._get_index_core_leg_values(strategy_id, [symbol])
+            target_usd = ideal_budget_usd * float(weights[symbol]) / 100.0
+            if target_usd - held_values.get(symbol, 0.0) <= 0:
+                return {}
+            return {"symbol": symbol, "strategy_name": strat_row.get("strategy_name")}
 
         report = self.evaluator.evaluate_ticker_strategy(ticker_id, portfolio_id)
         info = (report.get("explain_map") or {}).get(int(strategy_id))
@@ -271,18 +344,39 @@ class CashDeploymentAdvisor:
             if remaining_pool <= 0:
                 break
 
-            slot_cap = self._compute_slot_cap(cand["rules_config"], cand["ideal_budget_usd"], total_capital)
-            target_slot = min(cand["slack_usd"], remaining_pool, slot_cap)
-            if target_slot <= 0:
-                continue
+            is_index_core = cand["system_key"] == "INDEX_CORE"
+
+            if is_index_core:
+                # Индексное ядро не пользуется лесенкой/слотом -- весь доступный слэк
+                # разом, целиком в самую недовешенную ногу (Claude/15_index_core.md).
+                # Ниже порога сделки просто ждём, копим слэк дальше -- не отдельная
+                # рекомендация "недостаточно денег" на каждый прогон.
+                min_trade = float(cand["rules_config"].get("index_core_min_trade_usd") or 300.0)
+                target_slot = min(cand["slack_usd"], remaining_pool)
+                if target_slot < min_trade:
+                    continue
+                best = self._find_index_core_leg(cand["strategy_id"], cand["rules_config"], cand["ideal_budget_usd"])
+                sector_warning = None
+            else:
+                slot_cap = self._compute_slot_cap(cand["rules_config"], cand["ideal_budget_usd"], total_capital)
+                target_slot = min(cand["slack_usd"], remaining_pool, slot_cap)
+                if target_slot <= 0:
+                    continue
+                best, sector_warning = self._find_best_candidate(
+                    cand["strategy_id"], held_ids, us_only, cand["system_key"],
+                    sector_exposure, sector_target_config, total_capital, target_slot,
+                )
 
             pct_underfunded_pretty = round(cand["pct_underfunded"] * 100, 1)
-            best, sector_warning = self._find_best_candidate(
-                cand["strategy_id"], held_ids, us_only, cand["system_key"],
-                sector_exposure, sector_target_config, total_capital, target_slot,
-            )
 
             if not best:
+                no_candidate_reason = (
+                    f"Недофинансирована на {pct_underfunded_pretty}% от цели "
+                    f"(${target_slot:,.2f} доступно), но ни один тикер не прошёл экран стратегии."
+                    if not is_index_core else
+                    f"Недофинансирована на {pct_underfunded_pretty}% от цели "
+                    f"(${target_slot:,.2f} доступно), но целевые веса ядра не заданы (rules_config)."
+                )
                 recommendations.append({
                     "portfolio_id": portfolio_id,
                     "strategy_id": cand["strategy_id"],
@@ -291,10 +385,7 @@ class CashDeploymentAdvisor:
                     "status": "NO_CANDIDATE",
                     "pct_underfunded": pct_underfunded_pretty,
                     "deployable_usd": round(target_slot, 2),
-                    "reason": (
-                        f"Недофинансирована на {pct_underfunded_pretty}% от цели "
-                        f"(${target_slot:,.2f} доступно), но ни один тикер не прошёл экран стратегии."
-                    ),
+                    "reason": no_candidate_reason,
                 })
                 continue
 
@@ -303,19 +394,26 @@ class CashDeploymentAdvisor:
             step1_amount = target_slot * step1_share_pct / 100.0
             mode = (tactic.get("trigger_conditions") or {}).get("mode", "market")
 
-            reason_text = (
-                f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
-                f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
-                f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
-                f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
-            )
-            # Только для Револьверной/Трендовой -- у Консервативной такой кандидат
-            # физически не мог дойти сюда, _find_best_candidate его уже отсеял.
-            if sector_warning:
-                reason_text += (
-                    f" ⚠️ Доведёт долю сектора {sector_warning['sector']} по портфелю до "
-                    f"{sector_warning['projected_pct']}% (лимит {sector_warning['limit_pct']}%)."
+            if is_index_core:
+                reason_text = (
+                    f"Индексное ядро недофинансировано на {pct_underfunded_pretty}% от цели. "
+                    f"{best['symbol']} дальше всего отстал от своего целевого веса. "
+                    f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку."
                 )
+            else:
+                reason_text = (
+                    f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
+                    f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
+                    f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
+                    f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
+                )
+                # Только для Револьверной/Трендовой -- у Консервативной такой кандидат
+                # физически не мог дойти сюда, _find_best_candidate его уже отсеял.
+                if sector_warning:
+                    reason_text += (
+                        f" ⚠️ Доведёт долю сектора {sector_warning['sector']} по портфелю до "
+                        f"{sector_warning['projected_pct']}% (лимит {sector_warning['limit_pct']}%)."
+                    )
 
             recommendations.append({
                 "portfolio_id": portfolio_id,

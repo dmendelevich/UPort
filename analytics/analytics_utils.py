@@ -7,7 +7,7 @@ import settings
 # логике. Кэш/Резерв и Неопределённая -- служебные "карманы" портфеля, без входа/выхода
 # и без собственного смысла для метрик вроде "сколько у меня стратегий" (см. обсуждение
 # карточки портфеля, Claude/BACKLOG.md). Общая точка, чтобы не разъезжалось между экранами.
-CONTENT_STRATEGY_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING")
+CONTENT_STRATEGY_SYSTEM_KEYS = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "INDEX_CORE")
 
 
 def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:

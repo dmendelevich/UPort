@@ -221,7 +221,7 @@ STRATEGY_MICRO_LABELS = {
 # CASH_RESERVE не входит -- служебная стратегия денег, физически не может держать бумаги
 # (см. bot_handlers/order_pipelines.py). UNALLOCATED -- всегда последней (та же причина,
 # по которой она получает предупреждающий бейдж: "деньги вне стратегии" -- не основной случай).
-STRATEGY_BREAKDOWN_ORDER = ("REVOLVER", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "UNALLOCATED")
+STRATEGY_BREAKDOWN_ORDER = ("REVOLVER", "INDEX_CORE", "CONSERVATIVE_ACCUMULATION", "TREND_FOLLOWING", "UNALLOCATED")
 
 
 async def format_position_financials(portfolio_id: int, listing_id: int, last_price: float, sign: str, fx_rate: float = 1.0) -> str:

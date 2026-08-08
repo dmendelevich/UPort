@@ -314,18 +314,27 @@ class PortfolioInspector:
                     })
                     continue
 
-                # Накопление для идеального секторального рентгена
-                sector_totals_usd[sector] = sector_totals_usd.get(sector, 0.0) + asset_usd
+                # Индексное ядро -- лимит на бумагу/сектор ВНУТРИ стратегии тут неприменим по
+                # конструкции: VTI/VXUS/BND намеренно занимают 20-44% САМОЙ СЕБЯ (целевые веса
+                # ядра, Claude/15_index_core.md), обычный лимит "% от капитала" рассчитан на
+                # риск концентрации в ОДНОЙ акции, не на курируемую тройку с фиксированными
+                # весами. Также все три сегодня без etf_holdings -- ушли бы в один "Unknown
+                # Sector" на 100% ядра, ложная тревога (Claude/16_selection_logic_audit.md,
+                # находка G). Налоговый щит (Б ниже) по-прежнему проверяем -- к нему это не относится.
+                is_index_core_leg = strat.get("system_key") == "INDEX_CORE"
+                if not is_index_core_leg:
+                    # Накопление для идеального секторального рентгена
+                    sector_totals_usd[sector] = sector_totals_usd.get(sector, 0.0) + asset_usd
 
-                # А: ПРОВЕРКА ЛИМИТА НА АКЦИЮ (например, > 5% с учетом ETF)
-                if asset_share_pct > max_asset_pct:
-                    strat_report["violation_found"] = True
-                    audit_report["has_violations"] = True
-                    strat_report["violated_assets"].append({
-                        "symbol": symbol,
-                        "current_share_pct": round(asset_share_pct, 2),
-                        "limit_pct": max_asset_pct
-                    })
+                    # А: ПРОВЕРКА ЛИМИТА НА АКЦИЮ (например, > 5% с учетом ETF)
+                    if asset_share_pct > max_asset_pct:
+                        strat_report["violation_found"] = True
+                        audit_report["has_violations"] = True
+                        strat_report["violated_assets"].append({
+                            "symbol": symbol,
+                            "current_share_pct": round(asset_share_pct, 2),
+                            "limit_pct": max_asset_pct
+                        })
 
                 # Б: ПРОВЕРКА ГИБКОГО НАЛОГОВОГО ЩИТА (Данные в СУБД уже в %%)
                 max_div_allowed = config.get("portfolio_max_allowed_div_pct")
