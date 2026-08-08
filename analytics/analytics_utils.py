@@ -384,7 +384,12 @@ class TickerEvaluator:
         roe_status, roe_val = na_or_check(f.get("return_on_equity"), lambda v: v > 0.15)
         debt_status, debt_val = na_or_check(normalize_debt_to_equity(f.get("debt_to_equity")), lambda v: v < 1.5)
         cagr_status, cagr_val = na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
-        growth_status, growth_val = na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
+        # Порог поднят с > 0.00 до > 0.02 (Claude/16_selection_logic_audit.md, находка O,
+        # 2026-08-08) -- "еле положительный" рост по существу не отличался от "роста нет
+        # вообще" (65/795 всего Universe проходили только на 0-2%). Живого эффекта на
+        # сегодняшних сильных кандидатах почти нет (среди 48 тикеров, уже прошедших
+        # лидер+ROE+Долг+CAGR, только 2 в этой зоне) -- честность намерения важнее.
+        growth_status, growth_val = na_or_check(f.get("revenue_growth"), lambda v: v > 0.02)
         pe_status, pe_val = na_or_check(f.get("pe_trailing"), lambda v: v > 0)
         vol_status, vol_val = na_or_check(f.get("signal_daily_volatility_pct"), lambda v: v <= limit_max_volatility2)
         fcf_status, fcf_val = na_or_check(f.get("free_cash_flow"), lambda v: v > 0)
@@ -409,7 +414,7 @@ class TickerEvaluator:
             "return_on_equity": {"status": roe_status, "fact": round(roe_val, 4) if roe_val is not None else None, "limit": "> 0.15"},
             "debt_to_equity": {"status": debt_status, "fact": round(debt_val, 4) if debt_val is not None else None, "limit": "< 1.5"},
             "revenue_cagr_3y": {"status": cagr_status, "fact": round(cagr_val, 4) if cagr_val is not None else None, "limit": "> 0.05"},
-            "revenue_growth": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": "> 0.00"},
+            "revenue_growth": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": "> 0.02"},
             "pe_trailing": {"status": pe_status, "fact": round(pe_val, 2) if pe_val is not None else None, "limit": "> 0"},
             "idea_require_positive_fflow_bool": {"status": "PASS" if not require_fcf2 else fcf_status, "fact": round(fcf_val, 2) if fcf_val is not None else None, "limit": "FCF > 0"},
             "signal_daily_volatility_pct": {"status": vol_status, "fact": round(vol_val, 4) if vol_val is not None else None, "limit": f"<= {limit_max_volatility2}"},
