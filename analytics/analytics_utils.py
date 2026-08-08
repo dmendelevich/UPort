@@ -439,11 +439,20 @@ class TickerEvaluator:
         sma50 = float(f.get("signal_sma_50") or 0.0)
         sma100 = float(f.get("signal_sma_100") or 0.0)
         sma200 = float(f.get("signal_sma_200") or 0.0)
-        fan_is_valid = (ema20 > sma50) and (sma50 > sma100) and (sma100 > sma200)
+        # Нога SMA100 > SMA200 убрана из веера (Claude/16_selection_logic_audit.md,
+        # находка K, 2026-08-08) -- самая медленная, самая запаздывающая пара средних:
+        # на живых данных 63% ложных блокировок (37 из 59 тикеров, прошедших весь
+        # остальной вход) давало именно это сравнение, притом что ближний и
+        # среднесрочный тренд (EMA20>SMA50>SMA100) уже реально шёл вверх согласованно
+        # (живой пример -- MSFT), просто SMA100 физически не успела отыграть старую
+        # просадку. Долгосрочное подтверждение ("цена уже далеко выше своей SMA200")
+        # не потеряно -- за него отдельно отвечает `signal_price_to_sma200_pct`
+        # ниже, дублировать его более медленным и капризным способом незачем.
+        fan_is_valid = (ema20 > sma50) and (sma50 > sma100)
 
         m3 = {
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
-            "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100 > SMA200"},
+            "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100"},
             "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
             "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
             "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
