@@ -453,7 +453,22 @@ class TickerEvaluator:
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
         }
         is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
-        return {"metrics": m3, "is_compatible": is_compat3, "ranking_value": price_to_sma200}
+
+        # Risk-adjusted momentum (Claude/16_selection_logic_audit.md, находка Б,
+        # 2026-08-08): сырой % отрыва от SMA200 механически выносит наверх самые
+        # экстремальные движения (DELL +112%), не обязательно самые качественные
+        # тренды -- крупные компании физически не могут дать такой же отрыв, их
+        # размер сглаживает движение. Нормализация по волатильности бумаги (тот же
+        # переиспользуемый примитив, что и K-множители в settings.py) разводит
+        # "устойчивый тренд" и "случайный резкий скачок" корректно. Волатильность
+        # в ЗНАМЕНАТЕЛЕ (не множителем, как у остальных потребителей примитива) --
+        # NULL/0 откатывает к прежнему сырому % вместо деления на ноль/взрыва
+        # результата (последнее уже поймано на живых данных LSE, BACKLOG.md №94 --
+        # там же зафиксировано, почему не нормализуется, пока не подключён T212).
+        vol = f.get("signal_daily_volatility_pct")
+        ranking_value = (price_to_sma200 / vol) if vol else price_to_sma200
+
+        return {"metrics": m3, "is_compatible": is_compat3, "ranking_value": ranking_value}
 
     def _get_strategy_scorers(self) -> dict:
         """Карта system_key -> (человекочитаемое имя, функция скоринга)."""
