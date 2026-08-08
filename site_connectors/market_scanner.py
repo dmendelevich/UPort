@@ -71,7 +71,9 @@ class StockDonorsScanner:
                     yahoo_symbol = passport["yahoo_symbol"]
                     mic = passport["mic"]
                     
-                    # 🔥 НАШ КВАНТОВЫЙ UPDATE: Вживляем 'MS_SP500', сохраняя старую дату первичного залета!
+                    # Вживляем 'MS_SP500' -- create_missing=true (было false, Claude/BACKLOG.md №90,
+                    # находка M): для тикера, УЖЕ существовавшего в tickers до прогона сканера
+                    # (подавляющее большинство), jsonb_set с false молча не создавал ключ вообще.
                     sql_save = """
                         INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, provenance)
                         VALUES (%s, %s, %s, jsonb_build_object('MS_SP500', %s))
@@ -81,7 +83,7 @@ class StockDonorsScanner:
                                 public.tickers.provenance,
                                 '{MS_SP500}',
                                 to_jsonb(%s::text),
-                                false
+                                true
                             ),
                             yahoo_symbol = EXCLUDED.yahoo_symbol,
                             exchange_mic = EXCLUDED.exchange_mic;
@@ -149,7 +151,8 @@ class EtfLeadersScanner:
                 
                 asset_json_str = json.dumps(asset, ensure_ascii=False)
 
-                # 🔥 КВАНТОВЫЙ UPDATE ФОНДОВ: Вживляем 'MS_TOP100_ETF' и сохраняем его вложенный JSON!
+                # Вживляем 'MS_TOP100_ETF' -- create_missing=true (была та же ошибка, что и у
+                # MS_SP500 выше, Claude/BACKLOG.md №90, находка M).
                 sql_save = """
                     INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, asset_metadata, provenance)
                     VALUES (%s, %s, %s, %s::jsonb, jsonb_build_object('MS_TOP100_ETF', %s))
@@ -159,7 +162,7 @@ class EtfLeadersScanner:
                             public.tickers.provenance,
                             '{MS_TOP100_ETF}',
                             to_jsonb(%s::text),
-                            false
+                            true
                         ),
                         asset_metadata = EXCLUDED.asset_metadata,
                         yahoo_symbol = EXCLUDED.yahoo_symbol,
