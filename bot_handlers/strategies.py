@@ -37,7 +37,6 @@ METRIC_LABELS = {
     "signal_rsi": "RSI",
     "moving_averages_fan": "Веер скользящих средних",
     "signal_macd": "MACD",
-    "tactic_volume_surge_pct": "Всплеск объёма торгов",
     "trend_not_confirmed_broken": "Подтверждённый слом тренда",
     "world_leader_index": "Мировой лидер (индекс)",
     "signal_daily_volatility_pct": "Дневная волатильность",

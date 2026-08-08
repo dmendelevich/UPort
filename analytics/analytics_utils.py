@@ -441,15 +441,12 @@ class TickerEvaluator:
         sma200 = float(f.get("signal_sma_200") or 0.0)
         fan_is_valid = (ema20 > sma50) and (sma50 > sma100) and (sma100 > sma200)
 
-        volume_confirmed = True if turnover > 100000000 else False
-
         m3 = {
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
             "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100 > SMA200"},
             "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
             "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
             "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
-            "tactic_volume_surge_pct": {"status": "PASS" if volume_confirmed else "FAIL", "fact": "Объем подтвержден" if volume_confirmed else "Низкий оборот", "limit": "Всплеск объема торгов"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
         }
         is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
