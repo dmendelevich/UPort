@@ -419,7 +419,19 @@ class TickerEvaluator:
         }
         # N/A (показатель неприменим) не считается провалом, в отличие от FAIL
         is_compat2 = all(x["status"] in ("PASS", "N/A") for k, x in m2.items() if k != "idea_report_buffer_days")
-        rank2 = (roe_val / debt_val) if (roe_val is not None and debt_val) else (roe_val or 0.0)
+
+        # Ранжирование по сырому ROE, не ROE/Долг (Claude/16_selection_logic_audit.md,
+        # находка F, 2026-08-08) -- деление на близкий к нулю долг непропорционально
+        # раздувало результат (математический артефакт, не взвешенное суждение), плюс
+        # экономически дважды штрафовало одну и ту же ось риска: у капитал-лёгких
+        # бизнесов (Mastercard-type) сам ROE уже механически завышен леveraging'ом
+        # (DuPont-разложение), а деление на долг ещё раз бьёт по тому же параметру.
+        # Долг уже есть отдельным гейтом прохождения (< 1.5) выше -- делить
+        # ранжирование на него же ещё раз избыточно. NULL ROE (капитал-лёгкие
+        # компании с отрицательным собственным капиталом -- ROE для них не определена
+        # содержательно, не пробел в данных) даёт ranking=0.0, тот же смысл, что и
+        # раньше -- уходит в конец списка, не наказывается как провал.
+        rank2 = roe_val or 0.0
         return {"metrics": m2, "is_compatible": is_compat2, "ranking_value": round(rank2, 4)}
 
     def _score_trend(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
