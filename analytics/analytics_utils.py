@@ -35,6 +35,20 @@ def normalize_debt_to_equity(raw_value):
     return float(raw_value) / 100.0 if raw_value is not None else None
 
 
+def na_or_check(raw_val, check_fn):
+    """
+    NULL в фундаментальном/сигнальном поле = "неприменимо" (напр. ETF без FCF, аналитики
+    не покрывают тикер), а не "0" -- иначе такие бумаги ложно проваливали бы или проходили
+    гейт. Общий примитив для _score_conservative/_score_revolver, найден при разборе живой
+    рекомендации SYF (debt_to_equity=NULL тихо читался как 0.0), тот же анти-паттерн потом
+    нашёлся и во free_cash_flow (Claude/16_selection_logic_audit.md, находка D, 2026-08-08).
+    """
+    if raw_val is None:
+        return "N/A", None
+    val = float(raw_val)
+    return ("PASS" if check_fn(val) else "FAIL"), val
+
+
 def conservative_fundamental_break_reasons(f: dict) -> list:
     """
     Единый источник правды "фундаментал Консервативной сломан" -- переиспользуется
@@ -305,10 +319,20 @@ class TickerEvaluator:
         except ValueError:
             macd_numeric = 0.0
         rec_mean = float(f.get("recommendation_mean") or 0.0)
-        fcf = float(f.get("free_cash_flow") or 0.0)
+        fcf_status, fcf_val = na_or_check(f.get("free_cash_flow"), lambda v: v > 0)
         curr_price = float(f.get("current_price") or 0.0)
-        tgt_price = float(f.get("target_mean_price") or 0.0)
-        upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+
+        # target_mean_price NULL (аналитики не покрывают тикер) раньше читался как $0 --
+        # ранжирование получало -100% ("аналитики ждут падения до нуля"), хотя факт в том,
+        # что мнения просто нет. Нейтральное значение (0%), не исключение из пула --
+        # остальной фундаментал тикера остаётся валидным основанием для идеи
+        # (Claude/16_selection_logic_audit.md, находка Д/E, 2026-08-08).
+        tgt_price_raw = f.get("target_mean_price")
+        if tgt_price_raw is None:
+            upside_pct = 0.0
+        else:
+            tgt_price = float(tgt_price_raw)
+            upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
 
         # Вход и выход Револьверной раньше не сверялись друг с другом -- RSI<45 не отличает
         # "только начало падать" от "уже N дней подряд подтверждённо падает без разворота",
@@ -324,11 +348,13 @@ class TickerEvaluator:
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover1 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover1},
             "idea_rsi_oversold_num": {"status": "PASS" if rsi < limit_rsi1 else "FAIL", "fact": rsi, "limit": limit_rsi1},
             "speculative_catalyst": {"status": "PASS" if (macd_numeric > 0 or (0 < rec_mean <= 2.0)) else "FAIL", "fact": f"MACD: {macd_val}, Rec: {rec_mean}", "limit": "MACD > 0 ИЛИ Rec <= 2.0"},
-            "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf1 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
+            "idea_require_positive_fflow_bool": {"status": "PASS" if not require_fcf1 else fcf_status, "fact": round(fcf_val, 2) if fcf_val is not None else None, "limit": "FCF > 0"},
             "trend_not_confirmed_broken": {"status": "FAIL" if momentum_broken else "PASS", "fact": streak, "limit": f"> -{settings.TREND_REVERSAL_CONFIRM_DAYS}"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
         }
-        is_compat1 = all(x["status"] == "PASS" for k, x in m1.items() if k != "idea_report_buffer_days")
+        # N/A (показатель неприменим) не считается провалом, в отличие от FAIL -- та же
+        # логика, что и в _score_conservative.
+        is_compat1 = all(x["status"] in ("PASS", "N/A") for k, x in m1.items() if k != "idea_report_buffer_days")
         return {"metrics": m1, "is_compatible": is_compat1, "ranking_value": round(upside_pct, 2)}
 
     def _score_conservative(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
@@ -340,7 +366,6 @@ class TickerEvaluator:
         turnover = float(f.get("daily_turnover_usd") or 0.0)
         price_to_sma200 = float(f.get("signal_price_to_sma200_pct") or 0.0)
         rsi = float(f.get("signal_rsi") or 0.0)
-        fcf = float(f.get("free_cash_flow") or 0.0)
 
         # "Мировой лидер" -- членство в курируемом индексе (tickers.provenance), не биржа
         # напрямую: биржевой фильтр (XNGS/XNYS/XNAS) не различал реального лидера от любой
@@ -356,18 +381,21 @@ class TickerEvaluator:
         # чинили в PositionExitEvaluator для выхода из позиции, здесь -- для входа
         # (найдено при разборе живой рекомендации SYF, где debt_to_equity=NULL раньше
         # тихо читался как 0.0 и автоматически проходил порог < 1.5).
-        def _na_or_check(raw_val, check_fn):
-            if raw_val is None:
-                return "N/A", None
-            val = float(raw_val)
-            return ("PASS" if check_fn(val) else "FAIL"), val
+        roe_status, roe_val = na_or_check(f.get("return_on_equity"), lambda v: v > 0.15)
+        debt_status, debt_val = na_or_check(normalize_debt_to_equity(f.get("debt_to_equity")), lambda v: v < 1.5)
+        cagr_status, cagr_val = na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
+        growth_status, growth_val = na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
+        pe_status, pe_val = na_or_check(f.get("pe_trailing"), lambda v: v > 0)
+        vol_status, vol_val = na_or_check(f.get("signal_daily_volatility_pct"), lambda v: v <= limit_max_volatility2)
+        fcf_status, fcf_val = na_or_check(f.get("free_cash_flow"), lambda v: v > 0)
 
-        roe_status, roe_val = _na_or_check(f.get("return_on_equity"), lambda v: v > 0.15)
-        debt_status, debt_val = _na_or_check(normalize_debt_to_equity(f.get("debt_to_equity")), lambda v: v < 1.5)
-        cagr_status, cagr_val = _na_or_check(f.get("revenue_cagr_3y"), lambda v: v > 0.05)
-        growth_status, growth_val = _na_or_check(f.get("revenue_growth"), lambda v: v > 0.00)
-        pe_status, pe_val = _na_or_check(f.get("pe_trailing"), lambda v: v > 0)
-        vol_status, vol_val = _na_or_check(f.get("signal_daily_volatility_pct"), lambda v: v <= limit_max_volatility2)
+        # Буферная зона дисконта (Claude/16_selection_logic_audit.md, находка Q,
+        # 2026-08-08): порог "ниже SMA200" нормализован по волатильности бумаги --
+        # < K × daily_volatility_pct вместо фиксированного < 0.00%, чтобы не отсекать
+        # качественных лидеров, которые торгуются у своей SMA200 в пределах
+        # собственного дневного шума. Если волатильность NULL (нечем нормализовать) --
+        # откат к прежнему строгому < 0.00%, а не пропуск гейта.
+        discount_buffer_limit = settings.CONSERVATIVE_DISCOUNT_BUFFER_MULTIPLIER * vol_val if vol_val is not None else 0.00
 
         # Строка, не list(...) -- квадратные скобки сырого Python-списка ('[...]') ломают
         # Telegram Markdown (парсер читает их как начало ссылки без пары "(url)" и роняет
@@ -383,9 +411,9 @@ class TickerEvaluator:
             "revenue_cagr_3y": {"status": cagr_status, "fact": round(cagr_val, 4) if cagr_val is not None else None, "limit": "> 0.05"},
             "revenue_growth": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": "> 0.00"},
             "pe_trailing": {"status": pe_status, "fact": round(pe_val, 2) if pe_val is not None else None, "limit": "> 0"},
-            "idea_require_positive_fflow_bool": {"status": "PASS" if (not require_fcf2 or fcf > 0) else "FAIL", "fact": round(fcf, 2), "limit": "FCF > 0"},
+            "idea_require_positive_fflow_bool": {"status": "PASS" if not require_fcf2 else fcf_status, "fact": round(fcf_val, 2) if fcf_val is not None else None, "limit": "FCF > 0"},
             "signal_daily_volatility_pct": {"status": vol_status, "fact": round(vol_val, 4) if vol_val is not None else None, "limit": f"<= {limit_max_volatility2}"},
-            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 < 0.00 else "FAIL", "fact": price_to_sma200, "limit": "< 0.00"},
+            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 < discount_buffer_limit else "FAIL", "fact": price_to_sma200, "limit": f"< {round(discount_buffer_limit, 4)}"},
             "signal_rsi": {"status": "PASS" if rsi > 35 else "FAIL", "fact": rsi, "limit": "> 35"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer2 else "WARNING", "fact": days_to_report, "limit": limit_buffer2}
         }
