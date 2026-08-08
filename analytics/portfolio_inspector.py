@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 import logging
-from analytics.analytics_utils import convert_to_base_currency, check_sector_ceiling_breach, CONTENT_STRATEGY_SYSTEM_KEYS
+import settings
+from analytics.analytics_utils import (
+    convert_to_base_currency, check_sector_ceiling_breach, CONTENT_STRATEGY_SYSTEM_KEYS,
+    compute_sector_exposure,
+)
 
 class PortfolioInspector:
     """
@@ -205,15 +209,69 @@ class PortfolioInspector:
             
         return virtual_report
 
+    def _fetch_etf_holdings_sectors(self, ticker_ids: list) -> dict:
+        """
+        🔒 ВНУТРЕННИЙ МЕТОД (Claude/16_selection_logic_audit.md, находка G, 2026-08-08):
+        {ticker_id: [{"sector", "weight_percentage"}, ...]} для компонентов ETF-фондов
+        (топ-10, как есть в `etf_holdings`) -- сырьё для compute_sector_exposure.
+        """
+        if not ticker_ids:
+            return {}
+        sql = """
+            SELECT eh.etf_ticker_id, ct.sector, eh.weight_percentage
+            FROM public.etf_holdings eh
+            JOIN public.tickers ct ON ct.id = eh.component_ticker_id
+            WHERE eh.etf_ticker_id = ANY(%s);
+        """
+        rows = self.db.execute_query(sql, (ticker_ids,)) or []
+        rows = rows if isinstance(rows, list) else [rows]
+        result = {}
+        for r in rows:
+            if not r:
+                continue
+            result.setdefault(r["etf_ticker_id"], []).append(
+                {"sector": r["sector"], "weight_percentage": r["weight_percentage"]}
+            )
+        return result
+
+    def _fetch_index_core_leg_symbols(self) -> set:
+        """
+        🔒 ВНУТРЕННИЙ МЕТОД (Claude/16_selection_logic_audit.md, находка G, 2026-08-08):
+        Символы ног Индексного ядра из rules_config шаблона -- источник правды один,
+        не переиспользуем захардкоженный список.
+        """
+        row = self.db.execute_row(
+            "SELECT rules_config FROM public.strategy_templates WHERE system_key = 'INDEX_CORE';"
+        )
+        weights = ((row or {}).get("rules_config") or {}).get("index_core_target_weights") or {}
+        return set(weights.keys())
+
+    def _decompose_sectors(self, exposure_rows: list) -> dict:
+        """
+        🔒 ВНУТРЕННИЙ МЕТОД: обёртка над analytics_utils.compute_sector_exposure --
+        собирает etf_holdings/ноги ядра и вызывает общий декомпозитор. Единая точка
+        для обоих контуров ниже (портфельного и постратегийного), не дублируется.
+        """
+        if not exposure_rows:
+            return {}
+        ticker_ids = [r["ticker_id"] for r in exposure_rows]
+        etf_holdings_by_ticker_id = self._fetch_etf_holdings_sectors(ticker_ids)
+        index_core_leg_symbols = self._fetch_index_core_leg_symbols()
+        return compute_sector_exposure(
+            exposure_rows, etf_holdings_by_ticker_id, index_core_leg_symbols,
+            settings.DEFAULT_SECTOR_TARGET_CONFIG
+        )
+
     def get_portfolio_sector_exposure(self) -> dict:
         """
         🌐 ПОРТФЕЛЬНЫЙ СЕКТОРАЛЬНЫЙ РЕНТГЕН (Claude/BACKLOG.md №82)
         Сумма $-экспозиции по сектору across ВСЕХ активных содержательных стратегий
-        портфеля разом (REVOLVER/CONSERVATIVE_ACCUMULATION/TREND_FOLLOWING) -- не
-        внутри одной, как в audit_limits_and_rules ниже. UNALLOCATED/CASH_RESERVE
+        портфеля разом (REVOLVER/CONSERVATIVE_ACCUMULATION/TREND_FOLLOWING/INDEX_CORE) --
+        не внутри одной, как в audit_limits_and_rules ниже. UNALLOCATED/CASH_RESERVE
         не участвуют (первая -- само наличие бумаг там уже нарушение по другой
-        причине, вторая -- в ней физически нет активов). Та же честная ETF-
-        декомпозиция через strategy_exposure, что и везде.
+        причине, вторая -- в ней физически нет активов). Честная трёхчастная
+        декомпозиция фондов через `_decompose_sectors` (Claude/16_selection_logic_audit.md,
+        находка G, 2026-08-08) -- не плоский COALESCE в "Unknown Sector".
         Возвращает {sector: usd}, пустой словарь если участвовать нечему.
         """
         content_ids = [
@@ -226,15 +284,16 @@ class PortfolioInspector:
         # content_ids -- динамический список id, IN-список не работает через JSON-параметризацию
         # (см. Claude/BACKLOG.md №81) -- ANY(%s).
         sql = """
-            SELECT COALESCE(t.sector, 'Unknown Sector') AS sector, SUM(se.exposure_usd) AS total_usd
+            SELECT t.id AS ticker_id, t.symbol, t.sector, t.asset_type,
+                   SUM(se.exposure_usd) AS exposure_usd
             FROM public.strategy_exposure se
             JOIN public.tickers t ON se.ticker_id = t.id
             WHERE se.strategy_id = ANY(%s) AND se.exposure_usd > 0
-            GROUP BY COALESCE(t.sector, 'Unknown Sector');
+            GROUP BY t.id, t.symbol, t.sector, t.asset_type;
         """
         rows = self.db.execute_query(sql, (content_ids,)) or []
         rows = rows if isinstance(rows, list) else [rows]
-        return {r["sector"]: float(r["total_usd"]) for r in rows if r}
+        return self._decompose_sectors([r for r in rows if r])
 
     def audit_limits_and_rules(self) -> dict:
         """
@@ -278,26 +337,22 @@ class PortfolioInspector:
             # База данных сама выдает готовые, декомпозированные доллары по каждому тикеру
             sql_strategy_exposure = """
                 SELECT
-                    t.symbol,
-                    COALESCE(t.sector, 'Unknown Sector') AS sector,
-                    t.dividend_yield,
-                    se.exposure_usd AS total_usd
+                    t.id AS ticker_id, t.symbol, t.sector, t.asset_type,
+                    t.dividend_yield, se.exposure_usd AS exposure_usd
                 FROM public.strategy_exposure se
                 JOIN public.tickers t ON se.ticker_id = t.id
                 WHERE se.strategy_id = %s AND se.exposure_usd > 0;
             """
             exposure_shares = self.db.execute_query(sql_strategy_exposure, (s_id,)) or []
-            
-            sector_totals_usd = {}
+            exposure_shares = [r for r in exposure_shares if r] if isinstance(exposure_shares, list) else ([exposure_shares] if exposure_shares else [])
 
             # Шаг 4: Проверяем каждую акцию по её АБСОЛЮТНОЙ рыночной стоимости (Прямая + ETF)
             for asset in exposure_shares:
                 symbol = asset["symbol"]
-                sector = asset["sector"]
                 div_yield = float(asset["dividend_yield"] or 0.0)
-                
+
                 # Забираем уже готовые, пересчитанные базовые доллары из СУБД
-                asset_usd = float(asset["total_usd"])
+                asset_usd = float(asset["exposure_usd"])
 
                 # Вычисляем реальный текущий процент акции от ВСЕГО капитала портфеля
                 asset_share_pct = (asset_usd / total_capital) * 100.0
@@ -314,18 +369,16 @@ class PortfolioInspector:
                     })
                     continue
 
-                # Индексное ядро -- лимит на бумагу/сектор ВНУТРИ стратегии тут неприменим по
+                # Индексное ядро -- лимит на БУМАГУ внутри стратегии тут неприменим по
                 # конструкции: VTI/VXUS/BND намеренно занимают 20-44% САМОЙ СЕБЯ (целевые веса
                 # ядра, Claude/15_index_core.md), обычный лимит "% от капитала" рассчитан на
                 # риск концентрации в ОДНОЙ акции, не на курируемую тройку с фиксированными
-                # весами. Также все три сегодня без etf_holdings -- ушли бы в один "Unknown
-                # Sector" на 100% ядра, ложная тревога (Claude/16_selection_logic_audit.md,
-                # находка G). Налоговый щит (Б ниже) по-прежнему проверяем -- к нему это не относится.
+                # весами. Секторальный рентген (ниже, через _decompose_sectors) это НЕ
+                # затрагивает -- ноги ядра там уже честно приближаются/исключаются по отдельности
+                # (Claude/16_selection_logic_audit.md, находка G). Налоговый щит (Б ниже)
+                # по-прежнему проверяем -- к нему лимит на бумагу тоже не относится.
                 is_index_core_leg = strat.get("system_key") == "INDEX_CORE"
                 if not is_index_core_leg:
-                    # Накопление для идеального секторального рентгена
-                    sector_totals_usd[sector] = sector_totals_usd.get(sector, 0.0) + asset_usd
-
                     # А: ПРОВЕРКА ЛИМИТА НА АКЦИЮ (например, > 5% с учетом ETF)
                     if asset_share_pct > max_asset_pct:
                         strat_report["violation_found"] = True
@@ -338,7 +391,7 @@ class PortfolioInspector:
 
                 # Б: ПРОВЕРКА ГИБКОГО НАЛОГОВОГО ЩИТА (Данные в СУБД уже в %%)
                 max_div_allowed = config.get("portfolio_max_allowed_div_pct")
-                div_yield_pct = div_yield 
+                div_yield_pct = div_yield
 
                 if max_div_allowed is not None and div_yield_pct > float(max_div_allowed):
                     strat_report["violation_found"] = True
@@ -349,7 +402,13 @@ class PortfolioInspector:
                         "limit_pct": float(max_div_allowed)
                     })
 
-            # Шаг 5: СЕКТОРАЛЬНЫЙ РЕНТГЕН (Проверка лимита на сектор от живого капитала)
+            # Шаг 5: СЕКТОРАЛЬНЫЙ РЕНТГЕН (Проверка лимита на сектор от живого капитала).
+            # Неопределённая -- служебный карман, сектор для неё не считаем (та же логика,
+            # что и для лимита на бумагу/дивиденды выше -- нет содержательного rules_config).
+            sector_totals_usd = (
+                self._decompose_sectors(exposure_shares)
+                if strat.get("system_key") != "UNALLOCATED" else {}
+            )
             for sector_name, sector_usd in sector_totals_usd.items():
                 sector_share_pct = (sector_usd / total_capital) * 100.0
                 

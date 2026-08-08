@@ -203,6 +203,76 @@ def check_sector_ceiling_breach(sector_exposure_usd: dict, total_capital_usd: fl
     return {}
 
 
+# Ноги Индексного ядра, которые НЕ акции (Claude/16_selection_logic_audit.md, находка G,
+# 2026-08-08) -- settings.DEFAULT_SECTOR_TARGET_CONFIG это веса СЕКТОРОВ АКЦИЙ, натягивать
+# их на облигационный фонд бессмысленно, не просто неточно (у облигаций в принципе нет
+# GICS-сектора). Малый явный список, не общий механизм -- ноги ядра сами по себе вручную
+# курируются в rules_config.index_core_target_weights, это решение того же рода.
+INDEX_CORE_NON_EQUITY_LEGS = {"BND"}
+
+
+def compute_sector_exposure(exposure_rows: list, etf_holdings_by_ticker_id: dict,
+                             index_core_leg_symbols: set, sector_target_weights: dict) -> dict:
+    """
+    Секторальная декомпозиция экспозиции с честной трактовкой фондов (Claude/16_selection_logic_audit.md,
+    находка G, 2026-08-08) -- три разных случая под одним "Unknown Sector":
+
+    1. Нога Индексного ядра (symbol из index_core_leg_symbols) -- широкий индексный фонд,
+       `etf_holdings` пуст и заполнять невыгодно (тысячи позиций). Приближаем состав через
+       sector_target_weights (веса широкого рынка США) -- НЕ для облигационных ног
+       (INDEX_CORE_NON_EQUITY_LEGS), для них сектора неприменимы в принципе, исключаем целиком.
+    2. ETF с реально заполненными `etf_holdings` (узкий тематический фонд, напр. COPX) --
+       честная декомпозиция по факту через компоненты. `etf_holdings` хранит только топ-10,
+       не 100% состава -- недекомпозированный остаток (вне топ-10 + компоненты с ещё не
+       засинканным сектором) уходит в "Unknown Sector" ЧЕСТНО, не скрывается и не отбрасывается.
+    3. ETF без `etf_holdings` и не нога ядра -- настоящий товарный/валютный фонд (GLDM/WEAT),
+       заполнить нечем в принципе (у золота/пшеницы нет компаний внутри). Исключаем из
+       секторального аудита целиком -- не притворяемся, что это недосмотр, у таких фондов уже
+       есть свой контроль риска (лимит на бумагу).
+
+    exposure_rows -- [{"ticker_id", "symbol", "sector", "asset_type", "exposure_usd"}, ...].
+    etf_holdings_by_ticker_id -- {ticker_id: [{"sector", "weight_percentage"}, ...]}.
+    Возвращает {sector: usd}.
+    """
+    totals = {}
+    weight_sum = sum(sector_target_weights.values()) or 1.0
+
+    for row in exposure_rows:
+        usd = float(row["exposure_usd"] or 0.0)
+        if usd <= 0:
+            continue
+        symbol = row["symbol"]
+        is_etf = row.get("asset_type") == "ETF"
+
+        if symbol in index_core_leg_symbols:
+            if symbol in INDEX_CORE_NON_EQUITY_LEGS:
+                continue
+            for sector, weight_pct in sector_target_weights.items():
+                totals[sector] = totals.get(sector, 0.0) + usd * (weight_pct / weight_sum)
+            continue
+
+        holdings = etf_holdings_by_ticker_id.get(row["ticker_id"])
+        if is_etf and holdings:
+            decomposed_pct = 0.0
+            for h in holdings:
+                w = float(h.get("weight_percentage") or 0.0)
+                sector = h.get("sector") or "Unknown Sector"
+                totals[sector] = totals.get(sector, 0.0) + usd * (w / 100.0)
+                decomposed_pct += w
+            residual_pct = max(0.0, 100.0 - decomposed_pct)
+            if residual_pct > 0:
+                totals["Unknown Sector"] = totals.get("Unknown Sector", 0.0) + usd * (residual_pct / 100.0)
+            continue
+
+        if is_etf:
+            continue
+
+        sector = row.get("sector") or "Unknown Sector"
+        totals[sector] = totals.get(sector, 0.0) + usd
+
+    return totals
+
+
 class TickerEvaluator:
     """
     🔬 УНИВЕРСАЛЬНЫЙ ОЦЕНЩИК БУМАГ UPORT (TickerEvaluator)
