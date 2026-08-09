@@ -124,12 +124,11 @@ async def process_link_order(callback: types.CallbackQuery, callback_data: MenuA
         # пользовательского ввода), безопасен как f-строка -- placeholder не годится для
         # структурного IN-списка (см. Claude/BACKLOG.md №81).
         sql_strategies = f"""
-            SELECT s.id, s.strategy_name
-            FROM public.strategies s
-            JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = %s AND s.is_active = true
-              AND st.system_key IN {CONTENT_SYSTEM_KEYS}
-            ORDER BY s.strategy_name;
+            SELECT strategy_id AS id, strategy_name
+            FROM public.v_strategies_full
+            WHERE portfolio_id = %s AND is_active = true
+              AND system_key IN {CONTENT_SYSTEM_KEYS}
+            ORDER BY display_order;
         """
         strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies, (int(p_id),))
         strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])
@@ -516,12 +515,11 @@ async def process_plan_from_idea_start(callback: types.CallbackQuery, callback_d
 
     # st.system_key IN CONTENT_SYSTEM_KEYS -- фиксированный жёстко зашитый кортеж, см. комментарий выше
     sql_strategies = f"""
-        SELECT s.id, s.strategy_name
-        FROM public.strategies s
-        JOIN public.strategy_templates st ON s.template_id = st.id
-        WHERE s.portfolio_id = %s AND s.is_active = true
-          AND st.system_key IN {CONTENT_SYSTEM_KEYS}
-        ORDER BY s.strategy_name;
+        SELECT strategy_id AS id, strategy_name
+        FROM public.v_strategies_full
+        WHERE portfolio_id = %s AND is_active = true
+          AND system_key IN {CONTENT_SYSTEM_KEYS}
+        ORDER BY display_order;
     """
     strategies = await asyncio.to_thread(db_bot.execute_query, sql_strategies, (int(p_id),))
     strategies = strategies if isinstance(strategies, list) else ([strategies] if strategies else [])

@@ -219,13 +219,13 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # не меняет сам, решение (поднять сумму или копить число слотов) -- за пользователем.
     if datetime.date.today().day == settings.MONTHLY_SLOT_REVIEW_DAY:
         review_rows = db_instance.execute_query("""
-            SELECT s.id AS strategy_id, s.strategy_name, s.rules_config,
+            SELECT v.strategy_id, v.strategy_name, v.rules_config,
                    (SELECT COUNT(*) FROM public.strategy_assets sa
-                     WHERE sa.strategy_id = s.id AND sa.allocated_quantity > 0) AS position_count
-            FROM public.strategies s
-            JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            WHERE s.portfolio_id = %s AND s.is_active = true
-              AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING');
+                     WHERE sa.strategy_id = v.strategy_id AND sa.allocated_quantity > 0) AS position_count
+            FROM public.v_strategies_full v
+            WHERE v.portfolio_id = %s AND v.is_active = true
+              AND v.system_key IN ('REVOLVER', 'TREND_FOLLOWING')
+            ORDER BY v.display_order;
         """, (portfolio_id,))
         review_rows = review_rows if isinstance(review_rows, list) else ([review_rows] if review_rows else [])
         for row in review_rows:

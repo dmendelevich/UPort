@@ -63,14 +63,14 @@ class PortfolioInspector:
 
         self.raw_accounts = self.db.execute_query(sql_accounts, accounts_params) or []
         
-        # 2. ЗАПРОС К ПРАВИЛАМ СТРАТЕГИЙ (🔥 ТЕПЕРЬ ТАЩИМ СКОРРЕКТИРОВАННУЮ КОЛОНКУ С ДОЛЯМИ СУБД)
-        # system_key нужен audit_limits_and_rules -- отличить служебную Неопределённую
-        # стратегию от содержательных (см. Claude/BACKLOG.md, обсуждение 2026-07-27).
+        # 2. ЗАПРОС К ПРАВИЛАМ СТРАТЕГИЙ -- через v_strategies_full (см. Claude/02_universal_views.md),
+        # ORDER BY display_order даёт стандартный порядок стратегий во всех потребителях этого
+        # запроса (вкладка портфеля, дайджест, CashDeploymentAdvisor), не изобретая заново.
         sql_strategies = """
-            SELECT s.id, s.strategy_name, s.strategy_share_pct, s.rules_config, s.human_philosophy, st.system_key
-            FROM public.strategies s
-            JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = %s AND s.is_active = true;
+            SELECT strategy_id AS id, strategy_name, strategy_share_pct, rules_config, human_philosophy, system_key
+            FROM public.v_strategies_full
+            WHERE portfolio_id = %s AND is_active = true
+            ORDER BY display_order;
         """
         self.raw_strategies = self.db.execute_query(sql_strategies, (self.portfolio_id,)) or []
 

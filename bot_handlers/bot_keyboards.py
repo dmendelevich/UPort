@@ -32,11 +32,12 @@ async def generate_target_strategies_keyboard(portfolio_id: int, ticker_id: int,
     builder = InlineKeyboardBuilder()
     
     sql = """
-        SELECT id, strategy_name
-        FROM public.strategies
+        SELECT strategy_id AS id, strategy_name
+        FROM public.v_strategies_full
         WHERE portfolio_id = %s
           AND is_active = true
-          AND id != %s;
+          AND strategy_id != %s
+        ORDER BY display_order;
     """
     strategies = await asyncio.to_thread(db_bot.execute_query, sql, (portfolio_id, source_strategy_id))
     

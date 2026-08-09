@@ -603,10 +603,10 @@ class TickerEvaluator:
         # is_screening_active = false -- пассивная стратегия (см. Claude/BACKLOG.md п.9,
         # 2026-07-31), не подбираем под неё новых кандидатов, пока не включена.
         sql_strat = """
-            SELECT s.id, s.rules_config, st.system_key
-            FROM public.strategies s
-            JOIN public.strategy_templates st ON s.template_id = st.id
-            WHERE s.portfolio_id = %s AND s.is_active = true AND s.is_screening_active = true;
+            SELECT strategy_id AS id, rules_config, system_key
+            FROM public.v_strategies_full
+            WHERE portfolio_id = %s AND is_active = true AND is_screening_active = true
+            ORDER BY display_order;
         """
         strat_rows = self.db.execute_query(sql_strat, (target_portfolio_id,)) or []
         clean_strat_rows = strat_rows if isinstance(strat_rows, list) else [strat_rows]
