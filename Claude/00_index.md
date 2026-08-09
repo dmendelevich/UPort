@@ -37,11 +37,11 @@
 - `cron_scheduler.py` — планировщик задач
 - `bot_handlers/` — обработчики Telegram-бота (backlog, portfolios, settings, strategy_resolver, summary, ticker_search, tickers, watchlist, bot_keyboards, bot_screens, bot_utils, common)
 - `brokers_connectors/` — коннекторы к брокерам (fb_client, fb_websocket_daemon, sync_account_fb, sync_alerts_fb, sync_quotes_fb, sync_quotes_t212, sync_strategy_asset_fb) — похоже на Freedom Broker (fb) и Trading212 (t212)
-- `site_connectors/` — внешние источники данных (sync_rates_yhoo, sync_fundamentals_yhoo, sync_signals_yf — Yahoo Finance; market_scanner, vsegpt_client, trigger_etf_look_through, mass_check_passports)
+- `site_connectors/` — внешние источники данных (sync_rates_yhoo, sync_fundamentals_yhoo, sync_signals_yf — Yahoo Finance; market_scanner, trigger_etf_look_through, mass_check_passports)
 - `analytics/` — аналитика портфеля (analytics_utils, portfolio_auditor, portfolio_inspector)
 - `exchanges_info/` — загрузка справочников бирж
 - `ARCHITECTURE/` — уже существующая документация автора (ARCHITECTURE_tickers.md, Time.md, anal_core.md, tg_bot.md, scaners_V01)
-- `uport_ai_bot.py`, `uport_ai_gateway.py` — AI-интеграция (возможно, vsegpt/GPT-шлюз)
+- `uport_ai_bot.py` — главный живой Telegram-бот (не про ИИ, несмотря на имя файла — это исторический артефакт); `uport_ai_gateway.py` — HTTP-шлюз к БД (`uport_gateway.service`, порт 3000), через него идёт вообще весь доступ к БД (`db_sys`/`db_bot`), тоже не про ИИ. **Исправлено 2026-08-09**: раньше здесь стояло "возможно, vsegpt/GPT-шлюз" — неверная догадка первого дня; реальная интеграция с VseGPT была отдельным, уже удалённым кодом (`site_connectors/vsegpt_client.py` + `analytics/old_stuff/ai_strategist.py`, см. `Claude/BACKLOG.md`).
 - тесты в корне (`test_*.py`) — pytest-подобные, без папки tests/
 
 Требует подтверждения и уточнения от пользователя по ходу разбора.
