@@ -12,6 +12,7 @@ from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
 from analytics.ladder_step_watcher import check_ladder_step_triggers
 from analytics.price_move_watcher import check_price_moves
+from analytics.capital_protection_watcher import check_capital_protection
 
 def sync_quotes_fb_autonomous():
     """
@@ -132,6 +133,13 @@ def sync_quotes_fb_autonomous():
         check_price_moves(db_sys)
     except Exception as price_move_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки резких движений цены (PriceMoveWatcher): {price_move_err}")
+
+    # Защита капитала (см. Claude/19_price_move_protection_design.md, сигнал B) -- стоп-лосс/
+    # трейлинг-стоп, тот же рыночно-зависимый ритм, что и PriceMoveWatcher выше.
+    try:
+        check_capital_protection(db_sys)
+    except Exception as capital_protection_err:
+        logging.error(f"⚠️ [REST FB]: Сбой проверки защиты капитала (CapitalProtectionWatcher): {capital_protection_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла

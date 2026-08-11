@@ -168,18 +168,25 @@ def _handle_triggered(db_instance, listing_id, ticker_id, symbol, price, pct_mov
             alert_id = int(insert_res[0]["id"])
             logging.info(f"🎯 [PriceMoveWatcher]: Новый алерт #{alert_id} для {symbol} (портфель {portfolio_id}, {direction}{abs(pct_move):.1f}%)")
 
-        _send_notification(p.get("telegram_id"), note, alert_id)
+        send_alert_notification(p.get("telegram_id"), note, alert_id)
 
 
 def _resolve_alerts(db_instance, listing_id: int):
-    """Условие больше не выполняется -- гасим взведённые (обеих сторон) алерты этого листинга."""
+    """
+    Условие больше не выполняется -- гасим взведённые (обеих сторон) алерты этого
+    листинга. Фильтр по condition_type IN ('+','-') -- ОБЯЗАТЕЛЕН с тех пор, как
+    появился второй потребитель source_type='uport' на этом же листинге
+    (analytics/capital_protection_watcher.py, condition_type='stop_loss'/'trailing_stop',
+    портфель-специфичные условия) -- без фильтра это гасило бы чужие алерты по
+    ВСЕМ портфелям, держащим тот же листинг, при первом же затихании движения цены.
+    """
     db_instance.execute_query("""
         UPDATE public.alerts SET is_active = false, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
-        WHERE listing_id = %s AND source_type = 'uport' AND is_active = true;
+        WHERE listing_id = %s AND source_type = 'uport' AND condition_type IN ('+', '-') AND is_active = true;
     """, (listing_id,))
 
 
-def _send_notification(telegram_id, note: str, alert_id: int):
+def send_alert_notification(telegram_id, note: str, alert_id: int):
     if not telegram_id:
         return
 

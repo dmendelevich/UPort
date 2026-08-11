@@ -99,3 +99,10 @@ DEFAULT_SECTOR_TARGET_CONFIG = {
     "Real Estate": 2.0,
     "Basic Materials": 2.0,
 }
+
+# ─── ЗАЩИТА КАПИТАЛА: СТОП-ЛОСС / ТРЕЙЛИНГ-СТОП (Claude/19_price_move_protection_design.md, 2026-08-11) ───
+# Сами K-множители (tactic_stop_loss_k / tactic_trailing_stop_k) живут в
+# strategies.rules_config (per-стратегия, как и остальные tactic_*, откалиброваны
+# бэктестом на реальных данных -- см. дизайн-документ), не здесь. Здесь -- только
+# системная механика повтора, симметрично PRICE_MOVE_WATCHER_PERIODIC_SEC выше.
+CAPITAL_PROTECTION_PERIODIC_SEC = 3600      # повтор уведомления, пока условие не снято
