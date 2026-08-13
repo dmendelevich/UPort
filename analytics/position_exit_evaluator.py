@@ -42,7 +42,7 @@ class PositionExitEvaluator:
         sql = """
             SELECT
                 a.id AS asset_id, a.portfolio_id, a.listing_id, a.quantity, a.avg_price, a.position_opened_at,
-                lt.id AS ticker_id, lt.symbol, lt.current_price,
+                lt.id AS ticker_id, lt.symbol, lt.listing_last_price AS current_price,
                 lt.return_on_equity, lt.debt_to_equity, lt.pe_trailing,
                 lt.signal_rsi, lt.signal_macd, lt.signal_ema_20, lt.signal_sma_50, lt.signal_ema20_streak_days,
                 s.id AS strategy_id, s.strategy_name, s.rules_config,
