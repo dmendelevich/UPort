@@ -136,6 +136,10 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
     )
     await asyncio.to_thread(db_sys.execute_query, sql, params)
     await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(), (p_id, p_id))
+    # У бумажного портфеля нет sync_account_fb.py (реальный брокерский синк) -- он и
+    # заводит watchlist для реальных портфелей при покупке. Без этого вызова позиции
+    # «ПБум» физически не попадали бы во вкладку watchlist (найдено 2026-08-13).
+    await asyncio.to_thread(db_sys.ensure_watchlist_row_v2, p_id, listing_id, "bought")
     return True, quantity, price, spent, listing_id
 
 
@@ -186,6 +190,9 @@ async def _execute_virtual_sell(p_id: int, l_id: int, s_id: int, ticker_id: int,
     )
     await asyncio.to_thread(db_sys.execute_query, sql, params)
     await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(), (p_id, p_id))
+    # Тот же пробел, что и у покупки (см. _execute_virtual_buy) -- без реального
+    # брокерского синка watchlist сам себя не обновит на полное закрытие позиции.
+    await asyncio.to_thread(db_sys.ensure_watchlist_row_v2, p_id, l_id, "sold_out")
     return True, price, proceeds, pnl, pnl_pct
 
 

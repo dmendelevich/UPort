@@ -12,7 +12,6 @@ from bot_handlers.bot_screens import generate_confirm_screen
 from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
 from bot_handlers.bot_utils import execute_virtual_transfer
 from analytics.analytics_utils import TickerEvaluator
-from brokers_connectors.sync_strategy_asset_fb import SyncStrategyAssetFB
 
 router = Router()
 
@@ -587,8 +586,8 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
     if other_strategy_row:
         target_row = await asyncio.to_thread(db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(s_id),))
         target_name = (target_row or {}).get("strategy_name", "?")
-        await _start_transfer_quantity_ask(
-            callback, state, p_id, t_id, l_id,
+        await _show_transfer_confirm_with_plan(
+            callback, p_id, t_id, l_id,
             source_id=int(other_strategy_row["strategy_id"]), target_id=s_id, target_name=target_name,
             source_qty=float(other_strategy_row["allocated_quantity"])
         )
@@ -1025,15 +1024,23 @@ async def process_exit_plan_execute(callback: types.CallbackQuery, state: FSMCon
 # см. Claude/11_asset_lifecycle_and_plan.md, "реинкарнация"). Две двери в один и тот же
 # код: прямая кнопка на карточке тикера (transfer_start), и обнаружение "держится в
 # другой стратегии" внутри "Плана входа" (process_plan_from_idea_strategy выше) --
-# оба ведут в _start_transfer_quantity_ask, не в две параллельные реализации.
-# Перенос в СОДЕРЖАТЕЛЬНУЮ стратегию всегда сопровождается планом (переносим -- значит,
-# уже есть решение, куда и зачем); перенос в служебную (пока только "Неопределённая",
-# "Кэш/Резерв" как приёмник исключён -- бессмысленно для реальной позиции в бумаге) --
-# просто перенос, без плана, планировать там нечего.
+# оба ведут в _show_transfer_confirm_with_plan, не в две параллельные реализации.
+# Перенос в СОДЕРЖАТЕЛЬНУЮ стратегию всегда сопровождается планом; перенос в служебную
+# (пока только "Неопределённая", "Кэш/Резерв" как приёмник исключён -- бессмысленно для
+# реальной позиции в бумаге) -- просто перенос, без плана, планировать там нечего.
+#
+# Переносится ВСЕГДА вся доля источника целиком, без запроса "сколько" (согласовано
+# 2026-08-13) -- перенос это не новый вход, а признание того, чем бумага УЖЕ стала
+# (например, "выпускница" Револьверной, см. PositionExitEvaluator._check_revolver_exit).
+# План в приёмнике поэтому сразу заводится ЗАВЕРШЁННЫМ (target_quantity = перенесённое
+# количество) -- не половина нового полноразмерного входа целевой стратегии, ждущая
+# докупки. Раньше экран спрашивал "сколько итого на весь план" и, ответив числом больше
+# перенесённого, можно было создать PENDING-план: у всех трёх содержательных стратегий
+# шаг 1 -- "market, immediate" (безусловный), LadderStepWatcher принял бы его за готовый
+# к исполнению на следующем цикле котировок и прислал бы ложное "докупи ещё" -- ровно то,
+# от чего предостерёг пользователь. Если позже понадобится вернуть часть обратно -- тот
+# же процесс переноса в обратную сторону, отдельного "частичного" переноса не нужно.
 # =========================================================================
-
-class TransferPlanStates(StatesGroup):
-    waiting_for_target_quantity = State()
 
 
 async def _get_current_holders(portfolio_id: int, listing_id: int) -> list:
@@ -1184,11 +1191,11 @@ async def _show_transfer_target_picker(callback, p_id: int, t_id: int, l_id: int
 
 
 @router.callback_query(MenuAction.filter(F.action == "transfer_target"))
-async def process_transfer_target(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+async def process_transfer_target(callback: types.CallbackQuery, callback_data: MenuAction):
     """
-    Приёмник выбран. Содержательная стратегия -- просим количество на весь план и
-    дальше заводим план вместе с переносом; служебная («Неопределённая») -- просто
-    переносим, планировать там нечего.
+    Приёмник выбран. Содержательная стратегия -- сразу на подтверждение переноса ВСЕЙ
+    доли с готовым планом; служебная («Неопределённая») -- просто переносим, планировать
+    там нечего.
     """
     p_id, t_id, l_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id
     source_id, target_id = callback_data.strategy_id, callback_data.task_id
@@ -1222,86 +1229,14 @@ async def process_transfer_target(callback: types.CallbackQuery, callback_data: 
         return
 
     if target_row["system_key"] in CONTENT_SYSTEM_KEYS:
-        await _start_transfer_quantity_ask(callback, state, p_id, t_id, l_id, source_id, target_id, target_row["strategy_name"], source_qty)
+        await _show_transfer_confirm_with_plan(callback, p_id, t_id, l_id, source_id, target_id, target_row["strategy_name"], source_qty)
     else:
         await _show_transfer_confirm_simple(callback, p_id, t_id, l_id, source_id, target_id, target_row["strategy_name"], source_qty)
 
 
-async def _start_transfer_quantity_ask(callback, state: FSMContext, p_id: int, t_id: int, l_id: int, source_id: int, target_id: int, target_name: str, source_qty: float):
+async def _show_transfer_confirm_with_plan(callback, p_id: int, t_id: int, l_id: int, source_id: int, target_id: int, target_name: str, source_qty: float):
     """Общая точка для обеих дверей (прямая кнопка "Перенос" и обнаружение внутри "Плана входа")."""
-    prior_data = await state.get_data()
-    await state.set_state(TransferPlanStates.waiting_for_target_quantity)
-    await state.update_data(
-        user_db_id=prior_data.get("user_db_id"),
-        is_admin=prior_data.get("is_admin", False),
-        transfer_portfolio_id=p_id,
-        transfer_ticker_id=t_id,
-        transfer_listing_id=l_id,
-        transfer_source_id=source_id,
-        transfer_target_id=target_id,
-        transfer_source_qty=source_qty,
-        menu_msg_id=callback.message.message_id,
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="🔙 Отмена", callback_data=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-    ))
-
-    try:
-        await callback.message.edit_text(
-            f"🔄 **Перенос в «{target_name}»**\n\nСейчас переносим {source_qty:.0f} шт. Отправьте в чат итоговое "
-            f"количество на ВЕСЬ план в этой стратегии (все шаги суммарно, включая уже переносимое).",
-            parse_mode="Markdown",
-            reply_markup=builder.as_markup()
-        )
-    except TelegramBadRequest:
-        pass
-
-
-@router.message(TransferPlanStates.waiting_for_target_quantity)
-async def process_transfer_quantity_text(message: types.Message, state: FSMContext, bot: Bot):
-    user_data = await state.get_data()
-    raw = (message.text or "").strip().replace(",", ".")
-
-    try:
-        await message.delete()
-    except Exception as del_err:
-        logging.warning(f"⚠️ [ПЕРЕНОС]: Не удалось удалить сообщение пользователя: {del_err}")
-
-    menu_msg_id = user_data.get("menu_msg_id")
-    p_id = int(user_data.get("transfer_portfolio_id", 0))
-    l_id = int(user_data.get("transfer_listing_id", 0))
-    source_qty = float(user_data.get("transfer_source_qty", 0))
-
-    menu_message = types.Message(message_id=menu_msg_id, date=message.date, chat=message.chat, from_user=message.from_user)
-    menu_message._bot = bot
-
-    try:
-        target_qty = float(raw)
-    except ValueError:
-        target_qty = 0.0
-
-    if target_qty < source_qty:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(
-            text="🔙 Отмена", callback_data=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-        ))
-        await menu_message.edit_text(
-            f"⚠️ Введите число не меньше {source_qty:.0f} (переносимое количество не может превышать план). Отправьте ещё раз.",
-            reply_markup=builder.as_markup()
-        )
-        return
-
-    await state.update_data(transfer_target_quantity=target_qty)
-
-    target_row = await asyncio.to_thread(
-        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('transfer_target_id', 0)),)
-    )
-    source_row = await asyncio.to_thread(
-        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('transfer_source_id', 0)),)
-    )
-    target_name = (target_row or {}).get("strategy_name", "?")
+    source_row = await asyncio.to_thread(db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(source_id),))
     source_name = (source_row or {}).get("strategy_name", "?")
 
     confirm_text = generate_confirm_screen(
@@ -1309,27 +1244,27 @@ async def process_transfer_quantity_text(message: types.Message, state: FSMConte
         action_title="ПОДТВЕРЖДЕНИЕ",
         details_list=[
             f"Перенести {source_qty:.0f} шт из «{source_name}» в «{target_name}»",
-            f"Итого на план в «{target_name}»: {target_qty:.0f} шт",
+            f"План в «{target_name}» будет сразу отмечен выполненным ({source_qty:.0f} шт)",
         ],
         parse_mode="Markdown"
     )
     reply_markup = generate_confirm_keyboard(
-        yes_text="🚀 Да, перенести и создать план",
-        yes_callback_packed=MenuAction(action="transfer_execute").pack(),
+        yes_text="🚀 Да, перенести",
+        yes_callback_packed=MenuAction(
+            action="transfer_execute", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id,
+            strategy_id=source_id, task_id=target_id
+        ).pack(),
         no_text="❌ Отмена",
         no_callback_packed=MenuAction(action="transfer_cancel", portfolio_id=p_id, listing_id=l_id).pack()
     )
-    await menu_message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
+    try:
+        await callback.message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(MenuAction.filter(F.action == "transfer_cancel"))
-async def process_transfer_cancel(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
-    user_data = await state.get_data()
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
-
+async def process_transfer_cancel(callback: types.CallbackQuery, callback_data: MenuAction):
     p_id, l_id = callback_data.portfolio_id, callback_data.listing_id
     try:
         await callback.message.edit_text("Отменено.", reply_markup=_back_to_plan_keyboard(p_id, l_id))
@@ -1338,45 +1273,40 @@ async def process_transfer_cancel(callback: types.CallbackQuery, callback_data: 
 
 
 @router.callback_query(MenuAction.filter(F.action == "transfer_execute"))
-async def process_transfer_execute(callback: types.CallbackQuery, state: FSMContext):
+async def process_transfer_execute(callback: types.CallbackQuery, callback_data: MenuAction):
     """
-    Переносит доли (execute_virtual_transfer) и заводит "голый" план в целевой стратегии,
-    сразу же прогоняя перенесённое количество через уже существующую логику сопоставления
-    шагов (_find_target_strategy) -- план должен оказаться на правильном шаге/статусе, а
-    не притворяться, что ничего ещё не куплено (см. Claude/11_asset_lifecycle_and_plan.md).
+    Переносит ВСЮ долю (execute_virtual_transfer) и сразу заводит ЗАВЕРШЁННЫЙ план в
+    целевой стратегии -- позиция уже полностью укомплектована тем, чем была в источнике
+    (например, "выпускница" Револьверной), не половина нового полноразмерного входа
+    целевой стратегии, ждущая докупки (согласовано 2026-08-13, см. Claude/BACKLOG.md).
     """
-    user_data = await state.get_data()
-    await callback.answer("🚀 Переношу и создаю план...")
-
-    p_id = int(user_data.get("transfer_portfolio_id", 0))
-    t_id = int(user_data.get("transfer_ticker_id", 0))
-    l_id = int(user_data.get("transfer_listing_id", 0))
-    source_id = int(user_data.get("transfer_source_id", 0))
-    target_id = int(user_data.get("transfer_target_id", 0))
-    source_qty = float(user_data.get("transfer_source_qty", 0))
-    target_qty = float(user_data.get("transfer_target_quantity", 0))
-
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
+    p_id, t_id, l_id = callback_data.portfolio_id, callback_data.ticker_id, callback_data.listing_id
+    source_id, target_id = callback_data.strategy_id, callback_data.task_id
+    await callback.answer("🚀 Переношу...")
 
     back_kb = _back_to_plan_keyboard(p_id, l_id)
 
-    if source_qty <= 0 or target_qty <= 0:
+    row = await asyncio.to_thread(
+        db_bot.execute_row,
+        """
+            SELECT sa.allocated_quantity FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s;
+        """,
+        (p_id, l_id, source_id)
+    )
+    qty = float((row or {}).get("allocated_quantity") or 0)
+    if qty <= 0:
         try:
-            await callback.message.edit_text("❌ Сбой: данные устарели. Начните заново.", reply_markup=back_kb)
+            await callback.message.edit_text("⚠️ Уже не актуально -- в источнике не осталось акций.", reply_markup=back_kb)
         except TelegramBadRequest:
             pass
         return
 
-    # 1. Физический перенос долей между стратегиями (уже существующий, ранее не
-    # подключённый ни к одной живой кнопке механизм).
     await execute_virtual_transfer(
-        portfolio_id=p_id, listing_id=l_id, source_strategy_id=source_id, target_strategy_id=target_id, quantity=source_qty
+        portfolio_id=p_id, listing_id=l_id, source_strategy_id=source_id, target_strategy_id=target_id, quantity=qty
     )
 
-    # 2. Заводим "голый" план в целевой стратегии -- шаг 1, PENDING, без ордера.
     result = await asyncio.to_thread(
         db_sys.execute_query,
         """
@@ -1384,17 +1314,17 @@ async def process_transfer_execute(callback: types.CallbackQuery, state: FSMCont
                 (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
                  target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
             VALUES
-                (%s, %s, %s, %s, 1, 'PENDING',
+                (%s, %s, %s, %s, 1, 'COMPLETED',
                  %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             RETURNING id;
         """,
-        (p_id, l_id, t_id, target_id, target_qty)
+        (p_id, l_id, t_id, target_id, qty)
     )
     if not result:
-        logging.error(f"❌ [ПЕРЕНОС]: Перенос выполнен, но сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {target_id}).")
+        logging.error(f"❌ [ПЕРЕНОС]: Перенос долей выполнен, но сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {target_id}).")
         try:
             await callback.message.edit_text(
-                "⚠️ Перенос выполнен, но план создать не удалось (возможно, уже есть активный план в этой стратегии). Проверьте лог.",
+                f"⚠️ Перенос выполнен ({qty:.0f} шт), но план создать не удалось. Проверьте лог.",
                 reply_markup=back_kb
             )
         except TelegramBadRequest:
@@ -1402,24 +1332,11 @@ async def process_transfer_execute(callback: types.CallbackQuery, state: FSMCont
         return
     pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
 
-    # 3. Прогоняем перенесённое количество через ту же математику, что и реальная
-    # рыночная дельта -- план сразу окажется на правильном шаге, если перенесённого
-    # количества уже достаточно (не перезаписываем баланс повторно -- перенос его уже
-    # применил, здесь только определяем current_step/pipeline_status).
-    sync = SyncStrategyAssetFB(db_sys)
-    _, matched_pipe_id, action, _, _ = await asyncio.to_thread(sync._find_target_strategy, p_id, t_id, source_qty)
-
-    if matched_pipe_id == pipe_id and action in ('NEXT_STEP', 'COMPLETE_PIPELINE'):
-        await asyncio.to_thread(sync._update_pipeline_status, pipe_id, action)
-        step_summary = "План уже полностью выполнен перенесённым количеством." if action == 'COMPLETE_PIPELINE' else "Шаг 1 плана уже засчитан перенесённым количеством."
-    else:
-        step_summary = "План ждёт первого шага (перенесённого количества пока недостаточно)."
-
-    logging.info(f"✅ [ПЕРЕНОС]: {source_qty} шт перенесено из стратегии {source_id} в {target_id}, план #{pipe_id} создан (портфель {p_id}, тикер {t_id}).")
+    logging.info(f"✅ [ПЕРЕНОС]: {qty} шт перенесено из стратегии {source_id} в {target_id}, план #{pipe_id} сразу завершён (портфель {p_id}, тикер {t_id}).")
 
     try:
         await callback.message.edit_text(
-            f"✅ **Перенос выполнен** (план #{pipe_id})\n{source_qty:.0f} шт перенесено. {step_summary}",
+            f"✅ **Перенос выполнен** (план #{pipe_id})\n{qty:.0f} шт перенесено, план сразу отмечен выполненным.",
             parse_mode="Markdown",
             reply_markup=back_kb
         )

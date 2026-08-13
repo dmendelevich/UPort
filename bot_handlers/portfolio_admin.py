@@ -245,6 +245,18 @@ async def process_execute(callback: types.CallbackQuery, state: FSMContext):
                 CASE WHEN st.system_key IN ('CASH_RESERVE', 'UNALLOCATED') THEN true ELSE false END
             FROM new_portfolio, public.strategy_templates st
             RETURNING id, template_id
+        ),
+        seeded_tactics AS (
+            -- Шаги лесенки входа -- свойство ТИПА стратегии, копируются из шаблонного
+            -- strategy_template_tactics (Claude/BACKLOG.md, 2026-08-13 -- раньше эта
+            -- проводка отсутствовала, strategy_tactics у новых портфелей оставалась
+            -- пустой, LadderStepWatcher для них молчал не по замыслу, а по нехватке
+            -- данных; Индексное ядро/Кэш-Резерв/Неопределённая тактик не имеют --
+            -- у ядра нет лесенки по конструкции, у служебных стратегий нет покупок).
+            INSERT INTO public.strategy_tactics (strategy_id, step_number, budget_share_pct, trigger_conditions)
+            SELECT a.id, tt.step_number, tt.budget_share_pct, tt.trigger_conditions
+            FROM all_strategies a
+            JOIN public.strategy_template_tactics tt ON tt.template_id = a.template_id
         )
         SELECT
             new_portfolio.id AS portfolio_id,
