@@ -174,6 +174,13 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         report_text += "💵 **Кэш на торговом счёте:**\n"
         report_text += "\n".join(trade_cash_lines) + "\n\n"
 
+    # ИТОГО -- полный капитал портфеля (бумаги + весь кэш торгового счёта, каждая валюта
+    # конвертирована в base_currency смотрящего тем же get_fx, что и выше) -- по просьбе
+    # пользователя 2026-08-13, чтобы не складывать в уме.
+    total_cash_target = sum(float(c['cash_available']) * get_fx(c.get('currency_id')) for c in cash_res)
+    total_capital = total_assets_cost + total_cash_target
+    report_text += f"🎁 ИТОГО: **{target_sign}{total_capital:,.2f}**\n"
+
     report_text += f"───────\n"
 
     builder = InlineKeyboardBuilder()
@@ -236,7 +243,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
             report_text += "\n   *Ценные бумаги в данном портфеле отсутствуют.*"
 
     elif view == "passport":
-        report_text += "📊 **Паспорт качества:**\n"
+        report_text += "🩻 **Паспорт качества:**\n"
         if p_id > 0:
             report_text += await format_portfolio_risk_audit_rollup(p_id)
         report_text += (
@@ -301,7 +308,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     # потеряло бы, откуда пришли, и "назад" снова вело бы не туда.
     tabs = [
         ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"assets/{origin}")),
-        ("📊 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"passport/{origin}")),
+        ("🩻 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"passport/{origin}")),
         ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"strategies/{origin}")),
     ]
 

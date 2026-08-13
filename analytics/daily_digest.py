@@ -50,8 +50,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     (см. Claude/BACKLOG.md), кнопка-заглушка.
 
     Протухание уже выставленных приказов/алертов -- см. analytics/order_alert_staleness.py
-    (п.5 БЭКЛОГА, 2026-07-30). Пометка рекомендаций «Купить»/«Продать»/TRIM/TOP_UP при уже
-    существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
+    (п.5 БЭКЛОГА, 2026-07-30). Пометка рекомендаций «Купить»/«Продать»/TRIM_DOWN/TOP_UP при
+    уже существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
         "SELECT name FROM public.portfolios WHERE id = %s;", (portfolio_id,)
@@ -71,7 +71,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
     # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
     # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
-    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
+    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM_DOWN": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
 
     # Пометка "уже есть активный приказ" (закрывает вторую половину BACKLOG.md п.5,
     # 2026-08-03) -- по факту существования приказа в нужную сторону на этом тикере, не
@@ -152,7 +152,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     signal_items += [
         {
             "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
-                    + order_note(a["ticker_id"], active_sell_ticker_ids if a["recommendation"] == "TRIM" else active_buy_ticker_ids),
+                    + order_note(a["ticker_id"], active_sell_ticker_ids if a["recommendation"] == "TRIM_DOWN" else active_buy_ticker_ids),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
         }

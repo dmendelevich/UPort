@@ -16,7 +16,7 @@ class PortfolioRebalancer:
 
     Два симметричных триггера, оба относительно планового слота
     (tactic_slot_pct_of_strategy % от целевого бюджета стратегии):
-    - TRIM: позиция выросла больше OVERWEIGHT_MULTIPLIER × слота -- подрезать до слота
+    - TRIM_DOWN: позиция выросла больше OVERWEIGHT_MULTIPLIER × слота -- подрезать до слота
       (не до нуля -- не полный выход, тем и отличается от PositionExitEvaluator).
       Закрывает исторический разрыв BACKLOG.md п.4 (GLDM-пример 2026-07-23): позиция
       может быть переинвестирована и не давать сигнала от PositionExitEvaluator,
@@ -106,7 +106,7 @@ class PortfolioRebalancer:
                     alerts.append({
                         **base,
                         "quantity": round(trim_qty, 4),
-                        "recommendation": "TRIM",
+                        "recommendation": "TRIM_DOWN",
                         "reason": (
                             f"Позиция выросла до ${value_usd:,.2f} — {value_usd / ideal_budget * 100:.1f}% "
                             f"стратегии, больше {self.OVERWEIGHT_MULTIPLIER:.0f}× планового слота "
