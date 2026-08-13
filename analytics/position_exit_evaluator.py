@@ -132,18 +132,17 @@ class PositionExitEvaluator:
         # капитала, тайм-лимит специально освобождает слот) -- решение всегда бинарное: либо
         # продать целиком, либо перенести целиком в Трендовую (готовый механизм переноса).
         if profit_pct >= target_profit_pct:
-            if rsi > trend_protection_rsi:
+            if momentum_alive:
                 return self._build_alert(
                     pos, "HOLD",
                     f"Цель +{target_profit_pct:.1f}% достигнута (факт {profit_pct:.1f}%), импульс ещё жив "
-                    f"(RSI={rsi:.1f}) — не продавай, перенеси позицию ЦЕЛИКОМ в Трендовую и освободи слот "
-                    f"Револьверной.",
+                    f"— не продавай, перенеси позицию ЦЕЛИКОМ в Трендовую и освободи слот Револьверной.",
                     metrics,
                 )
             return self._build_alert(
                 pos, "SELL",
                 f"Цель +{target_profit_pct:.1f}% достигнута (факт {profit_pct:.1f}%), импульс остыл "
-                f"(RSI={rsi:.1f}) — фиксируй прибыль.",
+                f"— фиксируй прибыль.",
                 metrics,
             )
 
