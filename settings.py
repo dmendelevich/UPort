@@ -100,6 +100,15 @@ DEFAULT_SECTOR_TARGET_CONFIG = {
     "Basic Materials": 2.0,
 }
 
+# ─── МОМЕНТ ИСПОЛНЕНИЯ СДЕЛКИ: MARKET vs LIMIT (сигнал A, Claude/19_price_move_protection_design.md, 2026-08-13) ───
+# Не "когда" исполнять (система для настоящих портфелей никогда не исполняет сама), а "по
+# какой цене" рекомендовать -- рынок или лимит. Два независимых режима по marketState
+# (yfinance): REGULAR (+ прошёл разгонный буфер) -- VWAP сессии; иначе -- статистический,
+# та же логика PriceMoveWatcher (движение за короткое окно, но БЕЗ уведомления человеку).
+EXECUTION_TIMING_VOLATILITY_MULTIPLIER = 2.0       # K -- рабочая гипотеза, не откалиброван бэктестом (в отличие от K_стоп/K_трейлинг)
+EXECUTION_TIMING_SESSION_WARMUP_MINUTES = 15       # минут с открытия сессии, прежде чем доверять VWAP
+EXECUTION_TIMING_LOOKBACK_MINUTES = 45             # окно для статистического режима -- то же, что PRICE_MOVE_WATCHER_WINDOW_MINUTES
+
 # ─── ЗАЩИТА КАПИТАЛА: СТОП-ЛОСС / ТРЕЙЛИНГ-СТОП (Claude/19_price_move_protection_design.md, 2026-08-11) ───
 # Сами K-множители (tactic_stop_loss_k / tactic_trailing_stop_k) живут в
 # strategies.rules_config (per-стратегия, как и остальные tactic_*, откалиброваны
