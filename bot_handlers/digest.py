@@ -66,7 +66,9 @@ async def process_view_digest(callback: types.CallbackQuery, callback_data: Menu
         keyboard = generate_digest_toc_keyboard(p_id, data["sections"])
     else:
         text = render_digest_section_text(data, section_key)
-        keyboard = generate_digest_section_keyboard(p_id, section_key, data["sections"][section_key]["items"])
+        keyboard = generate_digest_section_keyboard(
+            p_id, section_key, data["sections"][section_key]["items"], execution_mode=data.get("execution_mode", "ADVISORY")
+        )
 
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)

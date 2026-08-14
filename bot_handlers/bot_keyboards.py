@@ -455,9 +455,9 @@ def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
         return None
     return generate_tab_switch_keyboard(tabs, current_sub_view="overview")
 
-def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list):
+def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list, execution_mode: str = "ADVISORY"):
     """
-    Клавиатура детального раздела дайджеста -- одна кнопка-действие на пункт (см.
+    Клавиатура детального раздела дайджеста -- одна строка кнопок на пункт (см.
     Claude/BACKLOG.md п.35 для разбора, какое действие у какого раздела):
     "listing_id" в пункте -- открыть карточку тикера (бумага уже держится/есть приказ);
     "ticker_id" без "listing_id" -- кандидат на покупку, кнопка "В список наблюдения"
@@ -470,28 +470,53 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     алертов, см. BACKLOG.md "Сделано" п.17): экран успеха добавления в список
     наблюдения (bot_handlers/watchlist.py::execute_watchlist_fixation) по этой
     пометке вернёт "🔙 Назад к дайджесту", а не только "В главное меню".
+
+    "▶️ Исполнить" (2026-08-14, BACKLOG.md, тема «Исполнить из дайджеста») -- только
+    у РЕАЛЬНЫХ портфелей (execution_mode != 'CONFIRM', у бумажного уже есть отдельный
+    прямой Да/Нет через send_paper_*_recommendations, дублировать не нужно), только
+    для полного BUY/SELL (не TRIM_DOWN -- сознательно отложено на потом) -- в ОДНОМ
+    ряду с уже существующей кнопкой ("В список наблюдения" у BUY, ссылка на карточку
+    у SELL), не отдельной строкой.
     """
     builder = InlineKeyboardBuilder()
     for item in items:
+        row = []
         if item.get("listing_id"):
-            builder.row(types.InlineKeyboardButton(
+            row.append(types.InlineKeyboardButton(
                 text=f"🔗 {item['label']}",
                 callback_data=MenuAction(
                     action="view_ticker", portfolio_id=portfolio_id, listing_id=int(item["listing_id"]), sub_view="owner"
                 ).pack()
             ))
+            if execution_mode != "CONFIRM" and item.get("recommendation") == "SELL" and item.get("strategy_id"):
+                row.append(types.InlineKeyboardButton(
+                    text=f"▶️ Исполнить: {item['label']}",
+                    callback_data=MenuAction(
+                        action="digest_execute_sell", portfolio_id=portfolio_id,
+                        listing_id=int(item["listing_id"]), strategy_id=int(item["strategy_id"])
+                    ).pack()
+                ))
         elif item.get("ticker_id"):
-            builder.row(types.InlineKeyboardButton(
+            row.append(types.InlineKeyboardButton(
                 text=f"🔬 В список наблюдения: {item['label']}",
                 callback_data=MenuAction(
                     action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(item["ticker_id"]), sub_view="digest"
                 ).pack()
             ))
+            if execution_mode != "CONFIRM" and item.get("recommendation") == "BUY" and item.get("strategy_id"):
+                row.append(types.InlineKeyboardButton(
+                    text=f"▶️ Исполнить: {item['label']}",
+                    callback_data=MenuAction(
+                        action="digest_execute_buy", portfolio_id=portfolio_id,
+                        ticker_id=int(item["ticker_id"]), strategy_id=int(item["strategy_id"])
+                    ).pack()
+                ))
         else:
-            builder.row(types.InlineKeyboardButton(
+            row.append(types.InlineKeyboardButton(
                 text=f"🔧 {item['label']} (в разработке)" if item.get("label") else "🔧 В разработке",
                 callback_data=MenuAction(action="digest_stub").pack()
             ))
+        builder.row(*row)
 
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
     back_kb = generate_nav_back_keyboard(

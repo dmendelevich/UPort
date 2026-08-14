@@ -54,9 +54,10 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     уже существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
-        "SELECT name FROM public.portfolios WHERE id = %s;", (portfolio_id,)
+        "SELECT name, execution_mode FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
     portfolio_name = (portfolio_row or {}).get("name") or f"Портфель {portfolio_id}"
+    execution_mode = (portfolio_row or {}).get("execution_mode") or "ADVISORY"
 
     inspector = PortfolioInspector(db_instance, portfolio_id)
     balances = inspector.get_virtual_cash_balances()
@@ -91,6 +92,10 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     def order_note(ticker_id, direction_set):
         return " ⚠️ уже есть активный приказ" if ticker_id in direction_set else ""
 
+    # "strategy_id"/"recommendation" -- добавлены 2026-08-14 (BACKLOG.md, тема «Исполнить
+    # из дайджеста») специально для кнопки одного клика у РЕАЛЬНЫХ портфелей: та кнопка
+    # показывается только для recommendation == 'SELL' (полный выход) и нуждается в
+    # strategy_id, чтобы создать План выхода без дополнительных вопросов пользователю.
     exit_alerts = PositionExitEvaluator(db_instance).evaluate_portfolio_exits(portfolio_id)
     schedule_items = [
         {
@@ -98,6 +103,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
+            "strategy_id": a["strategy_id"],
+            "recommendation": a["recommendation"],
         }
         for a in exit_alerts if a["trigger_kind"] == "calendar"
     ]
@@ -107,6 +114,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
+            "strategy_id": a["strategy_id"],
+            "recommendation": a["recommendation"],
         }
         for a in exit_alerts if a["trigger_kind"] != "calendar"
     ]
@@ -142,6 +151,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     + order_note(r["ticker_id"], active_buy_ticker_ids),
             "label": r["symbol"],
             "ticker_id": r["ticker_id"],
+            "strategy_id": r["strategy_id"],
+            "recommendation": "BUY",
         }
         for r in cash_recs if r["status"] == "CANDIDATE_FOUND"
     ]
@@ -155,6 +166,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     + order_note(a["ticker_id"], active_sell_ticker_ids if a["recommendation"] == "TRIM_DOWN" else active_buy_ticker_ids),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
+            "strategy_id": a["strategy_id"],
+            "recommendation": a["recommendation"],  # "TRIM_DOWN" -- кнопка "Исполнить" его сознательно НЕ покрывает пока (см. BACKLOG.md)
         }
         for a in rebalance_alerts
     ]
@@ -249,6 +262,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     return {
         "portfolio_id": portfolio_id,
         "portfolio_name": portfolio_name,
+        "execution_mode": execution_mode,
         "today_str": datetime.date.today().isoformat(),
         "total_capital": total_capital,
         "real_cash": real_cash,

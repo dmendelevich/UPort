@@ -12,6 +12,8 @@ from bot_handlers.bot_screens import generate_confirm_screen
 from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
 from bot_handlers.bot_utils import execute_virtual_transfer
 from analytics.analytics_utils import TickerEvaluator
+from analytics.cash_deployment_advisor import CashDeploymentAdvisor
+from analytics.execution_price_advisor import suggest_execution_terms
 
 router = Router()
 
@@ -1402,5 +1404,205 @@ async def process_transfer_execute_simple(callback: types.CallbackQuery, callbac
 
     try:
         await callback.message.edit_text(f"✅ Перенос выполнен: {qty:.0f} шт.", reply_markup=back_kb)
+    except TelegramBadRequest:
+        pass
+
+
+# =========================================================================
+# ▶️ "ИСПОЛНИТЬ ИЗ ДАЙДЖЕСТА" -- один клик у РЕАЛЬНОГО портфеля (2026-08-14,
+# см. Claude/BACKLOG.md). Advisory-only не нарушается: система не торгует сама --
+# вместо исполнения даёт конкретную инструкцию (сигнал A, execution_price_advisor.
+# suggest_execution_terms -- market или limit + цена) и СРАЗУ создаёт "голый" План
+# (тот же PENDING order_pipelines, что и у ручных "Плана входа"/"Плана выхода" выше,
+# просто без диалога стратегия->количество->подтверждение -- всё уже известно из
+# рекомендации дайджеста). Только ПОЛНЫЙ BUY/SELL -- TRIM_DOWN сознательно не входит,
+# следующий шаг темы. У бумажного портфеля этих кнопок не бывает (см.
+# bot_keyboards.py::generate_digest_section_keyboard) -- там уже есть прямое
+# Да/Нет-исполнение через send_paper_*_recommendations, дублировать не нужно.
+# =========================================================================
+
+@router.callback_query(MenuAction.filter(F.action == "digest_execute_sell"))
+async def process_digest_execute_sell(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Перепроверяет держащееся количество и пересчитывает цену заново на каждый клик,
+    не по цифрам утреннего дайджеста.
+    """
+    p_id = callback_data.portfolio_id
+    l_id = callback_data.listing_id
+    s_id = callback_data.strategy_id
+
+    await callback.answer("Считаю...")
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+
+    holding_row = await asyncio.to_thread(
+        db_sys.execute_row,
+        """
+            SELECT sa.allocated_quantity, t.id AS ticker_id, t.symbol
+            FROM public.strategy_assets sa
+            JOIN public.assets a ON a.id = sa.asset_id
+            JOIN public.listings l ON l.id = a.listing_id
+            JOIN public.tickers t ON t.id = l.ticker_id
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.strategy_id = %s AND sa.allocated_quantity > 0;
+        """,
+        (p_id, l_id, s_id)
+    )
+    if not holding_row:
+        try:
+            await callback.message.edit_text("⚠️ Условия изменились -- позиция уже не держится в этой стратегии.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    qty = float(holding_row["allocated_quantity"])
+    t_id = int(holding_row["ticker_id"])
+    symbol = holding_row["symbol"]
+
+    terms = await asyncio.to_thread(suggest_execution_terms, db_sys, l_id, "SELL")
+
+    result = await asyncio.to_thread(
+        db_sys.execute_query,
+        """
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
+            VALUES
+                (%s, %s, %s, %s, 1, 'PENDING', %s, %s, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id;
+        """,
+        (p_id, l_id, t_id, s_id, -qty, terms.get("price") or 0)
+    )
+    if not result:
+        try:
+            await callback.message.edit_text(
+                "❌ Не удалось создать план — возможно, по этой бумаге в этой стратегии уже есть активный план "
+                "(входа или выхода). Сначала заверши или отмени его.",
+                reply_markup=back_kb
+            )
+        except TelegramBadRequest:
+            pass
+        return
+    pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    if terms["mode"] == "limit" and terms.get("price"):
+        note = "рынок только что заметно отклонился" if terms.get("reference") == "vwap" else "цена только что резко сдвинулась"
+        instruction = f"Выставь ЛИМИТНУЮ заявку: продай {qty:.0f} шт {symbol} по ${terms['price']:,.2f} ({note} -- не продавай в случайный провал по рынку)."
+    else:
+        instruction = f"Продай {qty:.0f} шт {symbol} ПО РЫНКУ."
+
+    logging.info(f"✅ [DigestExecute]: SELL-план #{pipe_id} создан из дайджеста ({symbol}, {qty:g} шт, портфель {p_id}), mode={terms['mode']}.")
+
+    try:
+        await callback.message.edit_text(
+            f"✅ **План выхода создан** (#{pipe_id})\n\n{instruction}\n\n"
+            f"После реальной сделки в терминале брокера — привяжи ордер через «🔗 Привязать ордер к плану».",
+            parse_mode="Markdown",
+            reply_markup=back_kb
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "digest_execute_buy"))
+async def process_digest_execute_buy(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Перепроверяет кандидата заново (verify_buy_candidate -- тот же гейт, что и у
+    обычной кнопки "Купить"), легализует листинг при необходимости (брокер САМОГО
+    портфеля, не жёстко FB), считает количество от размера слота (compute_slot_size --
+    та же формула, что и у форс-покупки).
+    """
+    p_id = callback_data.portfolio_id
+    t_id = callback_data.ticker_id
+    s_id = callback_data.strategy_id
+
+    await callback.answer("Считаю...")
+    stub_kb = generate_nav_back_keyboard(menu_only=True)
+
+    advisor = CashDeploymentAdvisor(db_sys)
+    match = await asyncio.to_thread(advisor.verify_buy_candidate, p_id, s_id, t_id)
+    if not match:
+        try:
+            await callback.message.edit_text("⚠️ Условия изменились — кандидат больше не проходит экран стратегии.", reply_markup=stub_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    portfolio_row = await asyncio.to_thread(db_sys.execute_row, "SELECT broker_id FROM public.portfolios WHERE id = %s;", (p_id,))
+    broker_id = int((portfolio_row or {}).get("broker_id") or 1)
+
+    listing_row = await asyncio.to_thread(
+        db_sys.execute_row, "SELECT id, last_price FROM public.listings WHERE ticker_id = %s AND broker_id = %s;", (t_id, broker_id)
+    )
+    if not listing_row:
+        try:
+            new_l_id = await asyncio.to_thread(db_sys.ensure_listing, t_id, broker_id)
+        except Exception as e:
+            try:
+                await callback.message.edit_text(f"⚠️ Не удалось легализовать листинг: {e}", reply_markup=stub_kb)
+            except TelegramBadRequest:
+                pass
+            return
+        listing_row = await asyncio.to_thread(db_sys.execute_row, "SELECT id, last_price FROM public.listings WHERE id = %s;", (new_l_id,))
+
+    l_id = int(listing_row["id"])
+    price = float(listing_row.get("last_price") or 0.0)
+    back_kb = _back_to_plan_keyboard(p_id, l_id)
+    if price <= 0:
+        try:
+            await callback.message.edit_text("⚠️ Не удалось получить цену, попробуй позже.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    slot_usd = await asyncio.to_thread(advisor.compute_slot_size, p_id, s_id)
+    if slot_usd <= 0:
+        try:
+            await callback.message.edit_text("⚠️ Стратегия уже на цели, свободного места под новую позицию нет.", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+    qty = max(1, round(slot_usd / price))
+
+    terms = await asyncio.to_thread(suggest_execution_terms, db_sys, l_id, "BUY")
+
+    result = await asyncio.to_thread(
+        db_sys.execute_query,
+        """
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
+            VALUES
+                (%s, %s, %s, %s, 1, 'PENDING', %s, %s, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id;
+        """,
+        (p_id, l_id, t_id, s_id, qty, terms.get("price") or 0)
+    )
+    if not result:
+        try:
+            await callback.message.edit_text(
+                "❌ Не удалось создать план — возможно, по этой бумаге в этой стратегии уже есть активный план. "
+                "Сначала заверши или отмени его.",
+                reply_markup=back_kb
+            )
+        except TelegramBadRequest:
+            pass
+        return
+    pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    symbol = match["symbol"]
+    if terms["mode"] == "limit" and terms.get("price"):
+        note = "рынок только что заметно отклонился" if terms.get("reference") == "vwap" else "цена только что резко сдвинулась"
+        instruction = f"Выставь ЛИМИТНУЮ заявку: купи {qty:.0f} шт {symbol} по ${terms['price']:,.2f} ({note} -- не гонись за случайным скачком)."
+    else:
+        instruction = f"Купи {qty:.0f} шт {symbol} ПО РЫНКУ (~${qty * price:,.2f})."
+
+    logging.info(f"✅ [DigestExecute]: BUY-план #{pipe_id} создан из дайджеста ({symbol}, {qty} шт, портфель {p_id}), mode={terms['mode']}.")
+
+    try:
+        await callback.message.edit_text(
+            f"✅ **План входа создан** (#{pipe_id})\n\n{instruction}\n\n"
+            f"После реальной сделки в терминале брокера — привяжи ордер через «🔗 Привязать ордер к плану».",
+            parse_mode="Markdown",
+            reply_markup=back_kb
+        )
     except TelegramBadRequest:
         pass
