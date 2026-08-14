@@ -63,11 +63,15 @@ def check_capital_protection(db_instance, broker_id: int = 1):
     """, (broker_id,))
     positions = positions if isinstance(positions, list) else ([positions] if positions else [])
 
+    active_pairs = set()
     for pos in positions:
         try:
             _check_one_position(db_instance, pos)
+            active_pairs.add((int(pos["portfolio_id"]), int(pos["listing_id"])))
         except Exception as err:
             logging.error(f"⚠️ [CapitalProtection]: Сбой проверки asset_id={pos.get('asset_id')}: {err}")
+
+    _resolve_orphaned_alerts(db_instance, active_pairs, broker_id)
 
 
 def _check_one_position(db_instance, pos: dict):
@@ -189,3 +193,35 @@ def _resolve_alerts(db_instance, listing_id: int, portfolio_id: int):
         WHERE listing_id = %s AND portfolio_id = %s AND source_type = 'uport'
           AND condition_type IN ('SL', 'TS') AND is_active = true;
     """, (listing_id, portfolio_id))
+
+
+def _resolve_orphaned_alerts(db_instance, active_pairs: set, broker_id: int):
+    """
+    Алерт капиталозащиты живёт, пока позиция держится ВНУТРИ Р/Т/К (`check_capital_protection`
+    выше отбирает позиции строго по этому условию каждый цикл). Если позиция целиком продана
+    ИЛИ переведена вне Р/Т/К (например, брокерский синк увёл остаток в "Неопределённая" без
+    совпавшего плана, см. sync_strategy_asset_fb.py) -- она перестаёт попадать в основную
+    выборку, `_resolve_alerts` для неё больше никогда не вызывается, и алерт молча зависает
+    активным навсегда с устаревшим текстом (найдено 2026-08-14, живой случай PG/П10 -- алерт
+    продолжал называть "Револьверную", хотя карточка тикера уже честно показывала
+    "Неопределённая"). Гасит именно потерю защиты, не мусор -- тот же эффект и для полностью
+    проданной позиции, и для переноса в любую непокрываемую стратегию.
+    """
+    active_alerts = db_instance.execute_query("""
+        SELECT al.id, al.portfolio_id, al.listing_id
+        FROM public.alerts al
+        JOIN public.listings l ON l.id = al.listing_id
+        WHERE al.source_type = 'uport' AND al.condition_type IN ('SL', 'TS')
+          AND al.is_active = true AND l.broker_id = %s;
+    """, (broker_id,))
+    active_alerts = active_alerts if isinstance(active_alerts, list) else ([active_alerts] if active_alerts else [])
+
+    for al in active_alerts:
+        key = (int(al["portfolio_id"]), int(al["listing_id"]))
+        if key in active_pairs:
+            continue
+        db_instance.execute_query("""
+            UPDATE public.alerts SET is_active = false, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0)
+            WHERE id = %s;
+        """, (al["id"],))
+        logging.info(f"🧹 [CapitalProtection]: Алерт #{al['id']} погашен -- позиция вышла из-под защиты (продана/переведена вне Р/Т/К).")
