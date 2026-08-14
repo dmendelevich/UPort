@@ -32,6 +32,13 @@ SECTION_META = {
     "limits": {"emoji": "⚠️", "label": "Лимиты"},
 }
 
+# Пометки действия -- на уровне модуля (не только для текста строки, но и для кнопки
+# навигации в generate_digest_section_keyboard, bot_keyboards.py, 2026-08-14): раньше
+# кнопка с listing_id была одна безликая "🔗" на все типы строк, не отличала слом
+# тренда от протухания приказа. Раздел группирует по ПРИЧИНЕ (рынок/капитал сигналят),
+# не по глаголу, поэтому каждый пункт несёт свою пометку в тексте.
+ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM_DOWN": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
+
 
 def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     """
@@ -54,10 +61,11 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     уже существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
-        "SELECT name, execution_mode FROM public.portfolios WHERE id = %s;", (portfolio_id,)
+        "SELECT name, execution_mode, broker_id FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
     portfolio_name = (portfolio_row or {}).get("name") or f"Портфель {portfolio_id}"
     execution_mode = (portfolio_row or {}).get("execution_mode") or "ADVISORY"
+    portfolio_broker_id = (portfolio_row or {}).get("broker_id")
 
     inspector = PortfolioInspector(db_instance, portfolio_id)
     balances = inspector.get_virtual_cash_balances()
@@ -68,11 +76,6 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         float(v.get("virtual_free_cash_usd") or 0.0)
         for v in balances.get("strategies", {}).values()
     )
-
-    # Пометки действия внутри укрупнённого раздела "signals" -- раздел группирует по
-    # ПРИЧИНЕ (рынок/капитал сигналят), не по глаголу, поэтому каждый пункт несёт свою
-    # пометку в тексте, чтобы не потерять, что именно предлагается сделать.
-    ACTION_BADGES = {"SELL": "📤", "HOLD": "📧", "BUY": "📥", "LADDER": "🪜", "STALE": "🕰", "TRIM_DOWN": "✂️", "TOP_UP": "📥", "REVIEW": "📅"}
 
     # Пометка "уже есть активный приказ" (закрывает вторую половину BACKLOG.md п.5,
     # 2026-08-03) -- по факту существования приказа в нужную сторону на этом тикере, не
@@ -144,6 +147,21 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "label": v["sector"],
         })
 
+    # Кандидат, уже добавленный в СН (execute_watchlist_fixation легализует листинг
+    # ДО записи в watchlist -- см. watchlist.py) -- кнопка должна вести на карточку,
+    # не предлагать добавить второй раз (найдено 2026-08-14, живой случай VTI:
+    # нажал "В СН", закрыл-открыл дайджест заново -- та же кнопка "добавить" осталась).
+    watchlisted_listing_by_ticker = {}
+    if portfolio_broker_id:
+        watchlisted_rows = db_instance.execute_query("""
+            SELECT l.ticker_id, l.id AS listing_id
+            FROM public.watchlist w
+            JOIN public.listings l ON l.id = w.listing_id
+            WHERE w.portfolio_id = %s AND l.broker_id = %s;
+        """, (portfolio_id, portfolio_broker_id))
+        watchlisted_rows = watchlisted_rows if isinstance(watchlisted_rows, list) else ([watchlisted_rows] if watchlisted_rows else [])
+        watchlisted_listing_by_ticker = {int(r["ticker_id"]): int(r["listing_id"]) for r in watchlisted_rows if r}
+
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
     signal_items += [
         {
@@ -151,6 +169,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     + order_note(r["ticker_id"], active_buy_ticker_ids),
             "label": r["symbol"],
             "ticker_id": r["ticker_id"],
+            "listing_id": watchlisted_listing_by_ticker.get(int(r["ticker_id"])),
             "strategy_id": r["strategy_id"],
             "recommendation": "BUY",
         }
@@ -198,6 +217,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             ),
             "label": step["symbol"],
             "listing_id": step["listing_id"],
+            "recommendation": "LADDER",
         })
 
     # Протухание приказов/алертов -- единый оценщик (см. Claude/BACKLOG.md, п.5,
@@ -216,6 +236,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             ),
             "label": item["symbol"],
             "listing_id": item["listing_id"],
+            "recommendation": "STALE",
         })
     for item in staleness["time"]:
         schedule_items.append({
@@ -225,6 +246,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             ),
             "label": item["symbol"],
             "listing_id": item["listing_id"],
+            "recommendation": "STALE",
         })
 
     # Ежемесячный пересмотр фиксированных слотов Р/Т (settings.MONTHLY_SLOT_REVIEW_DAY,

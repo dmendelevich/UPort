@@ -4,6 +4,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup
 from database import db_bot
 from bot_handlers.common import MenuAction
+from analytics.daily_digest import ACTION_BADGES
 
 # ⚙️ СИСТЕМНЫЕ КОНСТАНТЫ И МИКРО-СТАНКИ ВЕРСТКИ LEGO-СТРОК UPORT
 EN_SPACE = "\u2002"       # Фиксированный пробел
@@ -475,47 +476,68 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     у РЕАЛЬНЫХ портфелей (execution_mode != 'CONFIRM', у бумажного уже есть отдельный
     прямой Да/Нет через send_paper_*_recommendations, дублировать не нужно), только
     для полного BUY/SELL (не TRIM_DOWN -- сознательно отложено на потом) -- в ОДНОМ
-    ряду с уже существующей кнопкой ("В список наблюдения" у BUY, ссылка на карточку
-    у SELL), не отдельной строкой.
+    ряду с навигационной кнопкой, не отдельной строкой. Решается ПО РЕКОМЕНДАЦИИ и
+    strategy_id, не по тому, какая ветка навигации сработала -- см. ниже, почему это
+    важно разводить.
+
+    Навигационная кнопка (2026-08-14, доработано): раньше была одна безликая "🔗" на
+    ЛЮБОЙ пункт с listing_id -- не отличала слом тренда от протухания приказа.
+    Теперь берёт тот же бейдж, что уже стоит в тексте строки (ACTION_BADGES,
+    analytics/daily_digest.py) -- 📤 продать, 🕰 протухание, 🪜 лесенка и т.д. Пункт с
+    ticker_id (кандидат на покупку) без listing_id -- кнопка-ДЕЙСТВИЕ "🔬 В список
+    наблюдения" (реально пишет в БД, поэтому текст явный, не бейдж). Если кандидат уже
+    в СН этого портфеля -- assemble_portfolio_digest_data уже подставил его listing_id,
+    и пункт корректно попадает в ветку навигации выше, а не предлагает добавить второй
+    раз. Кнопка "Исполнить" при этом продолжает работать через ticker_id независимо от
+    того, какая навигационная ветка сработала -- иначе повторное открытие СН тихо
+    роняло бы кнопку "Исполнить" у BUY-кандидатов.
     """
     builder = InlineKeyboardBuilder()
     for item in items:
         row = []
-        if item.get("listing_id"):
+        listing_id = item.get("listing_id")
+        ticker_id = item.get("ticker_id")
+        recommendation = item.get("recommendation")
+        strategy_id = item.get("strategy_id")
+
+        if listing_id:
+            badge = ACTION_BADGES.get(recommendation, "🔗")
             row.append(types.InlineKeyboardButton(
-                text=f"🔗 {item['label']}",
+                text=f"{badge} {item['label']}",
                 callback_data=MenuAction(
-                    action="view_ticker", portfolio_id=portfolio_id, listing_id=int(item["listing_id"]), sub_view="owner"
+                    action="view_ticker", portfolio_id=portfolio_id, listing_id=int(listing_id), sub_view="owner"
                 ).pack()
             ))
-            if execution_mode != "CONFIRM" and item.get("recommendation") == "SELL" and item.get("strategy_id"):
-                row.append(types.InlineKeyboardButton(
-                    text=f"▶️ Исполнить: {item['label']}",
-                    callback_data=MenuAction(
-                        action="digest_execute_sell", portfolio_id=portfolio_id,
-                        listing_id=int(item["listing_id"]), strategy_id=int(item["strategy_id"])
-                    ).pack()
-                ))
-        elif item.get("ticker_id"):
+        elif ticker_id:
             row.append(types.InlineKeyboardButton(
                 text=f"🔬 В список наблюдения: {item['label']}",
                 callback_data=MenuAction(
-                    action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(item["ticker_id"]), sub_view="digest"
+                    action="confirm_wl_add", portfolio_id=portfolio_id, ticker_id=int(ticker_id), sub_view="digest"
                 ).pack()
             ))
-            if execution_mode != "CONFIRM" and item.get("recommendation") == "BUY" and item.get("strategy_id"):
-                row.append(types.InlineKeyboardButton(
-                    text=f"▶️ Исполнить: {item['label']}",
-                    callback_data=MenuAction(
-                        action="digest_execute_buy", portfolio_id=portfolio_id,
-                        ticker_id=int(item["ticker_id"]), strategy_id=int(item["strategy_id"])
-                    ).pack()
-                ))
         else:
             row.append(types.InlineKeyboardButton(
                 text=f"🔧 {item['label']} (в разработке)" if item.get("label") else "🔧 В разработке",
                 callback_data=MenuAction(action="digest_stub").pack()
             ))
+
+        if execution_mode != "CONFIRM" and strategy_id:
+            if recommendation == "SELL" and listing_id:
+                row.append(types.InlineKeyboardButton(
+                    text=f"▶️ Исполнить: {item['label']}",
+                    callback_data=MenuAction(
+                        action="digest_execute_sell", portfolio_id=portfolio_id,
+                        listing_id=int(listing_id), strategy_id=int(strategy_id)
+                    ).pack()
+                ))
+            elif recommendation == "BUY" and ticker_id:
+                row.append(types.InlineKeyboardButton(
+                    text=f"▶️ Исполнить: {item['label']}",
+                    callback_data=MenuAction(
+                        action="digest_execute_buy", portfolio_id=portfolio_id,
+                        ticker_id=int(ticker_id), strategy_id=int(strategy_id)
+                    ).pack()
+                ))
         builder.row(*row)
 
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
