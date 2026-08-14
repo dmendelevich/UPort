@@ -832,17 +832,28 @@ def format_capital_summary_text(summary: dict, title: str) -> str:
     (реальный капитал) и «Тестовым капиталом» (портфели execution_mode='CONFIRM',
     см. Claude/14_paper_portfolio.md), 2026-08-03. Разница только в заголовке и
     в том, какие портфели агрегированы в summary -- сам блок один.
+
+    Дополнено 2026-08-14 (BACKLOG.md №108) -- накопительные счета раньше молча
+    терялись из агрегата (см. database.py::get_family_summary), теперь у сводки
+    появилась строка "Накопительные счета" (только если сумма ненулевая -- у
+    «Тестового капитала» она структурно всегда 0, строка не показывается) и общий
+    ИТОГО, а не два отдельных числа, которые раньше нужно было сложить самому.
     """
     sign = summary.get("currency_sign", "$")
-    return (
-        f"{title}\n"
-        f"Расчет выполнен в вашей валюте: **{summary['base_currency']}**\n"
-        f"───────────────────\n"
-        f"📈 **Всего в акциях:** {sign}{summary['total_assets']:,.2f}\n"
-        f"💵 **Доступный кэш:**  {sign}{summary['total_cash']:,.2f}\n"
-        f"───────────────────\n"
-        f"Выберите срез портфеля для детального анализа:"
-    )
+    lines = [
+        title,
+        f"Расчет выполнен в вашей валюте: **{summary['base_currency']}**",
+        "───────────────────",
+        f"📈 **Рыночная стоимость бумаг:** {sign}{summary['total_assets']:,.2f}",
+        f"💵 **Кэш на торговых счетах:** {sign}{summary['total_trade_cash']:,.2f}",
+    ]
+    if summary.get("total_deposit_cash", 0) != 0:
+        lines.append(f"💰 **Накопительные счета:** {sign}{summary['total_deposit_cash']:,.2f}")
+    lines.append("───────────────────")
+    lines.append(f"🎁 **ИТОГО:** {sign}{summary['total_capital']:,.2f}")
+    lines.append("───────────────────")
+    lines.append("Выберите срез портфеля для детального анализа:")
+    return "\n".join(lines)
 
 
 def render_digest_section_text(data: dict, section_key: str) -> str:

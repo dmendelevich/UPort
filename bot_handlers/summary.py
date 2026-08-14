@@ -11,6 +11,7 @@ from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_main_menu_keyboard
 from bot_handlers.bot_screens import format_capital_summary_text
+from analytics.analytics_utils import convert_currency_amount
 
 # Инициализируем изолированный роутер модуля
 router = Router()
@@ -93,16 +94,15 @@ async def process_summary_callback(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
 
-    # Группируем портфели по (владелец, брокер) -- одна строка на пару, рядом с кнопками
-    # портфелей группы отдельная кнопка "Счета" (накопительный счёт принадлежит владельцу
-    # и брокеру, а не одному портфелю -- см. обсуждение 2026-07-27). Если у владельца
-    # несколько портфелей у одного брокера, в строке будет несколько кнопок портфелей + одна "Счета".
+    # Группируем портфели по ВЛАДЕЛЬЦУ (не владелец+брокер, см. BACKLOG.md №108, 2026-08-14
+    # -- у владельца может быть несколько брокеров сразу, экран "Счета" теперь показывает
+    # ВСЕ его брокеры одним списком, отдельными секциями -- одна кнопка "Счета" на
+    # владельца, не по одной на каждую пару владелец+брокер).
     groups = {}
     for p in summary["portfolios"]:
-        key = (p["owner_id"], p["broker_id"])
-        groups.setdefault(key, []).append(p)
+        groups.setdefault(p["owner_id"], []).append(p)
 
-    for (owner_id, broker_id), group_portfolios in groups.items():
+    for owner_id, group_portfolios in groups.items():
         row_buttons = []
         for p in group_portfolios:
             icon = "👤" if p["is_owner"] else "💼"
@@ -112,7 +112,7 @@ async def process_summary_callback(callback: types.CallbackQuery):
             ))
         row_buttons.append(types.InlineKeyboardButton(
             text="🏦 Счета",
-            callback_data=MenuAction(action="view_accounts", user_id=owner_id, broker_id=broker_id).pack()
+            callback_data=MenuAction(action="view_accounts", user_id=owner_id).pack()
         ))
         builder.row(*row_buttons)
 
@@ -173,71 +173,178 @@ async def process_test_summary_callback(callback: types.CallbackQuery):
 
 @router.callback_query(MenuAction.filter(F.action == "view_accounts"))
 async def process_view_accounts(callback: types.CallbackQuery, callback_data: MenuAction):
-    """Экран "Счета": полная раскладка по счетам ОДНОГО владельца у ОДНОГО брокера --
-    торговые счета всех его портфелей у этого брокера + накопительный счёт (см. обсуждение
-    2026-07-27 -- накопительный счёт принадлежит владельцу+брокеру, а не одному портфелю,
-    поэтому вынесен из карточки портфеля сюда)."""
-    owner_id = callback_data.user_id
-    broker_id = callback_data.broker_id
+    """
+    Экран "Счета": полная раскладка по счетам ОДНОГО владельца -- ВСЕ его брокеры,
+    каждый отдельной секцией (BACKLOG.md №108, 2026-08-14 -- у владельца может быть
+    несколько брокеров одновременно, раньше экран показывал ровно одного, выбранного
+    кнопкой). Внутри каждой секции -- торговые счета всех его портфелей у этого
+    брокера (бумаги + кэш) + накопительный счёт (принадлежит владельцу+брокеру, не
+    одному портфелю -- см. обсуждение 2026-07-27).
 
+    Развод "нативно / в вашей валюте": если внутри секции брокера ровно ОДНА валюта
+    с ненулевым остатком (кэш+бумаги вместе) -- показываем нативный итог по брокеру,
+    плюс отдельной строкой конвертированный, если он отличается от валюты смотрящего.
+    Если валют несколько (живой пример -- накопительный П10, USD+RUR+KZT одновременно)
+    -- нативного единого итога не существует физически, показываем только
+    конвертированный. Курс -- везде в валюту СМОТРЯЩЕГО (callback.from_user.id), не
+    владельца счетов -- та же схема, что у карточки портфеля/тикера/стратегии.
+    """
+    owner_id = callback_data.user_id
     await callback.answer("Собираю счета...")
 
-    header_row = await asyncio.to_thread(
-        db_bot.execute_row,
-        """
-            SELECT u.name AS owner_name, b.name AS broker_name
-            FROM public.users u, public.brokers b
-            WHERE u.id = %s AND b.id = %s;
-        """,
-        (owner_id, broker_id)
+    viewer_row = await asyncio.to_thread(
+        db_bot.execute_row, "SELECT base_currency FROM public.users WHERE telegram_id = %s;", (callback.from_user.id,)
     )
-    owner_name = header_row.get("owner_name", "Unknown") if header_row else "Unknown"
-    broker_name = header_row.get("broker_name", "Unknown") if header_row else "Unknown"
+    viewer_currency = (viewer_row or {}).get("base_currency") or "USD"
+
+    currency_rows = await asyncio.to_thread(db_bot.execute_query, "SELECT id, sign FROM public.currencies;")
+    currency_rows = currency_rows if isinstance(currency_rows, list) else ([currency_rows] if currency_rows else [])
+    signs = {r["id"]: (r.get("sign") or r["id"]) for r in currency_rows}
+    viewer_sign = signs.get(viewer_currency, viewer_currency)
+
+    owner_row = await asyncio.to_thread(db_bot.execute_row, "SELECT name FROM public.users WHERE id = %s;", (owner_id,))
+    owner_name = (owner_row or {}).get("name", "Unknown")
 
     accounts_rows = await asyncio.to_thread(
         db_bot.execute_query,
         """
-            SELECT a.account_type, a.portfolio_id, p.name AS portfolio_name,
-                   a.currency_id, cur.sign, a.cash_available, a.cash_reserved
-            FROM public.accounts a
-            JOIN public.currencies cur ON a.currency_id = cur.id
-            LEFT JOIN public.portfolios p ON a.portfolio_id = p.id
-            WHERE a.user_id = %s AND a.broker_id = %s
-            ORDER BY a.account_type DESC, a.portfolio_id, a.currency_id;
+            SELECT account_type, portfolio_id, portfolio_name, broker_id, broker_name,
+                   broker_flag_emoji, currency_id, cash_available, cash_reserved
+            FROM public.v_accounts_full
+            WHERE user_id = %s AND broker_id IS NOT NULL
+            ORDER BY broker_id, account_type DESC, portfolio_id, currency_id;
         """,
-        (owner_id, broker_id)
+        (owner_id,)
     )
     accounts_rows = accounts_rows if isinstance(accounts_rows, list) else ([accounts_rows] if accounts_rows else [])
 
-    text = f"🏦 **Счета — {owner_name} ({broker_name})**\n───────\n"
+    text = f"🏦 **Счета — {owner_name}**\n"
 
-    trade_by_portfolio = {}
-    deposit_lines = []
+    if not accounts_rows:
+        text += "───────\nСчетов не найдено.\n"
+        reply_markup = generate_nav_back_keyboard(
+            one_step_back_text="🔙 К общей сводке",
+            full_back_callback=MenuAction(action="show_summary").pack()
+        )
+        try:
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        except TelegramBadRequest:
+            pass
+        return
+
+    # Группируем по брокеру, сохраняя порядок появления (ORDER BY broker_id выше).
+    brokers_order = []
+    by_broker = {}
     for a in accounts_rows:
-        available = float(a['cash_available'])
-        reserved = float(a['cash_reserved'])
-        if available == 0 and reserved == 0:
-            continue
-        free = available - reserved
-        sign = a['sign'] or a['currency_id'] or "$"
-        line = f"• {a['currency_id']}: **{sign}{available:,.2f}** (🕊️ {sign}{free:,.2f} / 🔒 {sign}{reserved:,.2f})"
-        if a['account_type'] == 'trade':
-            p_name = a.get('portfolio_name') or f"Портфель #{a['portfolio_id']}"
-            trade_by_portfolio.setdefault(p_name, []).append(line)
+        b_id = a["broker_id"]
+        if b_id not in by_broker:
+            by_broker[b_id] = {"name": a["broker_name"], "flag": a["broker_flag_emoji"] or "🏳️", "rows": []}
+            brokers_order.append(b_id)
+        by_broker[b_id]["rows"].append(a)
+
+    grand_total_viewer = 0.0
+
+    for b_id in brokers_order:
+        broker = by_broker[b_id]
+        text += f"\n{broker['flag']} **{broker['name']}**\n"
+
+        trade_rows = [r for r in broker["rows"] if r["account_type"] == "trade"]
+        deposit_rows = [r for r in broker["rows"] if r["account_type"] == "deposit"]
+
+        # Портфели этой секции, сохраняя порядок появления.
+        portfolios_order = []
+        trade_by_portfolio = {}
+        for r in trade_rows:
+            p_id = r["portfolio_id"]
+            if p_id not in trade_by_portfolio:
+                trade_by_portfolio[p_id] = {"name": r["portfolio_name"] or f"Портфель #{p_id}", "rows": []}
+                portfolios_order.append(p_id)
+            trade_by_portfolio[p_id]["rows"].append(r)
+
+        # Факты секции БЕЗ конвертации -- сумма по каждой встреченной валюте отдельно
+        # (кэш торговых счетов + накопительный + рыночная стоимость бумаг вместе).
+        section_amounts_by_currency = {}
+
+        def add_amount(cur, amount):
+            if amount == 0:
+                return
+            section_amounts_by_currency[cur] = section_amounts_by_currency.get(cur, 0.0) + amount
+
+        # Рыночная стоимость бумаг каждого портфеля -- по нативной валюте листинга
+        # (v_assets_full, Слой 1, см. Claude/02_universal_views.md), без конвертации.
+        portfolio_stock_by_currency = {}
+        for p_id in portfolios_order:
+            asset_rows = await asyncio.to_thread(
+                db_bot.execute_query,
+                "SELECT quantity, listing_last_price, listing_currency_id FROM public.v_assets_full WHERE portfolio_id = %s;",
+                (p_id,)
+            )
+            asset_rows = asset_rows if isinstance(asset_rows, list) else ([asset_rows] if asset_rows else [])
+            stock_by_currency = {}
+            for ar in asset_rows:
+                cur = ar.get("listing_currency_id") or "USD"
+                val = float(ar.get("quantity") or 0) * float(ar.get("listing_last_price") or 0)
+                stock_by_currency[cur] = stock_by_currency.get(cur, 0.0) + val
+            portfolio_stock_by_currency[p_id] = stock_by_currency
+            for cur, val in stock_by_currency.items():
+                add_amount(cur, val)
+
+        for r in trade_rows:
+            add_amount(r["currency_id"], float(r["cash_available"] or 0))
+        for r in deposit_rows:
+            add_amount(r["currency_id"], float(r["cash_available"] or 0))
+
+        # --- Торговые счета ---
+        if trade_by_portfolio:
+            text += "💵 **Торговые счета:**\n"
+            for p_id in portfolios_order:
+                p_data = trade_by_portfolio[p_id]
+                text += f"📦 {p_data['name']}:\n"
+                for cur, val in portfolio_stock_by_currency.get(p_id, {}).items():
+                    if val == 0:
+                        continue
+                    text += f"• Рыночная стоимость бумаг: {signs.get(cur, cur)}{val:,.2f}\n"
+                for r in p_data["rows"]:
+                    available = float(r["cash_available"] or 0)
+                    reserved = float(r["cash_reserved"] or 0)
+                    if available == 0 and reserved == 0:
+                        continue
+                    free = available - reserved
+                    sign = signs.get(r["currency_id"], r["currency_id"])
+                    text += f"• Кэш: {r['currency_id']} {sign}{available:,.2f} (🕊️ {sign}{free:,.2f} / 🔒 {sign}{reserved:,.2f})\n"
+            text += "\n"
+
+        # --- Накопительный счёт (без 🕊️/🔒 -- лимитных приказов там не бывает) ---
+        if deposit_rows:
+            text += "💰 **Накопительный счёт:**\n"
+            for r in deposit_rows:
+                available = float(r["cash_available"] or 0)
+                if available == 0:
+                    continue
+                sign = signs.get(r["currency_id"], r["currency_id"])
+                text += f"• {r['currency_id']}: {sign}{available:,.2f}\n"
+            text += "\n"
+
+        # --- Итого по брокеру ---
+        distinct_currencies = list(section_amounts_by_currency.keys())
+        if len(distinct_currencies) == 1:
+            native_cur = distinct_currencies[0]
+            native_total = section_amounts_by_currency[native_cur]
+            text += f"Итого по брокеру: {signs.get(native_cur, native_cur)}{native_total:,.2f}\n"
+            converted = await asyncio.to_thread(convert_currency_amount, db_bot, native_total, native_cur, viewer_currency)
+            if native_cur != viewer_currency:
+                text += f"В вашей валюте: {viewer_sign}{converted:,.2f}\n"
+            grand_total_viewer += converted
         else:
-            deposit_lines.append(line)
+            converted_total = 0.0
+            for cur, amount in section_amounts_by_currency.items():
+                converted_total += await asyncio.to_thread(convert_currency_amount, db_bot, amount, cur, viewer_currency)
+            text += f"Итого по брокеру (в вашей валюте): {viewer_sign}{converted_total:,.2f}\n"
+            grand_total_viewer += converted_total
 
-    if trade_by_portfolio:
-        text += "💵 **Торговые счета:**\n"
-        for p_name, lines in trade_by_portfolio.items():
-            text += f"📦 {p_name}:\n" + "\n".join(lines) + "\n"
-        text += "\n"
+        text += "───────\n"
 
-    if deposit_lines:
-        text += "💰 **Накопительный счёт:**\n" + "\n".join(deposit_lines) + "\n"
-
-    if not trade_by_portfolio and not deposit_lines:
-        text += "Счетов не найдено.\n"
+    text += f"\n🎁 **ИТОГО:** {viewer_sign}{grand_total_viewer:,.2f}\n"
 
     reply_markup = generate_nav_back_keyboard(
         one_step_back_text="🔙 К общей сводке",

@@ -112,12 +112,12 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     """
     # Только торговый счёт ЭТОГО портфеля -- накопительный принадлежит владельцу, а не
     # портфелю (один накопительный на нескольких портфелях одного брокера был бы задвоен),
-    # полная раскладка по всем счетам переехала в отдельный экран "🏦 Счета" (см. summary.py)
+    # полная раскладка по всем счетам переехала в отдельный экран "🏦 Счета" (см. summary.py).
+    # v_accounts_full -- Слой 1, см. Claude/02_universal_views.md (2026-08-14).
     cash_query = """
-        SELECT a.currency_id, a.cash_available, a.cash_reserved, cur.sign
-        FROM public.accounts a
-        JOIN public.currencies cur ON a.currency_id = cur.id
-        WHERE a.portfolio_id = %s AND a.account_type = 'trade';
+        SELECT currency_id, cash_available, cash_reserved, currency_sign
+        FROM public.v_accounts_full
+        WHERE portfolio_id = %s AND account_type = 'trade';
     """
 
     # Делаем вызовы через права бота db_bot
@@ -151,10 +151,16 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
     report_text += f"🎯 Стратегии: **{content_strategies_count}**\n"
 
+    # Переформулировано 2026-08-14 (по просьбе пользователя -- было неясно, нужно ли
+    # складывать "общую стоимость" и "чистую прибыль"): три строки читаются как прямая
+    # арифметика -- Вложено + Прибыль/убыток = Рыночная стоимость, ничего не нужно
+    # досчитывать в уме.
+    total_assets_invested = total_assets_cost - total_assets_profit
     report_text += f"───────\n"
     report_text += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
-    report_text += f"• Общая стоимость: **{target_sign}{total_assets_cost:,.2f}**\n"
-    report_text += f"• Чистая прибыль: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n\n"
+    report_text += f"• Вложено: **{target_sign}{total_assets_invested:,.2f}**\n"
+    report_text += f"• Прибыль/убыток: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n"
+    report_text += f"• Рыночная стоимость: **{target_sign}{total_assets_cost:,.2f}**\n\n"
 
     # Сборка мультивалютного кэша семьи
     cash_res_raw = db_bot.execute_query(cash_query, (p_id,))
@@ -167,19 +173,21 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         if available == 0 and reserved == 0:
             continue
         free = available - reserved
-        o_sign = c['sign'] or c['currency_id'] or "$"
+        o_sign = c['currency_sign'] or c['currency_id'] or "$"
         trade_cash_lines.append(f"• {c['currency_id']}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
 
     if trade_cash_lines:
         report_text += "💵 **Кэш на торговом счёте:**\n"
         report_text += "\n".join(trade_cash_lines) + "\n\n"
 
-    # ИТОГО -- полный капитал портфеля (бумаги + весь кэш торгового счёта, каждая валюта
-    # конвертирована в base_currency смотрящего тем же get_fx, что и выше) -- по просьбе
-    # пользователя 2026-08-13, чтобы не складывать в уме.
+    # Итого ПО ЭТОМУ ПОРТФЕЛЮ -- бумаги + кэш торгового счёта, каждая валюта
+    # конвертирована в base_currency смотрящего тем же get_fx, что и выше. Сознательно
+    # БЕЗ накопительного (см. комментарий выше) -- переименовано и помечено другим
+    # значком 📐 2026-08-14, чтобы не путать с полным 🎁 ИТОГО на экране «Счета»
+    # (тот уже включает накопительный).
     total_cash_target = sum(float(c['cash_available']) * get_fx(c.get('currency_id')) for c in cash_res)
     total_capital = total_assets_cost + total_cash_target
-    report_text += f"🎁 ИТОГО: **{target_sign}{total_capital:,.2f}**\n"
+    report_text += f"📐 Итого по портфелю: **{target_sign}{total_capital:,.2f}**\n"
 
     report_text += f"───────\n"
 

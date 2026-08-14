@@ -493,22 +493,37 @@ class Database:
     # === СЕМЕЙНАЯ СВОДКА ===
 
     def get_family_summary(self, telegram_id: int) -> dict:
-        """Собирает общую сводку РЕАЛЬНОГО капитала семьи (портфели с реальным брокером)."""
-        return self._aggregate_capital_summary(telegram_id, "p.broker_id IS NOT NULL")
+        """
+        Собирает общую сводку РЕАЛЬНОГО капитала семьи (реальный брокер). Фильтр -- на
+        acc.broker_id (не через LEFT JOIN portfolios) -- накопительный счёт не привязан
+        к портфелю, но реален и должен попасть в сводку (BACKLOG.md №108, 2026-08-14).
+        """
+        return self._aggregate_capital_summary(telegram_id, "acc.broker_id IS NOT NULL")
 
     def get_test_capital_summary(self, telegram_id: int) -> dict:
         """
         Сводка ВИРТУАЛЬНОГО (бумажного) капитала -- портфели execution_mode='CONFIRM'
         (см. Claude/14_paper_portfolio.md). Та же агрегация, что и у реального капитала,
-        просто другой набор портфелей -- намеренно НЕ смешиваются в одном экране.
+        просто другой набор портфелей -- намеренно НЕ смешиваются в одном экране. Фильтр
+        через p.execution_mode сознательно портфель-зависимый -- накопительный счёт (без
+        портфеля) НИКОГДА не виртуальный, корректно не попадает сюда ни при каком фильтре.
         """
         return self._aggregate_capital_summary(telegram_id, "p.execution_mode = 'CONFIRM'")
 
-    def _aggregate_capital_summary(self, telegram_id: int, portfolio_filter_sql: str) -> dict:
+    def _aggregate_capital_summary(self, telegram_id: int, accounts_filter_sql: str) -> dict:
         """
         Общий агрегатор капитала (транзитные USD -> валюта смотрящего) -- переиспользуется
         и реальной, и тестовой сводкой (BACKLOG.md, стандартизация экрана «Тестовый капитал»,
-        2026-08-03). portfolio_filter_sql -- сырое SQL-условие на алиас `p` (portfolios).
+        2026-08-03). accounts_filter_sql -- сырое SQL-условие (на алиас `acc` -- accounts,
+        или `p` -- portfolios, LEFT JOIN уже есть).
+
+        Раньше фильтр реальных портфелей был "p.broker_id IS NOT NULL" -- у накопительного
+        счёта portfolio_id всегда NULL (он принадлежит владельцу+брокеру, не портфелю, см.
+        Claude/07_glossary.md), LEFT JOIN давал NULL и на p.broker_id, фильтр молча ронял
+        ВСЕ накопительные счета из сводки (BACKLOG.md №108, найдено 2026-08-14). Правильный
+        источник брокера для реального фильтра -- acc.broker_id (стоит на каждой строке
+        accounts напрямую, включая накопительный) -- вызывающая сторона (get_family_summary)
+        теперь и передаёт именно его.
         """
         user_sql = "SELECT id, base_currency FROM public.users WHERE telegram_id = %s;"
         user_res = self.execute_query(user_sql, (telegram_id,))
@@ -529,25 +544,30 @@ class Database:
 
         accounts_sql = f"""
             SELECT
-                acc.user_id, acc.portfolio_id, acc.broker_id, acc.cash_available, acc.assets_value,
+                acc.user_id, acc.portfolio_id, acc.broker_id, acc.account_type,
+                acc.cash_available, acc.assets_value,
                 p.name as portfolio_name, COALESCE(r.rate, 1.0) as to_usd_rate
             FROM public.accounts acc
             LEFT JOIN public.portfolios p ON acc.portfolio_id = p.id
             LEFT JOIN public.currency_rates r ON r.from_currency = acc.currency_id AND r.to_currency = 'USD'
-            WHERE {portfolio_filter_sql};
+            WHERE {accounts_filter_sql};
         """
         all_accounts = self.execute_query(accounts_sql)
         if not isinstance(all_accounts, list):
             all_accounts = []
 
         total_assets_usd = 0.0
-        total_cash_usd = 0.0
+        total_trade_cash_usd = 0.0
+        total_deposit_cash_usd = 0.0
         portfolios_dict = {}
 
         for acc in all_accounts:
             rate = float(acc['to_usd_rate'])
             total_assets_usd += float(acc['assets_value'] or 0) * rate
-            total_cash_usd += float(acc['cash_available'] or 0) * rate
+            if acc['account_type'] == 'deposit':
+                total_deposit_cash_usd += float(acc['cash_available'] or 0) * rate
+            else:
+                total_trade_cash_usd += float(acc['cash_available'] or 0) * rate
 
             p_id = acc['portfolio_id']
             if p_id and p_id not in portfolios_dict:
@@ -560,7 +580,8 @@ class Database:
                 }
 
         final_assets = total_assets_usd / user_to_usd_rate
-        final_cash = total_cash_usd / user_to_usd_rate
+        final_trade_cash = total_trade_cash_usd / user_to_usd_rate
+        final_deposit_cash = total_deposit_cash_usd / user_to_usd_rate
 
         sorted_portfolios = sorted(
             portfolios_dict.values(),
@@ -571,7 +592,9 @@ class Database:
             "base_currency": base_curr,
             "currency_sign": curr_sign,
             "total_assets": final_assets,
-            "total_cash": final_cash,
+            "total_trade_cash": final_trade_cash,
+            "total_deposit_cash": final_deposit_cash,
+            "total_capital": final_assets + final_trade_cash + final_deposit_cash,
             "portfolios": sorted_portfolios,
             "user_id": user_id,
             "user_to_usd_rate": user_to_usd_rate
