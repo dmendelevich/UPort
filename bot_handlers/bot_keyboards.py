@@ -175,7 +175,6 @@ def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🧪 Тестовый капитал", callback_data=MenuAction(action="show_test_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
-    builder.row(types.InlineKeyboardButton(text="📅 Утренний дайджест", callback_data=MenuAction(action="show_digest_focus").pack()))
     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
 
     if is_admin:
@@ -433,12 +432,17 @@ def generate_watchlist_button_text(
     ]
     return assemble_lego_line(blueprint)
 
-def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
+def generate_digest_toc_keyboard(portfolio_id: int, sections: dict, strategy_id: int = 0):
     """
     Оглавление свёрнутого дайджеста (см. Claude/BACKLOG.md п.35) -- одна кнопка на
     непустой раздел, с счётчиком. Пустые разделы не показываются (как и в тексте).
     Переиспользует generate_tab_switch_keyboard -- дайджест-разделы это те же вкладки
     одного экрана. Возвращает None, если действий сегодня вообще нет.
+
+    strategy_id != 0 -- дайджест уже отфильтрован до одной стратегии (см.
+    analytics/daily_digest.py::filter_digest_data_by_strategy, тема «дайджест как
+    вкладка», 2026-08-14) -- пробрасывается дальше в каждую кнопку раздела, чтобы
+    клик держал тот же фильтр.
     """
     from analytics.daily_digest import SECTION_ORDER
 
@@ -449,14 +453,14 @@ def generate_digest_toc_keyboard(portfolio_id: int, sections: dict):
             continue
         tabs.append((
             f"{sec['emoji']} {sec['label']} ({len(sec['items'])})",
-            MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view=key)
+            MenuAction(action="view_digest", portfolio_id=portfolio_id, strategy_id=strategy_id, sub_view=key)
         ))
 
     if not tabs:
         return None
     return generate_tab_switch_keyboard(tabs, current_sub_view="overview")
 
-def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list, execution_mode: str = "ADVISORY"):
+def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list, execution_mode: str = "ADVISORY", filter_strategy_id: int = 0):
     """
     Клавиатура детального раздела дайджеста -- одна строка кнопок на пункт (см.
     Claude/BACKLOG.md п.35 для разбора, какое действие у какого раздела):
@@ -491,6 +495,12 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     раз. Кнопка "Исполнить" при этом продолжает работать через ticker_id независимо от
     того, какая навигационная ветка сработала -- иначе повторное открытие СН тихо
     роняло бы кнопку "Исполнить" у BUY-кандидатов.
+
+    filter_strategy_id (2026-08-14, тема «дайджест как вкладка») -- НЕ путать с
+    локальной переменной "strategy_id" внутри цикла ниже (это стратегия КОНКРЕТНОГО
+    пункта, для кнопки "Исполнить"): filter_strategy_id -- это фильтр вкладки дайджеста
+    целиком (0 -- дайджест портфеля, иначе -- дайджест этой стратегии), нужен только
+    кнопке "назад к дайджесту", чтобы вернуться в тот же фильтр, откуда пришли.
     """
     builder = InlineKeyboardBuilder()
     for item in items:
@@ -543,7 +553,7 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
     back_kb = generate_nav_back_keyboard(
         one_step_back_text="🔙 Назад к дайджесту",
-        full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view="overview").pack()
+        full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, strategy_id=filter_strategy_id, sub_view="overview").pack()
     )
     final_builder.attach(InlineKeyboardBuilder.from_markup(back_kb))
     return final_builder.as_markup()

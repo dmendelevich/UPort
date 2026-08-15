@@ -2,7 +2,7 @@ import logging
 import asyncio
 import yfinance as yf
 from database import db_bot
-from analytics.analytics_utils import convert_currency_amount, convert_to_base_currency
+from analytics.analytics_utils import convert_currency_amount, convert_to_base_currency, CONTENT_STRATEGY_SYSTEM_KEYS
 from analytics.portfolio_inspector import PortfolioInspector
 
 # ─── СТАНДАРТ ШИРИНЫ ЭКРАНОВ (header/body/footer) -- см. Claude/05_strategy_screen_and_kubiki.md,
@@ -632,6 +632,114 @@ async def format_ticker_behavior(ticker_id: int, listing_id: int = 0, portfolio_
     )
 
 
+async def format_portfolio_header(portfolio_id: int, target_currency: str = "USD", target_sign: str = "$") -> str:
+    """
+    Хедер body карточки портфеля: имя/владелец/число содержательных стратегий +
+    "Активы в бумагах" + "Кэш на торговом счёте" + "Итого по портфелю". ВСЕГДА
+    виден, не зависит от вкладки (тот же принцип "пульса", что у карточки стратегии/
+    тикера) -- раньше жил только внутри process_view_portfolio (bot_handlers/portfolios.py),
+    не был вынесен в функцию как остальные хедеры (отступление от собственного
+    стандарта проекта). Вынесен 2026-08-15, когда понадобился ещё и вкладке
+    «Дайджест» (bot_handlers/digest.py) -- одна и та же шапка теперь у всех вкладок
+    портфеля, включая дайджест, а не только у Состав/Паспорт/Стратегии.
+
+    Самодостаточная функция -- сама делает свои запросы (та же лёгкая SELECT на
+    имя/владельца, не тяжёлый generate_portfolio_passport, который process_view_portfolio
+    всё ещё вызывает отдельно ради своей проверки "портфель не найден" -- не трогаю
+    этот вызов здесь, не относится к задаче переноса хедера). Мультивалютность --
+    как и у остальных карточек, курс кэшируется по коду валюты (fx_by_currency),
+    потому что позиции портфеля могут быть в НЕСКОЛЬКИХ разных родных валютах разом.
+    """
+    p_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        "SELECT p.name, u.name AS owner_name FROM public.portfolios p JOIN public.users u ON p.owner_id = u.id WHERE p.id = %s;",
+        (portfolio_id,)
+    )
+    if not p_row:
+        return "❌ Портфель не найден.\n"
+
+    keys_str = ", ".join(f"'{k}'" for k in CONTENT_STRATEGY_SYSTEM_KEYS)
+    count_row = await asyncio.to_thread(
+        db_bot.execute_row,
+        f"""
+            SELECT COUNT(*)::int AS cnt FROM public.strategies s
+            JOIN public.strategy_templates st ON s.template_id = st.id
+            WHERE s.portfolio_id = %s AND s.is_active = true AND st.system_key IN ({keys_str});
+        """,
+        (portfolio_id,)
+    )
+    content_strategies_count = count_row.get("cnt", 0) if count_row else 0
+
+    assets_res = await asyncio.to_thread(db_bot.execute_query, """
+        SELECT a.quantity, a.avg_price, l.last_price, l.currency_id
+        FROM public.assets a JOIN public.listings l ON a.listing_id = l.id
+        WHERE a.portfolio_id = %s AND a.quantity > 0;
+    """, (portfolio_id,))
+    assets_res = assets_res if isinstance(assets_res, list) else ([assets_res] if assets_res else [])
+
+    fx_by_currency = {}
+
+    def get_fx(from_currency: str) -> float:
+        cur = from_currency or "USD"
+        if cur not in fx_by_currency:
+            fx_by_currency[cur] = convert_currency_amount(db_bot, 1.0, cur, target_currency)
+        return fx_by_currency[cur]
+
+    total_assets_cost = 0.0
+    total_assets_profit = 0.0
+    for asset in assets_res:
+        qty = float(asset['quantity'] or 0)
+        avg_p = float(asset['avg_price'] or 0)
+        last_p = float(asset['last_price'] or 0)
+        fx_rate = get_fx(asset.get('currency_id'))
+
+        cost_basis = qty * avg_p * fx_rate
+        market_val = qty * last_p * fx_rate
+        total_assets_cost += market_val
+        total_assets_profit += market_val - cost_basis
+
+    total_profit_pct = (total_assets_profit / (total_assets_cost - total_assets_profit) * 100) if (total_assets_cost - total_assets_profit) > 0 else 0.0
+    profit_sign = "+" if total_assets_profit >= 0 else "-"
+    total_assets_invested = total_assets_cost - total_assets_profit
+
+    header = f"📦 **ПОРТФЕЛЬ {p_row.get('name', '')}**\n"
+    header += f"👤 {p_row.get('owner_name', 'Unknown')}\n"
+    header += f"🎯 Стратегии: **{content_strategies_count}**\n"
+    header += f"{SEPARATOR_LINE}\n"
+    header += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
+    header += f"• Вложено: **{target_sign}{total_assets_invested:,.2f}**\n"
+    header += f"• Прибыль/убыток: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n"
+    header += f"• Рыночная стоимость: **{target_sign}{total_assets_cost:,.2f}**\n\n"
+
+    cash_res = await asyncio.to_thread(db_bot.execute_query, """
+        SELECT currency_id, cash_available, cash_reserved, currency_sign
+        FROM public.v_accounts_full
+        WHERE portfolio_id = %s AND account_type = 'trade';
+    """, (portfolio_id,))
+    cash_res = cash_res if isinstance(cash_res, list) else ([cash_res] if cash_res else [])
+
+    trade_cash_lines = []
+    for c in cash_res:
+        available = float(c['cash_available'])
+        reserved = float(c['cash_reserved'])
+        if available == 0 and reserved == 0:
+            continue
+        free = available - reserved
+        o_sign = c['currency_sign'] or c['currency_id'] or "$"
+        trade_cash_lines.append(f"• {c['currency_id']}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
+
+    if trade_cash_lines:
+        header += "💵 **Кэш на торговом счёте:**\n"
+        header += "\n".join(trade_cash_lines) + "\n\n"
+
+    total_cash_target = sum(float(c['cash_available']) * get_fx(c.get('currency_id')) for c in cash_res)
+    total_capital = total_assets_cost + total_cash_target
+    header += f"📐 Итого по портфелю: **{target_sign}{total_capital:,.2f}**\n"
+    header += f"{SEPARATOR_LINE}\n"
+
+    return header
+
+
 async def format_strategy_header(strategy_id: int) -> str:
     """
     Универсальный сборщик шапки карточки стратегии UPort (см. Claude/BACKLOG.md #13).
@@ -797,16 +905,32 @@ def generate_confirm_screen(header_text: str, action_title: str, details_list: l
     return "\n".join(lines)
 
 
-def render_digest_overview_text(data: dict) -> str:
+def render_digest_overview_text(data: dict, standalone: bool = True, capital_hint: str = None) -> str:
     """
     Свёрнутый вид дайджеста (см. Claude/BACKLOG.md п.35) -- шапка + пульс капитала +
     счётчики по разделам. Детали разделов -- по клику на кнопку оглавления
     (generate_digest_toc_keyboard), не в этом тексте.
+
+    standalone=True (по умолчанию -- пуш-уведомление, cron_scheduler.py) -- текст
+    самодостаточен: своя строка имени/даты + "Капитал/Кэш" (числа PortfolioInspector).
+    standalone=False (вкладка «Дайджест» портфеля/стратегии, bot_handlers/digest.py,
+    2026-08-15) -- имя/капитал уже показаны в СТАНДАРТНОМ хедере экрана над этим
+    текстом (format_portfolio_header/format_strategy_header+format_strategy_capital_block),
+    повторять их здесь было бы чистым дублем -- вместо своей строки капитала можно
+    передать capital_hint (готовая строка, посчитанная вызывающим кодом) для цифры,
+    которой в хедере НЕТ (пример -- "Свободный бюджет по модели стратегий" у портфеля;
+    для стратегии такой цифры нет вообще, там она 1:1 повторяет "Свободный остаток"
+    хедера, capital_hint не передаётся).
     """
     from analytics.daily_digest import SECTION_ORDER
 
-    lines = [f"📊 *{data['portfolio_name']}* — дайджест на {data['today_str']}", ""]
-    lines.append(f"💰 Капитал: ${data['total_capital']:,.2f} · Кэш: ${data['real_cash']:,.2f}")
+    if standalone:
+        lines = [f"📊 *{data['title']}* — дайджест на {data['today_str']}", ""]
+        lines.append(f"💰 Капитал: ${data['total_capital']:,.2f} · Кэш: ${data['real_cash']:,.2f}")
+    else:
+        lines = [f"📅 **ДАЙДЖЕСТ НА {data['today_str']}**"]
+        if capital_hint:
+            lines.append(capital_hint)
 
     total_items = 0
     counts_parts = []
@@ -856,10 +980,13 @@ def format_capital_summary_text(summary: dict, title: str) -> str:
     return "\n".join(lines)
 
 
-def render_digest_section_text(data: dict, section_key: str) -> str:
-    """Детальный текст одного раздела дайджеста -- см. render_digest_overview_text."""
+def render_digest_section_text(data: dict, section_key: str, standalone: bool = True) -> str:
+    """Детальный текст одного раздела дайджеста -- см. render_digest_overview_text про standalone."""
     sec = data["sections"].get(section_key) or {"emoji": "", "label": section_key, "items": []}
-    lines = [f"📊 *{data['portfolio_name']}* — {sec['emoji']} {sec['label'].upper()}", ""]
+    if standalone:
+        lines = [f"📊 *{data['title']}* — {sec['emoji']} {sec['label'].upper()}", ""]
+    else:
+        lines = [f"{sec['emoji']} **{sec['label'].upper()}**", ""]
 
     if not sec["items"]:
         lines.append("Пусто.")

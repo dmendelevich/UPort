@@ -9,12 +9,9 @@ from aiogram.fsm.context import FSMContext
 from database import db_bot
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard, generate_portfolio_button_text, generate_tab_switch_keyboard, generate_strategy_button_text, generate_main_menu_keyboard
-from bot_handlers.bot_screens import format_portfolio_risk_audit_rollup
+from bot_handlers.bot_screens import format_portfolio_risk_audit_rollup, format_portfolio_header
 
-# Импортируем независимый аналитический модуль аудитора портфеля
-from analytics.portfolio_auditor import generate_portfolio_passport
 from analytics.portfolio_inspector import PortfolioInspector
-from analytics.analytics_utils import convert_currency_amount, CONTENT_STRATEGY_SYSTEM_KEYS
 
 # Инициализируем локальный роутер для модуля портфелей
 router = Router()
@@ -48,9 +45,10 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     await callback.answer("Сборка аналитического паспорта...")
 
     # Мультивалютность: та же схема, что у карточек тикера/стратегии -- всё выводим в
-    # base_currency СМОТРЯЩЕГО пользователя, не в родной валюте листинга. Здесь источников
-    # валют может быть НЕСКОЛЬКО РАЗНЫХ (у каждой бумаги своя) в одном рендере, поэтому курс
-    # кэшируем по коду валюты (fx_by_currency), а не считаем один общий rate, как у тикера.
+    # base_currency СМОТРЯЩЕГО пользователя, не в родной валюте листинга. target_currency/
+    # target_sign передаются ниже в format_portfolio_header, которая сама кэширует курс по
+    # коду валюты (источников валют может быть НЕСКОЛЬКО РАЗНЫХ, у каждой бумаги своя) --
+    # эта функция больше не считает fx сама (вынесено вместе с хедером, 2026-08-15).
     user_data = await state.get_data()
     user_db_id = user_data.get("user_db_id")
     target_currency = "USD"
@@ -61,42 +59,25 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
 
     target_cur_row = await asyncio.to_thread(db_bot.execute_row, "SELECT sign FROM public.currencies WHERE id = %s;", (target_currency,))
     target_sign = target_cur_row.get('sign', '$') if target_cur_row else '$'
-    fx_by_currency = {}
 
-    def get_fx(from_currency: str) -> float:
-        cur = from_currency or "USD"
-        if cur not in fx_by_currency:
-            fx_by_currency[cur] = convert_currency_amount(db_bot, 1.0, cur, target_currency)
-        return fx_by_currency[cur]
-
-    # 1. Вызываем модуль аудитора для расчета рисков и соответствия стратегии
-    passport = await asyncio.to_thread(generate_portfolio_passport, p_id, db_bot)
-    if not passport:
-        logging.error(f"❌ [ПОРТФЕЛЬ]: Не удалось сгенерировать паспорт для id = {p_id}")
-        await callback.message.edit_text("❌ Ошибка генерации паспорта портфеля.", reply_markup=generate_main_menu_keyboard())
+    # 1. ХЕДЕР -- общий самодостаточный кубик (bot_handlers/bot_screens.py::format_portfolio_header),
+    # тот же самый, что теперь показывает и вкладка «Дайджест» (bot_handlers/digest.py,
+    # тема «дайджест как вкладка», 2026-08-15). Раньше "портфель не найден" проверялся
+    # ОТДЕЛЬНЫМ тяжёлым вызовом generate_portfolio_passport (весь аудит фундаментала
+    # ради одной строки-флага) ДО хедера -- нестандартно, не так, как у стратегии
+    # (format_strategy_header сам возвращает "не найдена" текстом). Приведено к тому
+    # же самодостаточному паттерну (2026-08-15, по замечанию пользователя) --
+    # generate_portfolio_passport здесь больше не нужен вообще, убран.
+    report_text = await format_portfolio_header(p_id, target_currency=target_currency, target_sign=target_sign)
+    if "не найден" in report_text:
+        try:
+            await callback.message.edit_text(report_text, reply_markup=generate_main_menu_keyboard())
+        except TelegramBadRequest:
+            pass
         return
 
-    meta = passport["meta"]
-
-    # Счётчик стратегий для шапки -- только СОДЕРЖАТЕЛЬНЫЕ (Кэш/Резерв и Неопределённая
-    # не считаются, у портфеля нет единой "стратегии", legacy-поле strategy_type изживаем)
-    content_strategies_count = 0
-    if p_id > 0:
-        # CONTENT_STRATEGY_SYSTEM_KEYS -- фиксированный кортеж-константа (не из
-        # пользовательского ввода), остаётся f-строкой (Claude/BACKLOG.md №81).
-        keys_str = ", ".join(f"'{k}'" for k in CONTENT_STRATEGY_SYSTEM_KEYS)
-        count_row = await asyncio.to_thread(
-            db_bot.execute_row,
-            f"""
-                SELECT COUNT(*)::int AS cnt FROM public.strategies s
-                JOIN public.strategy_templates st ON s.template_id = st.id
-                WHERE s.portfolio_id = %s AND s.is_active = true AND st.system_key IN ({keys_str});
-            """,
-            (p_id,)
-        )
-        content_strategies_count = count_row.get("cnt", 0) if count_row else 0
-
-    # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (С ЧЕСТНЫМ ПОДСЧЕТОМ АЛЕРТОВ 3NF)
+    # 2. ПРЕДВАРИТЕЛЬНЫЙ РАСЧЕТ И СБОР ДАННЫХ ПО АКЦИЯМ (С ЧЕСТНЫМ ПОДСЧЕТОМ АЛЕРТОВ 3NF) --
+    # нужен только вкладке "Состав" ниже, хедер выше их не переиспользует (собирает свои).
     assets_query = """
         SELECT l.broker_symbol AS full_ticker, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id,
                EXTRACT(DAY FROM (CURRENT_TIMESTAMP - COALESCE(a.position_opened_at, CURRENT_TIMESTAMP)))::int AS holding_days,
@@ -110,86 +91,8 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         GROUP BY l.broker_symbol, a.quantity, a.avg_price, l.last_price, a.listing_id, l.currency_id, a.position_opened_at
         ORDER BY l.broker_symbol ASC;
     """
-    # Только торговый счёт ЭТОГО портфеля -- накопительный принадлежит владельцу, а не
-    # портфелю (один накопительный на нескольких портфелях одного брокера был бы задвоен),
-    # полная раскладка по всем счетам переехала в отдельный экран "🏦 Счета" (см. summary.py).
-    # v_accounts_full -- Слой 1, см. Claude/02_universal_views.md (2026-08-14).
-    cash_query = """
-        SELECT currency_id, cash_available, cash_reserved, currency_sign
-        FROM public.v_accounts_full
-        WHERE portfolio_id = %s AND account_type = 'trade';
-    """
-
-    # Делаем вызовы через права бота db_bot
     assets_res_raw = db_bot.execute_query(assets_query, (p_id,))
     assets_res = assets_res_raw if isinstance(assets_res_raw, list) else ([assets_res_raw] if assets_res_raw else [])
-
-    # Считаем совокупные финансовые показатели акций -- каждая позиция сначала конвертируется
-    # из СВОЕЙ родной валюты (l.currency_id) в валюту смотрящего, и только потом суммируется
-    # (раньше складывались сырые цифры разных валют как будто это одна и та же валюта).
-    total_assets_cost = 0.0
-    total_assets_profit = 0.0
-
-    for asset in assets_res:
-        qty = float(asset['quantity'] or 0)
-        avg_p = float(asset['avg_price'] or 0)
-        last_p = float(asset['last_price'] or 0)
-        fx_rate = get_fx(asset.get('currency_id'))
-
-        cost_basis = qty * avg_p * fx_rate
-        market_val = qty * last_p * fx_rate
-        profit = market_val - cost_basis
-
-        total_assets_cost += market_val
-        total_assets_profit += profit
-
-    total_profit_pct = (total_assets_profit / (total_assets_cost - total_assets_profit) * 100) if (total_assets_cost - total_assets_profit) > 0 else 0.0
-    profit_sign = "+" if total_assets_profit >= 0 else "-"
-
-    # 3. ФОРМИРОВАНИЕ СТЕРИЛЬНОЙ И ДОРОГОЙ ШАПКИ
-    report_text = f"📦 **ПОРТФЕЛЬ {meta.get('name', '')}**\n"
-    report_text += f"👤 {meta.get('owner', 'Unknown')}\n"
-    report_text += f"🎯 Стратегии: **{content_strategies_count}**\n"
-
-    # Переформулировано 2026-08-14 (по просьбе пользователя -- было неясно, нужно ли
-    # складывать "общую стоимость" и "чистую прибыль"): три строки читаются как прямая
-    # арифметика -- Вложено + Прибыль/убыток = Рыночная стоимость, ничего не нужно
-    # досчитывать в уме.
-    total_assets_invested = total_assets_cost - total_assets_profit
-    report_text += f"───────\n"
-    report_text += f"📊 **АКТИВЫ В БУМАГАХ:**\n"
-    report_text += f"• Вложено: **{target_sign}{total_assets_invested:,.2f}**\n"
-    report_text += f"• Прибыль/убыток: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n"
-    report_text += f"• Рыночная стоимость: **{target_sign}{total_assets_cost:,.2f}**\n\n"
-
-    # Сборка мультивалютного кэша семьи
-    cash_res_raw = db_bot.execute_query(cash_query, (p_id,))
-    cash_res = cash_res_raw if isinstance(cash_res_raw, list) else ([cash_res_raw] if cash_res_raw else [])
-    
-    trade_cash_lines = []
-    for c in cash_res:
-        available = float(c['cash_available'])
-        reserved = float(c['cash_reserved'])
-        if available == 0 and reserved == 0:
-            continue
-        free = available - reserved
-        o_sign = c['currency_sign'] or c['currency_id'] or "$"
-        trade_cash_lines.append(f"• {c['currency_id']}: **{o_sign}{available:,.2f}** (🕊️ {o_sign}{free:,.2f} / 🔒 {o_sign}{reserved:,.2f})")
-
-    if trade_cash_lines:
-        report_text += "💵 **Кэш на торговом счёте:**\n"
-        report_text += "\n".join(trade_cash_lines) + "\n\n"
-
-    # Итого ПО ЭТОМУ ПОРТФЕЛЮ -- бумаги + кэш торгового счёта, каждая валюта
-    # конвертирована в base_currency смотрящего тем же get_fx, что и выше. Сознательно
-    # БЕЗ накопительного (см. комментарий выше) -- переименовано и помечено другим
-    # значком 📐 2026-08-14, чтобы не путать с полным 🎁 ИТОГО на экране «Счета»
-    # (тот уже включает накопительный).
-    total_cash_target = sum(float(c['cash_available']) * get_fx(c.get('currency_id')) for c in cash_res)
-    total_capital = total_assets_cost + total_cash_target
-    report_text += f"📐 Итого по портфелю: **{target_sign}{total_capital:,.2f}**\n"
-
-    report_text += f"───────\n"
 
     builder = InlineKeyboardBuilder()
 
@@ -318,6 +221,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"assets/{origin}")),
         ("🩻 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"passport/{origin}")),
         ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"strategies/{origin}")),
+        ("📅 Дайджест", MenuAction(action="view_digest", portfolio_id=p_id, sub_view="overview")),
     ]
 
     tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=f"{view}/{origin}")

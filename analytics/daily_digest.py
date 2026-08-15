@@ -61,11 +61,10 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     уже существующем активном приказе того же направления -- см. order_note() ниже (2026-08-03).
     """
     portfolio_row = db_instance.execute_row(
-        "SELECT name, execution_mode, broker_id FROM public.portfolios WHERE id = %s;", (portfolio_id,)
+        "SELECT name, execution_mode FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
     portfolio_name = (portfolio_row or {}).get("name") or f"Портфель {portfolio_id}"
     execution_mode = (portfolio_row or {}).get("execution_mode") or "ADVISORY"
-    portfolio_broker_id = (portfolio_row or {}).get("broker_id")
 
     inspector = PortfolioInspector(db_instance, portfolio_id)
     balances = inspector.get_virtual_cash_balances()
@@ -151,16 +150,23 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # ДО записи в watchlist -- см. watchlist.py) -- кнопка должна вести на карточку,
     # не предлагать добавить второй раз (найдено 2026-08-14, живой случай VTI:
     # нажал "В СН", закрыл-открыл дайджест заново -- та же кнопка "добавить" осталась).
-    watchlisted_listing_by_ticker = {}
-    if portfolio_broker_id:
-        watchlisted_rows = db_instance.execute_query("""
-            SELECT l.ticker_id, l.id AS listing_id
-            FROM public.watchlist w
-            JOIN public.listings l ON l.id = w.listing_id
-            WHERE w.portfolio_id = %s AND l.broker_id = %s;
-        """, (portfolio_id, portfolio_broker_id))
-        watchlisted_rows = watchlisted_rows if isinstance(watchlisted_rows, list) else ([watchlisted_rows] if watchlisted_rows else [])
-        watchlisted_listing_by_ticker = {int(r["ticker_id"]): int(r["listing_id"]) for r in watchlisted_rows if r}
+    #
+    # Правка 2026-08-15: раньше проверка была ЗА гейтом "if portfolio_broker_id" и
+    # дополнительно фильтровала "AND l.broker_id = %s" -- для бумажного портфеля
+    # (`portfolios.broker_id IS NULL`, живой пример -- «ПБум») это молча пропускало
+    # проверку целиком, хотя тикер УЖЕ был в watchlist (найдено пользователем на живом
+    # UBER: кнопка "В СН" не пропадала после добавления). watchlist уже сам по себе
+    # скопирован по portfolio_id -- фильтр по брокеру был избыточен даже для реальных
+    # портфелей (строка watchlist этого портфеля не может принадлежать чужому брокеру),
+    # для бумажных -- активно вредил. Убран гейт и лишнее условие.
+    watchlisted_rows = db_instance.execute_query("""
+        SELECT l.ticker_id, l.id AS listing_id
+        FROM public.watchlist w
+        JOIN public.listings l ON l.id = w.listing_id
+        WHERE w.portfolio_id = %s;
+    """, (portfolio_id,))
+    watchlisted_rows = watchlisted_rows if isinstance(watchlisted_rows, list) else ([watchlisted_rows] if watchlisted_rows else [])
+    watchlisted_listing_by_ticker = {int(r["ticker_id"]): int(r["listing_id"]) for r in watchlisted_rows if r}
 
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
     signal_items += [
@@ -279,18 +285,56 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
                     f"Ежемесячный пересмотр — поднять слот или продолжать копить число позиций?"
                 ),
                 "label": row["strategy_name"],
+                "strategy_id": int(row["strategy_id"]),
             })
 
     return {
         "portfolio_id": portfolio_id,
-        "portfolio_name": portfolio_name,
+        "title": portfolio_name,
         "execution_mode": execution_mode,
         "today_str": datetime.date.today().isoformat(),
         "total_capital": total_capital,
         "real_cash": real_cash,
+        # Ключи -- int (страховка от JSON-круговорота через шлюз, та же защита, что и
+        # у portfolios.py::process_view_portfolio при переборе balances["strategies"]) --
+        # нужны filter_digest_data_by_strategy для пульса капитала СТРАТЕГИИ, не портфеля.
+        "strategy_balances": {int(k): v for k, v in balances.get("strategies", {}).items()},
         "sections": {
             "schedule": {**SECTION_META["schedule"], "items": schedule_items},
             "signals": {**SECTION_META["signals"], "items": signal_items},
             "limits": {**SECTION_META["limits"], "items": limit_items},
         },
+    }
+
+
+def filter_digest_data_by_strategy(data: dict, strategy_id: int, strategy_name: str) -> dict:
+    """
+    Сужает уже собранный дайджест портфеля (assemble_portfolio_digest_data) до одной
+    стратегии -- презентационный фильтр поверх готовых данных, не пересчитывает
+    аналитику заново (см. Claude/BACKLOG.md, тема «дайджест как вкладка», 2026-08-14).
+
+    Пункты БЕЗ "strategy_id" сознательно остаются видны только на дайджесте уровня
+    портфеля, не подмешиваются на вкладку стратегии: протухание приказов/алертов
+    (у ордера/алерта нет привязки к стратегии в БД, а бумага технически может
+    держаться сразу в нескольких стратегиях -- однозначного "своего" таба нет) и
+    нарушения лимитов раздела "limits" (часть считается по всему портфелю разом,
+    например portfolio_violated_sectors -- структурно не может принадлежать одной
+    стратегии). Согласовано с пользователем явно, не решено в одностороннем порядке.
+    """
+    filtered_sections = {
+        key: {**sec, "items": [item for item in sec["items"] if item.get("strategy_id") == strategy_id]}
+        for key, sec in data["sections"].items()
+    }
+
+    # Пульс капитала -- тоже сужаем до стратегии (идеальный бюджет/свободный остаток
+    # из PortfolioInspector, та же пара чисел, что уже показывает format_strategy_capital_block
+    # на самой карточке стратегии), иначе строка "Капитал/Кэш" молча осталась бы
+    # портфельной рядом с отфильтрованным списком пунктов -- вводило бы в заблуждение.
+    strat_balance = data.get("strategy_balances", {}).get(strategy_id)
+    total_capital = float(strat_balance["ideal_budget_usd"]) if strat_balance else data["total_capital"]
+    real_cash = float(strat_balance["virtual_free_cash_usd"]) if strat_balance else data["real_cash"]
+
+    return {
+        **data, "title": strategy_name, "sections": filtered_sections,
+        "total_capital": total_capital, "real_cash": real_cash,
     }
