@@ -490,6 +490,61 @@ class Database:
             logging.error(f"❌ [sync_portfolio_orders]: Ошибка транзакции: {e}")
             raise e
 
+    # === РЕЗЕРВИРОВАНИЕ КЭША (эмулятор брокера для бумажного портфеля, Claude/BACKLOG.md №117) ===
+    # accounts.cash_reserved у РЕАЛЬНЫХ портфелей синкается из брокерского API
+    # (sync_account_fb.py) или пересчитывается из orders (sync_portfolio_orders выше) --
+    # у бумажного портфеля брокера нет, эмулятор обязан сам вести ту же бухгалтерию
+    # (обсуждение сессии 2026-08-17, "Вопрос 4"): лимитный приказ блокирует деньги на
+    # счету, рыночный -- нет (исполняется мгновенно, резервировать нечего).
+
+    def reserve_cash(self, portfolio_id: int, amount: float, currency_id: str = "USD") -> bool:
+        """
+        Переносит amount из cash_available в cash_reserved -- под синтетическую лимитную
+        заявку эмулятора. НЕ резервирует частично: если свободного кэша не хватает,
+        ничего не меняет и возвращает False (вызывающий код решает, что делать --
+        пропустить цикл, дать пользователю сообщение и т.п., это не забота этого метода).
+        """
+        row = self.execute_row(
+            "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = %s;",
+            (portfolio_id, currency_id)
+        )
+        if not row or float(row.get("cash_available") or 0.0) < amount:
+            return False
+
+        self.execute_query(
+            """
+                UPDATE public.accounts
+                SET cash_available = cash_available - %s,
+                    cash_reserved = cash_reserved + %s,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE portfolio_id = %s AND currency_id = %s;
+            """,
+            (amount, amount, portfolio_id, currency_id)
+        )
+        return True
+
+    def release_reservation(self, portfolio_id: int, reserved_amount: float, actual_spent: float = 0.0, currency_id: str = "USD"):
+        """
+        Закрывает резерв -- снимает reserved_amount из cash_reserved. Разница
+        (reserved_amount - actual_spent) возвращается в cash_available. Один метод
+        обслуживает оба исхода лимитной заявки:
+        - отмена/протухание -- actual_spent=0, весь резерв возвращается целиком;
+        - исполнение -- actual_spent = реальная стоимость сделки (qty × цена ИСПОЛНЕНИЯ,
+          не цена лимита -- лимитная заявка в принципе не может исполниться ХУЖЕ своего
+          лимита, только по нему или лучше, как у настоящего брокера) -- излишек
+          резерва ("улучшение цены") возвращается в cash_available, а не пропадает.
+        """
+        self.execute_query(
+            """
+                UPDATE public.accounts
+                SET cash_reserved = cash_reserved - %s,
+                    cash_available = cash_available + %s,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE portfolio_id = %s AND currency_id = %s;
+            """,
+            (reserved_amount, reserved_amount - actual_spent, portfolio_id, currency_id)
+        )
+
     # === СЕМЕЙНАЯ СВОДКА ===
 
     def get_family_summary(self, telegram_id: int) -> dict:

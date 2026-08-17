@@ -400,34 +400,21 @@ def generate_portfolio_button_text(crystal: str, ticker: str, quantity: int, pro
     ]
     return assemble_lego_line(blueprint)
 
-def generate_watchlist_button_text(
-    ticker: str, f1: str, f2: str, f3: str, f4: str,
-    alert_icon: str, alerts_count: int, f_strategy: str = "", strategy_count: int = 0
-) -> str:
+def generate_watchlist_button_text(ticker: str, alert_icon: str, alerts_count: int) -> str:
     """
-    Генерирует жесткую монолитную строку для инлайн-кнопок Списков Наблюдения.
-    Многомерный радар, каждое знакоместо управляется независимо. Фазы "Изучение"
-    (considered_at) и "Наблюдение" (watched_at) убраны из радара 2026-07-30 --
-    см. BACKLOG.md п.12/47 (watched_at заполнен всегда, considered_at не пишется
-    ни одним живым интерактивным путём).
-    f4 -- ортогонален жизненному циклу f1-f3 (не фаза "ордер→портфель→распродано", а
-    отдельный факт "прямо сейчас есть активный План" -- order_pipelines PENDING/ACTIVE,
-    см. Claude/11_asset_lifecycle_and_plan.md). Стоит ПОСЛЕ колокольчика алертов (не
-    внутри кластера жизненного цикла) -- по просьбе пользователя 2026-07-29, визуально
-    отдельная колонка правее.
-    f_strategy/strategy_count -- в скольких стратегиях портфеля бумага реально держится
-    сейчас (strategy_assets.allocated_quantity > 0), число, не просто факт "да/нет" --
-    вставлено между "Портфель" и "Распродано" по просьбе пользователя 2026-07-30.
+    Генерирует жесткую монолитную строку для инлайн-кнопок «листа ожидания»
+    (Claude/BACKLOG.md №123, 2026-08-17) -- LEGO-радар из шести бейджей жизненного
+    цикла (📃💼🎯🏁📋) снят, он обслуживал плоское "наблюдение", которого больше
+    нет (см. process_view_watchlist_portfolio: строка попадает в список ТОЛЬКО если
+    у неё есть активный План ИЛИ активный брокерский алерт). Статус самого Плана
+    (чего ждём -- рынка/цены) -- в тексте над кнопками, не помещается в узкую
+    кнопку осмысленно, колокольчик алертов остаётся -- независимая от Плана причина
+    быть в списке.
     """
     blueprint = [
         {"type": "ticker", "value": ticker},
         {"type": "separator", "value": " "},
-        {"type": "badge", "icon": f1, "index": 0},          # Ордер (📃)
-        {"type": "badge", "icon": f2, "index": 0},          # Портфель (💼)
-        {"type": "badge", "icon": f_strategy, "index": strategy_count},  # В скольких стратегиях портфеля (🎯N)
-        {"type": "badge", "icon": f3, "index": 0},          # Распродано (🏁)
-        {"type": "badge", "icon": alert_icon, "index": alerts_count},  # Колокольчик алертов (Управляется из хэндлера)
-        {"type": "badge", "icon": f4, "index": 0},          # Есть активный План (📋), правее колокольчика
+        {"type": "badge", "icon": alert_icon, "index": alerts_count},
         {"type": "final_row", "value": ""}
     ]
     return assemble_lego_line(blueprint)
@@ -460,7 +447,7 @@ def generate_digest_toc_keyboard(portfolio_id: int, sections: dict, strategy_id:
         return None
     return generate_tab_switch_keyboard(tabs, current_sub_view="overview")
 
-def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list, execution_mode: str = "ADVISORY", filter_strategy_id: int = 0):
+def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items: list, filter_strategy_id: int = 0):
     """
     Клавиатура детального раздела дайджеста -- одна строка кнопок на пункт (см.
     Claude/BACKLOG.md п.35 для разбора, какое действие у какого раздела):
@@ -476,13 +463,16 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     наблюдения (bot_handlers/watchlist.py::execute_watchlist_fixation) по этой
     пометке вернёт "🔙 Назад к дайджесту", а не только "В главное меню".
 
-    "▶️ Исполнить" (2026-08-14, BACKLOG.md, тема «Исполнить из дайджеста») -- только
-    у РЕАЛЬНЫХ портфелей (execution_mode != 'CONFIRM', у бумажного уже есть отдельный
-    прямой Да/Нет через send_paper_*_recommendations, дублировать не нужно), только
-    для полного BUY/SELL (не TRIM_DOWN -- сознательно отложено на потом) -- в ОДНОМ
-    ряду с навигационной кнопкой, не отдельной строкой. Решается ПО РЕКОМЕНДАЦИИ и
-    strategy_id, не по тому, какая ветка навигации сработала -- см. ниже, почему это
-    важно разводить.
+    "🤝 К сделке" (2026-08-17, Claude/BACKLOG.md №122/123, продолжение темы «Исполнить
+    из дайджеста») -- ОДНА и та же кнопка для реальных И бумажных портфелей, execution_
+    mode больше не ветвит её видимость (заменяет и старое "▶️ Исполнить", и отдельную
+    трубу бумажного портфеля send_paper_buy/sell_recommendations). Различие теперь
+    только в том, что происходит ПОСЛЕ создания Плана -- человек у брокера или эмулятор
+    (analytics/deal_planner.py, analytics/ladder_step_watcher.py, brokers_connectors/
+    paper_broker.py). Только для полного BUY/SELL (не TRIM_DOWN -- сознательно отложено,
+    у него пока остаётся старая труба) -- в ОДНОМ ряду с навигационной кнопкой, не
+    отдельной строкой. Решается ПО РЕКОМЕНДАЦИИ и strategy_id, не по тому, какая ветка
+    навигации сработала -- см. ниже, почему это важно разводить.
 
     Навигационная кнопка (2026-08-14, доработано): раньше была одна безликая "🔗" на
     ЛЮБОЙ пункт с listing_id -- не отличала слом тренда от протухания приказа.
@@ -531,20 +521,25 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                 callback_data=MenuAction(action="digest_stub").pack()
             ))
 
-        if execution_mode != "CONFIRM" and strategy_id:
+        # «🤝 К сделке» (Claude/BACKLOG.md №122/123) -- ОДНА и та же кнопка для реальных
+        # и бумажных портфелей (execution_mode больше не ветвит видимость, только то,
+        # что происходит ПОСЛЕ создания Плана -- см. analytics/deal_planner.py). TRIM_DOWN
+        # пока не сюда -- сознательно отложено (Группа A, №117), у неё пока остаётся
+        # старая труба бумажного портфеля (send_paper_trim_recommendations).
+        if strategy_id:
             if recommendation == "SELL" and listing_id:
                 row.append(types.InlineKeyboardButton(
-                    text=f"▶️ Исполнить: {item['label']}",
+                    text=f"🤝 К сделке: {item['label']}",
                     callback_data=MenuAction(
-                        action="digest_execute_sell", portfolio_id=portfolio_id,
+                        action="deal_start_sell", portfolio_id=portfolio_id,
                         listing_id=int(listing_id), strategy_id=int(strategy_id)
                     ).pack()
                 ))
             elif recommendation == "BUY" and ticker_id:
                 row.append(types.InlineKeyboardButton(
-                    text=f"▶️ Исполнить: {item['label']}",
+                    text=f"🤝 К сделке: {item['label']}",
                     callback_data=MenuAction(
-                        action="digest_execute_buy", portfolio_id=portfolio_id,
+                        action="deal_start_buy", portfolio_id=portfolio_id,
                         ticker_id=int(ticker_id), strategy_id=int(strategy_id)
                     ).pack()
                 ))

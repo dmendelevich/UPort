@@ -13,6 +13,7 @@ from brokers_connectors.fb_client import FreedomBrokerClient
 from analytics.ladder_step_watcher import check_ladder_step_triggers
 from analytics.price_move_watcher import check_price_moves
 from analytics.capital_protection_watcher import check_capital_protection
+from brokers_connectors.paper_broker import run_paper_broker_cycle
 
 def sync_quotes_fb_autonomous():
     """
@@ -126,6 +127,14 @@ def sync_quotes_fb_autonomous():
         check_ladder_step_triggers(db_sys)
     except Exception as ladder_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки готовности следующего шага лесенки: {ladder_err}")
+
+    # Эмулятор брокера для бумажного портфеля (execution_mode='CONFIRM', Claude/BACKLOG.md
+    # №117/119/122/123) -- тот же тик, что и check_ladder_step_triggers выше (переиспользует
+    # тот же LadderStepWatcher), реальные портфели не трогает.
+    try:
+        run_paper_broker_cycle(db_sys)
+    except Exception as paper_broker_err:
+        logging.error(f"⚠️ [REST FB]: Сбой эмулятора брокера бумажного портфеля: {paper_broker_err}")
 
     # PriceMoveWatcher (см. Claude/05_strategy_screen_and_kubiki.md): резкое движение цены
     # за окно времени -- та же причина вызова здесь, а не в дайджесте (рыночно-зависимо)

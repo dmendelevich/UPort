@@ -20,7 +20,7 @@ from analytics.daily_digest import assemble_portfolio_digest_data
 from analytics.portfolio_inspector import PortfolioInspector
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
-from bot_handlers.paper_execution import send_paper_buy_recommendations, send_paper_sell_recommendations, send_paper_trim_recommendations
+from bot_handlers.paper_execution import send_paper_trim_recommendations
 
 
 
@@ -102,11 +102,15 @@ def run_database_janitor(db_instance):
           AND updated_at < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) - INTERVAL '1 day';
     """
     
-    # 🔥 ПРАВКА №2: Полное удаление распроданных позиций из watchlist (> 30 дней) строго по UTC
+    # 🔥 ПРАВКА №2 (пересмотрено 2026-08-17, Claude/BACKLOG.md №123): раньше держали
+    # проданную позицию в СН 30 дней -- "последить месяц, вдруг захочу перезайти".
+    # Сценарий устранён (перезаход теперь идёт через обычные побуждения, не через
+    # залежавшуюся строку) -- строка без возрастного порога никому больше не служит:
+    # мешает digest'у честно предложить "добавить" при новой рекомендации на ту же
+    # бумагу. Чистим безусловно на каждом ночном прогоне.
     sql_clean_watchlist = """
-        DELETE FROM public.watchlist 
-        WHERE sold_out_at IS NOT NULL 
-          AND sold_out_at < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0) - INTERVAL '30 days';
+        DELETE FROM public.watchlist
+        WHERE sold_out_at IS NOT NULL;
     """
     
     try:
@@ -413,17 +417,10 @@ async def digest_clock_loop(db_instance, bot):
                         db_instance, "daily_digest",
                         lambda: send_daily_digests(db_instance, bot)
                     )
-                    # Фаза 2 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) --
-                    # тот же суточный ритм, что и дайджест, отдельный job_name для
-                    # независимого отслеживания в cron_job_runs.
-                    await run_daily_job_once(
-                        db_instance, "paper_buy_recommendations",
-                        lambda: send_paper_buy_recommendations(db_instance, bot)
-                    )
-                    await run_daily_job_once(
-                        db_instance, "paper_sell_recommendations",
-                        lambda: send_paper_sell_recommendations(db_instance, bot)
-                    )
+                    # BUY/SELL бумажного портфеля переехали на «🤝 К сделке» прямо в
+                    # дайджесте (Claude/BACKLOG.md №122/123, 2026-08-17) -- отдельная
+                    # труба (send_paper_buy/sell_recommendations) больше не нужна.
+                    # TRIM_DOWN пока остаётся на старой трубе (сознательно отложено).
                     await run_daily_job_once(
                         db_instance, "paper_trim_recommendations",
                         lambda: send_paper_trim_recommendations(db_instance, bot)

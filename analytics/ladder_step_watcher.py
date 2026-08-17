@@ -4,6 +4,7 @@ import requests
 
 import settings
 from analytics.analytics_utils import expected_step_quantity, conservative_fundamental_break_reasons
+from utils import market_is_open
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
@@ -15,6 +16,10 @@ class LadderStepWatcher:
     (pending_broker_order_id IS NULL), заново (не по сохранённому числу) проверяет trigger_conditions
     текущего шага strategy_tactics -- и, если условие выполнено, даёт конкретную цену/объём,
     посчитанные СЕГОДНЯ (listings.last_price), а не когда-то давно.
+
+    Покрывает и шаг 1 (первый вход, ещё без существующей assets) -- LEFT JOIN, не JOIN
+    (Claude/BACKLOG.md №117/119/122): раньше шаг 1 вообще не попадал в выборку, вход
+    исполнялся мгновенно в момент клика, минуя вотчер целиком.
 
     Рыночно-зависимо -- поэтому вызывается из цикла обновления котировок (см.
     check_ladder_step_triggers ниже), а не из дайджеста (обсуждено 2026-07-24: дайджест --
@@ -32,12 +37,12 @@ class LadderStepWatcher:
                    t.symbol, s.strategy_name, tpl.system_key, port.name AS portfolio_name, u.telegram_id,
                    t.signal_rsi, t.signal_macd, t.signal_ema20_streak_days, t.signal_daily_volatility_pct,
                    t.return_on_equity, t.debt_to_equity, t.pe_trailing,
-                   a.avg_price, l.last_price
+                   a.avg_price, l.last_price, op.entry_trigger_override
             FROM public.order_pipelines op
             JOIN public.tickers t ON op.ticker_id = t.id
             JOIN public.strategies s ON op.strategy_id = s.id
             JOIN public.strategy_templates tpl ON s.template_id = tpl.id
-            JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
+            LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
             JOIN public.listings l ON l.id = op.listing_id
             JOIN public.portfolios port ON port.id = op.portfolio_id
             JOIN public.users u ON u.id = port.owner_id
@@ -77,7 +82,15 @@ class LadderStepWatcher:
             # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E)
             return None
 
+        # Шпаргалка «К сделке» (Claude/BACKLOG.md №122/123) -- выбор ASAP/оптимальная цена
+        # индивидуален для КАЖДОГО решения купить/продать, а strategy_tactics задаёт ОДНО
+        # общее условие на всю стратегию. entry_trigger_override живёт на самом Плане и
+        # действует ТОЛЬКО на шаг 1 (первый вход/выход -- решение, принятое в момент «К
+        # сделке»); budget_share_pct всё равно берётся из strategy_tactics -- это вопрос
+        # устройства лесенки, не выбора цены, шпаргалка его не трогает.
         conditions = tactic.get("trigger_conditions") or {}
+        if curr_step == 1 and row.get("entry_trigger_override"):
+            conditions = row["entry_trigger_override"]
         mode = conditions.get("mode")
 
         if not conditions or not mode:
@@ -87,7 +100,14 @@ class LadderStepWatcher:
 
         condition_met = False
         if mode == "market":
-            condition_met = True
+            # Шаг 1 без существующей позиции (LEFT JOIN assets выше, Claude/BACKLOG.md
+            # №117/119/122) -- "рынок" больше не безусловная истина, а "рынок ОТКРЫТ":
+            # раньше это условие никогда не проверялось на шаге 1 (JOIN его исключал), а
+            # для шагов 2+ рынок и так почти всегда открыт к моменту проверки (движение
+            # цены -- сам триггер цикла). Теперь шаг 1 может сработать даже пока рынок
+            # закрыт (утренний дайджест) -- без этой проверки система сказала бы "пора"
+            # раньше, чем это физически исполнимо.
+            condition_met = market_is_open()
         elif mode == "limit":
             avg_price = float(row.get("avg_price") or 0)
             last_price = float(row.get("last_price") or 0)
@@ -95,6 +115,16 @@ class LadderStepWatcher:
             max_rsi = conditions.get("max_rsi")
             price_drop_pct = conditions.get("price_drop_pct")
             volatility_multiplier = conditions.get("volatility_multiplier")
+
+            # Условие "limit" сегодня всегда считается ОТ avg_price (докупка к уже
+            # держащейся позиции, см. обсуждение сессии про наставников ФБ/Gminy) -- без
+            # позиции (LEFT JOIN, шаг 1 без assets) считать не от чего, не гадаем "как бы
+            # ниже нуля" (раньше при avg_price=0 обе ветки гармошки ниже молча
+            # пропускались, а price_ok оставался True по умолчанию -- скрытая ловушка,
+            # сегодня live-данными не задета, ни один шаг 1 не в mode=limit, но
+            # LEFT JOIN делает её достижимой).
+            if avg_price <= 0:
+                return None
 
             rsi_ok = (max_rsi is None) or (rsi is not None and float(rsi) <= float(max_rsi))
             price_ok = True
@@ -122,6 +152,19 @@ class LadderStepWatcher:
                 reversal_ok = streak is not None and int(streak) >= settings.TREND_REVERSAL_CONFIRM_DAYS
 
             condition_met = rsi_ok and price_ok and reversal_ok
+        elif mode == "limit_fixed":
+            # Только entry_trigger_override (шпаргалка «К сделке», Claude/BACKLOG.md
+            # №122/123) -- цена ЗАФИКСИРОВАНА один раз в момент решения (suggest_execution_
+            # terms/suggest_optimal_price), не пересчитывается заново каждый цикл от
+            # avg_price/волатильности, как обычный "limit" выше -- так и должен вести
+            # себя настоящий лимитный приказ, уже выставленный.
+            last_price = float(row.get("last_price") or 0)
+            target_price = conditions.get("price")
+            direction = conditions.get("direction")
+            if not target_price or direction not in ("BUY", "SELL") or last_price <= 0:
+                return None
+            price_ok = (last_price <= float(target_price)) if direction == "BUY" else (last_price >= float(target_price))
+            condition_met = market_is_open() and price_ok
 
         if not condition_met:
             return None

@@ -272,96 +272,10 @@ async def _execute_virtual_trim(p_id: int, l_id: int, s_id: int, ticker_id: int,
     return True, price, proceeds, pnl, pnl_pct, remaining_qty
 
 
-async def send_paper_buy_recommendations(db_instance, bot):
-    """
-    Фаза 2 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) -- по каждому
-    портфелю с execution_mode='CONFIRM' прогоняет CashDeploymentAdvisor и шлёт
-    ОТДЕЛЬНОЕ сообщение с Да/Нет на каждую найденную рекомендацию. Область
-    сознательно ограничена только покупкой (см. BACKLOG.md №60) -- выход/подрезка/
-    лесенка добавятся отдельным шагом, когда портфель реально что-то купит.
-    """
-    portfolios = await asyncio.to_thread(
-        db_instance.execute_query,
-        "SELECT id, name, owner_id FROM public.portfolios WHERE execution_mode = 'CONFIRM';"
-    )
-    portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
-
-    # Честная статистика (Claude/BACKLOG.md №28) -- раньше эта функция возвращала None
-    # безусловно, даже если для части портфелей рекомендации не посчитались/не отправились.
-    error_count = 0
-
-    for p in portfolios:
-        p_id = int(p["id"])
-        p_name = p["name"]
-        owner_id = p.get("owner_id")
-
-        owner_row = await asyncio.to_thread(
-            db_instance.execute_row,
-            "SELECT telegram_id FROM public.users WHERE id = %s;",
-            (owner_id,)
-        ) if owner_id else {}
-        chat_id = (owner_row or {}).get("telegram_id")
-        if not chat_id:
-            logging.warning(f"⚠️ [PaperExec]: У владельца портфеля '{p_name}' (ID: {p_id}) нет telegram_id -- некому отправить подтверждение.")
-            error_count += 1
-            continue
-
-        try:
-            advisor = CashDeploymentAdvisor(db_instance)
-            recommendations = await asyncio.to_thread(advisor.evaluate_deployment, p_id)
-        except Exception as e:
-            logging.error(f"❌ [PaperExec]: Не удалось посчитать рекомендации для '{p_name}' (ID: {p_id}): {e}")
-            error_count += 1
-            continue
-
-        for rec in recommendations:
-            if rec.get("status") != "CANDIDATE_FOUND":
-                continue
-
-            s_id = int(rec["strategy_id"])
-            t_id = int(rec["ticker_id"])
-            symbol = rec["symbol"]
-            amount = float(rec["step1_amount_usd"])
-
-            text = (
-                f"💡 *{p_name}* — {rec['strategy_name']}\n"
-                f"Кандидат: *{symbol}*\n"
-                f"Слот: ${amount:,.2f} (шаг 1 лесенки, рынок)\n\n"
-                f"{rec['reason']}\n\n"
-                f"Исполнить виртуально?"
-            )
-            keyboard = generate_confirm_keyboard(
-                yes_text="✅ Да",
-                yes_callback_packed=MenuAction(action="paper_buy_yes", portfolio_id=p_id, strategy_id=s_id, ticker_id=t_id).pack(),
-                no_text="❌ Нет",
-                no_callback_packed=MenuAction(action="paper_buy_no", portfolio_id=p_id, strategy_id=s_id, ticker_id=t_id).pack(),
-            )
-            try:
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
-                logging.info(f"✅ [PaperExec]: Рекомендация {symbol} для '{p_name}' отправлена на подтверждение.")
-            except Exception as e:
-                logging.error(f"❌ [PaperExec]: Не удалось отправить рекомендацию {symbol} для '{p_name}': {e}")
-                error_count += 1
-
-    return {"processed": len(portfolios), "errors": error_count}
-
-
-@router.callback_query(MenuAction.filter(F.action == "paper_buy_no"))
-async def process_paper_buy_no(callback: types.CallbackQuery, callback_data: MenuAction):
-    """Отказ -- ничего не пишем в БД, отказ не запоминается: если условие всё ещё
-    верно, кандидат просто появится снова на следующий день (как в обычном дайджесте)."""
-    await callback.answer()
-    listing_row = await asyncio.to_thread(
-        db_sys.execute_row,
-        "SELECT id FROM public.listings WHERE ticker_id = %s AND broker_id = 1;",
-        (callback_data.ticker_id,)
-    )
-    l_id = int((listing_row or {}).get("id") or 0)
-    try:
-        await callback.message.edit_text("❌ Отклонено.", reply_markup=_back_keyboard(callback_data.portfolio_id, l_id))
-    except TelegramBadRequest:
-        pass
-
+# send_paper_buy_recommendations/process_paper_buy_no -- убраны (Claude/BACKLOG.md
+# №122/123, 2026-08-17), BUY бумажного портфеля переехал на «🤝 К сделке» прямо в
+# дайджесте (bot_handlers/deal.py). process_paper_buy_yes ниже остаётся -- его же
+# использует прямая кнопка «📥 Купить виртуально» на карточке тикера.
 
 @router.callback_query(MenuAction.filter(F.action == "paper_buy_yes"))
 async def process_paper_buy_yes(callback: types.CallbackQuery, callback_data: MenuAction):
@@ -576,90 +490,10 @@ async def process_paper_buy_force_yes(callback: types.CallbackQuery, callback_da
         pass
 
 
-async def send_paper_sell_recommendations(db_instance, bot):
-    """
-    Продолжение Фазы 2 -- второй тип подтверждения (BACKLOG.md №60/№65). Только
-    ПОЛНЫЙ выход (recommendation='SELL') -- у Револьверной/Трендовой/Консервативной
-    на фундаментальном сломе частичного выхода нет по замыслу (см. «Сделано» №33).
-    'HOLD' с текстом "перенеси в Трендовую" сознательно пропускается -- это перенос
-    между стратегиями, другое действие, есть свой готовый механизм.
-    """
-    portfolios = await asyncio.to_thread(
-        db_instance.execute_query,
-        "SELECT id, name, owner_id FROM public.portfolios WHERE execution_mode = 'CONFIRM';"
-    )
-    portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
-
-    # Честная статистика (Claude/BACKLOG.md №28) -- см. тот же принцип в send_paper_buy_recommendations
-    error_count = 0
-
-    for p in portfolios:
-        p_id = int(p["id"])
-        p_name = p["name"]
-        owner_id = p.get("owner_id")
-
-        owner_row = await asyncio.to_thread(
-            db_instance.execute_row,
-            "SELECT telegram_id FROM public.users WHERE id = %s;",
-            (owner_id,)
-        ) if owner_id else {}
-        chat_id = (owner_row or {}).get("telegram_id")
-        if not chat_id:
-            logging.warning(f"⚠️ [PaperExec]: У владельца портфеля '{p_name}' (ID: {p_id}) нет telegram_id -- некому отправить подтверждение.")
-            error_count += 1
-            continue
-
-        try:
-            evaluator = PositionExitEvaluator(db_instance)
-            alerts = await asyncio.to_thread(evaluator.evaluate_portfolio_exits, p_id)
-        except Exception as e:
-            logging.error(f"❌ [PaperExec]: Не удалось посчитать рекомендации на выход для '{p_name}' (ID: {p_id}): {e}")
-            error_count += 1
-            continue
-
-        for alert in alerts:
-            if alert.get("recommendation") != "SELL":
-                continue
-
-            l_id = int(alert["listing_id"])
-            s_id = int(alert["strategy_id"])
-            symbol = alert["symbol"]
-            quantity = float(alert["quantity"])
-
-            text = (
-                f"📤 *{p_name}* — {alert['strategy_name']}\n"
-                f"Позиция: *{symbol}* ({quantity:g} шт)\n\n"
-                f"{alert['reason']}\n\n"
-                f"Продать виртуально?"
-            )
-            keyboard = generate_confirm_keyboard(
-                yes_text="✅ Да",
-                yes_callback_packed=MenuAction(action="paper_sell_yes", portfolio_id=p_id, listing_id=l_id, strategy_id=s_id).pack(),
-                no_text="❌ Нет",
-                no_callback_packed=MenuAction(action="paper_sell_no", portfolio_id=p_id, listing_id=l_id, strategy_id=s_id).pack(),
-            )
-            try:
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
-                logging.info(f"✅ [PaperExec]: Рекомендация продажи {symbol} для '{p_name}' отправлена на подтверждение.")
-            except Exception as e:
-                logging.error(f"❌ [PaperExec]: Не удалось отправить рекомендацию продажи {symbol} для '{p_name}': {e}")
-                error_count += 1
-
-    return {"processed": len(portfolios), "errors": error_count}
-
-
-@router.callback_query(MenuAction.filter(F.action == "paper_sell_no"))
-async def process_paper_sell_no(callback: types.CallbackQuery, callback_data: MenuAction):
-    """Отказ -- ничего не пишем в БД, отказ не запоминается (как и у покупки)."""
-    await callback.answer()
-    try:
-        await callback.message.edit_text(
-            "❌ Отклонено.",
-            reply_markup=_back_keyboard(callback_data.portfolio_id, callback_data.listing_id)
-        )
-    except TelegramBadRequest:
-        pass
-
+# send_paper_sell_recommendations/process_paper_sell_no -- убраны (Claude/BACKLOG.md
+# №122/123, 2026-08-17), SELL бумажного портфеля переехал на «🤝 К сделке» прямо в
+# дайджесте (bot_handlers/deal.py). process_paper_sell_yes ниже остаётся -- его же
+# использует прямая кнопка «📤 Продать виртуально» на карточке тикера.
 
 @router.callback_query(MenuAction.filter(F.action == "paper_sell_yes"))
 async def process_paper_sell_yes(callback: types.CallbackQuery, callback_data: MenuAction):

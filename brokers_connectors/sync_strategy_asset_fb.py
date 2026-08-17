@@ -363,12 +363,18 @@ class SyncStrategyAssetFB:
             self.db.execute_query(sql, (system_now, pipeline_id))
 
         elif action == 'NEXT_STEP':
-            # Шаг лесенки совпал, переключаем конвейер на следующий уровень и активируем его статус
+            # Шаг лесенки совпал, переключаем конвейер на следующий уровень и активируем его статус.
+            # step_ready_notified_at сбрасывается -- флаг относится к ТЕКУЩЕМУ шагу (LadderStepWatcher
+            # проверяет "уже уведомляли" перед КАЖДЫМ шагом отдельно), без сброса он остался бы
+            # true с предыдущего шага и молча подавил бы уведомление о готовности следующего (найдено
+            # при тестировании эмулятора брокера -- см. Claude/BACKLOG.md №117/122, актуально и для
+            # реальных портфелей с многошаговой лесенкой, не только для бумажного).
             sql = """
                 UPDATE public.order_pipelines
                 SET current_step = current_step + 1,
                     pipeline_status = 'ACTIVE',
                     pending_broker_order_id = NULL,
+                    step_ready_notified_at = NULL,
                     updated_at = %s
                 WHERE id = %s;
             """

@@ -538,3 +538,20 @@ def was_us_market_open_yesterday() -> bool:
     except Exception as e:
         logging.error(f"❌ [utils]: Ошибка проверки торгового дня через SPY: {e} -- считаю, что торги были (безопасный дефолт).")
         return True
+
+
+def market_is_open() -> bool:
+    """
+    Открыта ли РЕГУЛЯРНАЯ сессия рынка США прямо сейчас -- через yfinance marketState,
+    тот же примитив, что уже использует analytics/execution_price_advisor.py для
+    VWAP-режима (Сигнал A), здесь вынесен в переиспользуемый вид (Claude/BACKLOG.md
+    №117/119/122 -- условие "рынок открыт" для шага 1 лесенки, а не безусловная истина).
+    SPY -- ликвидный прокси всего рынка США, одна проверка на весь цикл, не на
+    каждую отдельную бумагу.
+    """
+    try:
+        info = yf.Ticker("SPY").get_info()
+        return info.get("marketState") == "REGULAR"
+    except Exception as e:
+        logging.error(f"❌ [utils]: Ошибка проверки состояния рынка через SPY: {e} -- считаю рынок закрытым (безопасный дефолт, не даём преждевременный сигнал).")
+        return False

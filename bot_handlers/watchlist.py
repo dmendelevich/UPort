@@ -87,84 +87,81 @@ async def process_view_watchlist_portfolio(callback: types.CallbackQuery, callba
 
     # 3. ЛОГИКА ОТРЕНДЕРИВАНИЯ ВНУТРЕННОСТЕЙ ШТОРОК
     if view == "assets":
-        report_text += "🎯 **АКТИВНЫЕ РАДАРЫ И ЦЕЛИ СЛЕДОВАНИЯ:**"
-        
-        # 🔥 СУПЕР-ЗАПРОС АГРЕГАЦИИ С ВЫГРУЗКОЙ ТЕКУЩЕЙ ЦЕНЫ БРОКЕРА (last_price)
+        report_text += "⏳ **ЛИСТ ОЖИДАНИЯ:**"
+
+        # LEGO-радар (📃💼🎯🏁📋) снят (Claude/BACKLOG.md №123, 2026-08-17) -- он
+        # обслуживал плоское "просто наблюдаю", которого больше нет. Строка попадает
+        # в лист ожидания ТОЛЬКО если у неё прямо сейчас есть причина ждать -- активный
+        # План (order_pipelines PENDING/ACTIVE) ИЛИ активный брокерский алерт;
+        # остальное (просто держим, просто когда-то куплено) -- не про ожидание,
+        # тому место на карточке портфеля/стратегии, не здесь.
         watchlist_query = """
-            SELECT w.id, l.id AS listing_id, l.broker_symbol, t.symbol, t.company_name, l.last_price,
-                   w.ordered_at, w.bought_at, w.sold_out_at,
-                   COUNT(CASE WHEN al.is_active = true THEN 1 END)::int as active_alerts_count,
-                   COUNT(DISTINCT op.id)::int as active_plans_count,
-                   COUNT(DISTINCT sa.strategy_id)::int as strategy_count
+            SELECT w.id, l.id AS listing_id, t.symbol,
+                   COUNT(CASE WHEN al.is_active = true THEN 1 END)::int AS active_alerts_count
             FROM public.watchlist w
             JOIN public.listings l ON w.listing_id = l.id
             JOIN public.tickers t ON l.ticker_id = t.id
             LEFT JOIN public.alerts al ON al.listing_id = w.listing_id
                                       AND al.portfolio_id = w.portfolio_id
                                       AND al.is_active = true
-            LEFT JOIN public.order_pipelines op ON op.portfolio_id = w.portfolio_id AND op.listing_id = w.listing_id
-                                      AND op.pipeline_status IN ('PENDING', 'ACTIVE')
-            LEFT JOIN public.assets a ON a.portfolio_id = w.portfolio_id AND a.listing_id = w.listing_id
-            LEFT JOIN public.strategy_assets sa ON sa.asset_id = a.id AND sa.allocated_quantity > 0
             WHERE w.portfolio_id = %s
-            GROUP BY w.id, l.id, t.symbol, t.company_name, l.last_price
+            GROUP BY w.id, l.id, t.symbol
             ORDER BY t.symbol ASC;
         """
-
         w_res_raw = db_bot.execute_query(watchlist_query, (p_id,))
         w_res = w_res_raw if isinstance(w_res_raw, list) else ([w_res_raw] if w_res_raw else [])
 
-        if w_res:
-            for item in w_res:
-                pure_symbol = item['symbol']
-                l_id = int(item['listing_id'] or 0)
-                last_price = float(item['last_price'] or 0)
-                
-                # Многомерный радар фаз жизненного цикла UPort. Фазы "Изучение"/"Наблюдение"
-                # (considered_at/watched_at) убраны из радара 2026-07-30 -- на живых данных
-                # watched_at заполнен всегда (0 NULL из 39 строк), бейдж не различал ничего;
-                # considered_at не пишется ни одним живым интерактивным путём (см. BACKLOG.md
-                # п.12/47), только тремя легаси-инсертами в sync_account_fb.py, всегда синхронно
-                # с watched_at -- то есть никогда не нёс отдельной информации.
-                b_order = "📃" if item.get('ordered_at') is not None else ""
-                b_asset = "💼" if item.get('bought_at') is not None else ""
-                b_sold  = "🏁" if item.get('sold_out_at') is not None else ""
-                # Отдельный от жизненного цикла факт -- прямо сейчас есть активный План
-                # (order_pipelines PENDING/ACTIVE), см. Claude/11_asset_lifecycle_and_plan.md
-                b_plan = "📋" if int(item.get('active_plans_count') or 0) > 0 else ""
+        # Активные Планы всего портфеля -- один запрос, не N+1 по каждой строке СН.
+        plans_query = """
+            SELECT op.listing_id, op.strategy_id, op.current_step, op.target_quantity,
+                   op.entry_trigger_override, s.strategy_name
+            FROM public.order_pipelines op
+            JOIN public.strategies s ON s.id = op.strategy_id
+            WHERE op.portfolio_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE');
+        """
+        plans_raw = db_bot.execute_query(plans_query, (p_id,))
+        plans_raw = plans_raw if isinstance(plans_raw, list) else ([plans_raw] if plans_raw else [])
+        plans_by_listing = {}
+        for plan in plans_raw:
+            plans_by_listing.setdefault(int(plan["listing_id"]), []).append(plan)
 
-                # В скольких стратегиях портфеля бумага реально держится сейчас
-                # (strategy_assets.allocated_quantity > 0) -- по просьбе пользователя
-                # 2026-07-30, между "Портфель" и "Распродано".
-                strategy_count = int(item.get('strategy_count') or 0)
-                b_strategy = "🎯" if strategy_count > 0 else ""
+        shown_any = False
+        for item in w_res:
+            l_id = int(item['listing_id'] or 0)
+            alerts_count = int(item.get('active_alerts_count') or 0)
+            listing_plans = plans_by_listing.get(l_id, [])
 
-                # Извлекаем честный счетчик активных алертов из базы
-                alerts_count = int(item.get('active_alerts_count') or 0)
-                # Логика видимости колокольчика вынесена ВНЕ генератора по вашему ТЗ
-                b_alert = "🔔" if alerts_count > 0 else ""
+            if not listing_plans and alerts_count == 0:
+                continue  # ничего не ждём и алертов нет -- не лист ожидания
+            shown_any = True
 
-                # 🔥 РЕФАКТОРИНГ: Переводим Списки наблюдения на жесткую LEGO-сетку с радаром
-                button_text = generate_watchlist_button_text(
-                    ticker=pure_symbol,
-                    f1=b_order,
-                    f2=b_asset,
-                    f_strategy=b_strategy,
-                    strategy_count=strategy_count,
-                    f3=b_sold,
-                    f4=b_plan,
-                    alert_icon=b_alert,
-                    alerts_count=alerts_count
+            pure_symbol = item['symbol']
+            for plan in listing_plans:
+                override = plan.get("entry_trigger_override") or {}
+                mode = override.get("mode")
+                if mode == "market":
+                    wait_text = "рынка"
+                elif mode == "limit_fixed" and override.get("price"):
+                    wait_text = f"цены ${float(override['price']):,.2f}"
+                else:
+                    wait_text = "условия следующего шага лесенки"
+                verb = "докупки" if plan["target_quantity"] and float(plan["target_quantity"]) > 0 and int(plan["current_step"]) > 1 else (
+                    "входа" if plan["target_quantity"] and float(plan["target_quantity"]) > 0 else "выхода"
                 )
+                report_text += f"\n⏳ *{pure_symbol}* ({plan['strategy_name']}) — план {verb}, жду {wait_text}."
 
-                # Полная карточка тикера (sub_view="owner"), не сразу шторка алертов --
-                # по просьбе пользователя (2026-07-29), чтобы была видна кнопка "План".
-                builder.row(types.InlineKeyboardButton(
-                    text=button_text,
-                    callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner").pack()
-                ))
-        else:
-            report_text += "\n   *Активы в данном списке наблюдения пока отсутствуют.*"
+            b_alert = "🔔" if alerts_count > 0 else ""
+            button_text = generate_watchlist_button_text(ticker=pure_symbol, alert_icon=b_alert, alerts_count=alerts_count)
+
+            # Полная карточка тикера (sub_view="owner"), не сразу шторка алертов --
+            # по просьбе пользователя (2026-07-29), чтобы была видна кнопка "План".
+            builder.row(types.InlineKeyboardButton(
+                text=button_text,
+                callback_data=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=pure_symbol, sub_view="owner").pack()
+            ))
+
+        if not shown_any:
+            report_text += "\n   *Сейчас нечего ждать -- лист ожидания пуст.*"
 
     elif view == "yahoo":
         report_text += "📊 **Усредненные фундаментальные показатели радара (Yahoo):**\n"

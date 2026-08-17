@@ -90,8 +90,7 @@ async def process_view_digest(callback: types.CallbackQuery, callback_data: Menu
     else:
         text = header + render_digest_section_text(data, section_key, standalone=False)
         keyboard = generate_digest_section_keyboard(
-            p_id, section_key, data["sections"][section_key]["items"],
-            execution_mode=data.get("execution_mode", "ADVISORY"), filter_strategy_id=s_id
+            p_id, section_key, data["sections"][section_key]["items"], filter_strategy_id=s_id
         )
 
     try:
