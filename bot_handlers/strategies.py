@@ -16,6 +16,7 @@ from bot_handlers.bot_keyboards import (
     generate_ticker_footer_keyboard,
 )
 from analytics.analytics_utils import TickerEvaluator, convert_currency_amount, CONTENT_STRATEGY_SYSTEM_KEYS
+from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 
 router = Router()
 
@@ -222,6 +223,38 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
         one_step_back_text="🔙 К стратегии",
         full_back_callback=MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id).pack()
     )
+
+    # Индексное ядро -- не конкурс кандидатов через экран (screen_universe_for_strategy
+    # его вообще не знает, TickerEvaluator без скорера для INDEX_CORE молча вернул бы
+    # пустой список -- вводящее в заблуждение "ни одна бумага не проходит экран",
+    # хотя причина совсем другая). Побуждение 2 для ядра -- показать состояние трёх
+    # курируемых ног, не топ-10 (Claude/BACKLOG.md №122, шаг 6).
+    if system_key == "INDEX_CORE":
+        legs = await asyncio.to_thread(CashDeploymentAdvisor(db_bot).get_index_core_leg_status, p_id, s_id)
+        builder = InlineKeyboardBuilder()
+        if legs:
+            lines = ["💡 *Индексное ядро* — состояние ног:\n"]
+            for leg in legs:
+                pct = leg["pct_of_target"]
+                pct_text = f"{pct:.0f}% от цели" if pct is not None else "цель не задана"
+                lines.append(f"*{leg['symbol']}*: ${leg['held_usd']:,.2f} / ${leg['target_usd']:,.2f} ({pct_text})")
+                if leg.get("ticker_id"):
+                    builder.row(types.InlineKeyboardButton(
+                        text=f"🤝 К сделке: {leg['symbol']} ({pct_text})",
+                        callback_data=MenuAction(
+                            action="deal_start_buy", portfolio_id=p_id, strategy_id=s_id, ticker_id=int(leg["ticker_id"])
+                        ).pack()
+                    ))
+            text = "\n".join(lines)
+        else:
+            text = "💡 Целевые веса ног ядра не заданы (`rules_config`) -- нечего показать."
+        final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+        final_builder.attach(InlineKeyboardBuilder.from_markup(back_to_strategy))
+        try:
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+        except TelegramBadRequest:
+            pass
+        return
 
     if system_key not in CONTENT_STRATEGY_SYSTEM_KEYS:
         try:

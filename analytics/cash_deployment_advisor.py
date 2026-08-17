@@ -208,6 +208,59 @@ class CashDeploymentAdvisor:
         step1_share_pct = float(tactic.get("budget_share_pct") or 100.0)
         return round(slot_cap * step1_share_pct / 100.0, 2)
 
+    def get_index_core_leg_status(self, portfolio_id: int, strategy_id: int) -> list:
+        """
+        Побуждение 2 для Индексного ядра (Claude/BACKLOG.md №122, шаг 6) -- у ядра нет
+        конкурса кандидатов через экран, «Предложения» должны показывать не топ-10, а
+        честное состояние всех курируемых ног (VTI/VXUS/BND): держим/цель/% от цели.
+        Тот же источник данных, что _find_index_core_leg использует для выбора ОДНОЙ
+        самой отставшей ноги -- здесь просто не останавливаемся на первой, отдаём все.
+        Возвращает [] для не-INDEX_CORE стратегии или стратегии без rules_config.
+
+        Каждая нога кликабельна через ту же "🤝 К сделке" (bot_handlers/deal.py) --
+        verify_buy_candidate/compute_slot_size уже умеют работать с ЛЮБОЙ ногой ядра,
+        не только с автоматически выбранной самой отставшей (см. их же INDEX_CORE-ветки).
+        """
+        inspector = PortfolioInspector(self.db, portfolio_id)
+        balances = inspector.get_virtual_cash_balances()
+
+        strat_rows = self._get_strategies_with_keys(portfolio_id)
+        strat_row = next((r for r in strat_rows if int(r["id"]) == int(strategy_id)), None)
+        if not strat_row or strat_row.get("system_key") != "INDEX_CORE":
+            return []
+
+        rules_config = strat_row.get("rules_config") or {}
+        weights = rules_config.get("index_core_target_weights") or {}
+        if not weights:
+            return []
+
+        bal = next(
+            (b for s_id, b in balances.get("strategies", {}).items() if int(s_id) == int(strategy_id)),
+            {}
+        )
+        ideal_budget_usd = float((bal or {}).get("ideal_budget_usd") or 0.0)
+
+        symbols = list(weights.keys())
+        held_values = self._get_index_core_leg_values(strategy_id, symbols)
+
+        ticker_rows = self.db.execute_query("SELECT id, symbol FROM public.tickers WHERE symbol = ANY(%s);", (symbols,)) or []
+        ticker_rows = ticker_rows if isinstance(ticker_rows, list) else [ticker_rows]
+        ticker_id_by_symbol = {r["symbol"]: int(r["id"]) for r in ticker_rows if r}
+
+        legs = []
+        for symbol, weight_pct in weights.items():
+            target_usd = ideal_budget_usd * float(weight_pct) / 100.0
+            held_usd = held_values.get(symbol, 0.0)
+            legs.append({
+                "symbol": symbol,
+                "ticker_id": ticker_id_by_symbol.get(symbol),
+                "held_usd": round(held_usd, 2),
+                "target_usd": round(target_usd, 2),
+                "pct_of_target": round(held_usd / target_usd * 100, 1) if target_usd > 0 else None,
+            })
+        legs.sort(key=lambda leg: (leg["pct_of_target"] if leg["pct_of_target"] is not None else 0))
+        return legs
+
     def verify_buy_candidate(self, portfolio_id: int, strategy_id: int, ticker_id: int) -> dict:
         """
         Проверка "всё ещё можно ли купить именно этот тикер под эту стратегию" --

@@ -1,9 +1,11 @@
 import re
+import json
 import logging
 import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
@@ -214,10 +216,15 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
     # шаблонами) -- TickerEvaluator оценивает все активные content-стратегии портфеля
     # за один вызов (не по одной), поэтому на каждый портфель нужен ровно один вызов.
     strategy_compat_lines = []
+    # Побуждение 3б (Claude/BACKLOG.md №118/122, шаг 7, живой случай SNDK) -- проходит ли
+    # бумага хоть одну активную стратегию хоть одного портфеля ЭТОГО пользователя (не
+    # семьи целиком -- покупка всё равно личная). Определяет, показывать ли кнопку
+    # «➕ Купить вне стратегии» ниже.
+    user_owns_any_pass = False
     try:
         portfolio_rows = await asyncio.to_thread(
             db_bot.execute_query,
-            "SELECT id, name FROM public.portfolios ORDER BY id;"
+            "SELECT id, name, owner_id FROM public.portfolios ORDER BY id;"
         )
         portfolio_rows = portfolio_rows if isinstance(portfolio_rows, list) else ([portfolio_rows] if portfolio_rows else [])
 
@@ -225,8 +232,11 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
         for p in portfolio_rows:
             p_report = await asyncio.to_thread(evaluator.evaluate_ticker_strategy, int(ticker_id), int(p["id"]))
             for info in p_report.get("explain_map", {}).values():
-                icon = "✅" if info["is_compatible_technically"] else "❌"
+                is_pass = bool(info["is_compatible_technically"])
+                icon = "✅" if is_pass else "❌"
                 strategy_compat_lines.append(f" • {p['name']} → {info['strategy_name']}: {icon}")
+                if is_pass and user_db_id and int(p.get("owner_id") or 0) == int(user_db_id):
+                    user_owns_any_pass = True
     except Exception as e:
         logging.error(f"⚠️ Ошибка проверки совместимости со стратегиями для ticker_id={ticker_id}: {e}")
 
@@ -265,6 +275,16 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
             text="🔬 В список наблюдения",
             callback_data=MenuAction(action="add_to_wl", ticker_id=int(ticker_id), sub_view="search").pack()
         ))
+
+    # Побуждение 3б -- бумага не проходит ни одну активную стратегию НИ ОДНОГО портфеля
+    # этого пользователя (живой случай SNDK, Claude/BACKLOG.md №118/122). Не блокирует
+    # покупку (это деньги пользователя) -- ведёт в ручной ввод суммы/количества, авто-
+    # слота неоткуда взять без стратегии. Показывается независимо от watched_portfolios.
+    if user_db_id and not user_owns_any_pass:
+        builder.row(types.InlineKeyboardButton(
+            text="➕ Купить вне стратегии",
+            callback_data=MenuAction(action="outside_buy_start", ticker_id=int(ticker_id)).pack()
+        ))
     context_markup = builder.as_markup()
     final_builder = InlineKeyboardBuilder.from_markup(context_markup)
 
@@ -283,5 +303,168 @@ async def render_ticker_passport(target_message: types.Message, ticker_id: int, 
 
     try:
         await target_message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+    except TelegramBadRequest:
+        pass
+
+
+# =========================================================================
+# ➕ «Купить вне стратегии» -- побуждение 3б (Claude/BACKLOG.md №118/122, шаг 7,
+# живой случай SNDK). Бумага не проходит ни одну активную стратегию НИ ОДНОГО
+# портфеля этого пользователя -- авто-слота (CashDeploymentAdvisor.compute_slot_size)
+# взять неоткуда, сумма/количество вводятся вручную. Ложится в буферную стратегию
+# «Неопределённая» (system_key='UNALLOCATED', уже существует, уже используется для
+# бумаг вне стратегийной логики). mode="market", как и у обычного шага 1 -- решение
+# уже принято целиком в момент клика, лесенки здесь не бывает.
+# =========================================================================
+
+class OutsideBuyStates(StatesGroup):
+    waiting_for_amount = State()
+
+
+@router.callback_query(MenuAction.filter(F.action == "outside_buy_start"))
+async def process_outside_buy_start(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    """Смарт-разводка mono/multi-портфелей -- тот же приём, что и у process_add_to_watchlist_routing."""
+    await callback.answer()
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    t_id = callback_data.ticker_id
+
+    portfolios = await asyncio.to_thread(
+        db_bot.execute_query, "SELECT id, name FROM public.portfolios WHERE owner_id = %s AND id != 0 ORDER BY id;", (user_db_id,)
+    )
+    portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
+    if not portfolios:
+        try:
+            await callback.message.edit_text("⚠️ У вас нет зарегистрированных портфелей.", reply_markup=generate_main_menu_keyboard())
+        except TelegramBadRequest:
+            pass
+        return
+
+    if len(portfolios) == 1:
+        await _ask_outside_buy_amount(callback.message, state, user_db_id, int(portfolios[0]["id"]), t_id)
+        return
+
+    builder = InlineKeyboardBuilder()
+    for p in portfolios:
+        builder.row(types.InlineKeyboardButton(
+            text=f"💼 {p['name']}",
+            callback_data=MenuAction(action="outside_buy_portfolio", portfolio_id=int(p["id"]), ticker_id=t_id).pack()
+        ))
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(menu_only=True)))
+    try:
+        await callback.message.edit_text("В какой портфель?", reply_markup=final_builder.as_markup())
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "outside_buy_portfolio"))
+async def process_outside_buy_portfolio_chosen(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    await callback.answer()
+    user_data = await state.get_data()
+    user_db_id = user_data.get("user_db_id")
+    await _ask_outside_buy_amount(callback.message, state, user_db_id, callback_data.portfolio_id, callback_data.ticker_id)
+
+
+async def _ask_outside_buy_amount(message: types.Message, state: FSMContext, user_db_id: int, portfolio_id: int, ticker_id: int):
+    prior_data = await state.get_data()
+    await state.set_state(OutsideBuyStates.waiting_for_amount)
+    await state.update_data(
+        user_db_id=user_db_id, is_admin=prior_data.get("is_admin", False),
+        outside_buy_portfolio_id=portfolio_id, outside_buy_ticker_id=ticker_id,
+    )
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="🔙 Отмена", callback_data=MenuAction(action="outside_buy_cancel", ticker_id=ticker_id).pack()))
+    try:
+        await message.edit_text(
+            "➕ **Покупка вне стратегии**\n\n"
+            "Сколько купить? Отправь сумму в долларах (например `500`) или количество акций со словом «шт» "
+            "(например `10 шт`). Ляжет в стратегию «Неопределённая».",
+            parse_mode="Markdown", reply_markup=builder.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "outside_buy_cancel"))
+async def process_outside_buy_cancel(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    await callback.answer()
+    await state.set_state(None)
+    await process_view_ticker_passport(callback, callback_data, state)
+
+
+@router.message(OutsideBuyStates.waiting_for_amount)
+async def process_outside_buy_amount_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    p_id = data.get("outside_buy_portfolio_id")
+    t_id = data.get("outside_buy_ticker_id")
+    raw = str(message.text or "").strip().lower().replace(",", ".").replace("$", "")
+
+    is_shares = "шт" in raw
+    numeric_part = re.sub(r"[^\d.]", "", raw)
+    try:
+        amount_val = float(numeric_part)
+        if amount_val <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠️ Не понял число. Отправь сумму в долларах (`500`) или количество акций (`10 шт`).")
+        return
+
+    await state.set_state(None)
+
+    portfolio_row = await asyncio.to_thread(db_sys.execute_row, "SELECT broker_id FROM public.portfolios WHERE id = %s;", (p_id,))
+    broker_id = int((portfolio_row or {}).get("broker_id") or 1)
+    listing_row = await asyncio.to_thread(db_sys.execute_row, "SELECT id, last_price FROM public.listings WHERE ticker_id = %s AND broker_id = %s;", (t_id, broker_id))
+    if not listing_row:
+        try:
+            new_l_id = await asyncio.to_thread(db_sys.ensure_listing, t_id, broker_id)
+        except Exception as e:
+            await message.answer(f"⚠️ Не удалось легализовать листинг: {e}")
+            return
+        listing_row = await asyncio.to_thread(db_sys.execute_row, "SELECT id, last_price FROM public.listings WHERE id = %s;", (new_l_id,))
+    l_id = int(listing_row["id"])
+    price = float(listing_row.get("last_price") or 0.0)
+    if price <= 0:
+        await message.answer("⚠️ Не удалось получить цену, попробуй позже.")
+        return
+
+    qty = int(amount_val) if is_shares else max(1, round(amount_val / price))
+
+    unalloc_row = await asyncio.to_thread(db_sys.execute_row, """
+        SELECT s.id, s.strategy_name FROM public.strategies s
+        JOIN public.strategy_templates tpl ON s.template_id = tpl.id
+        WHERE s.portfolio_id = %s AND tpl.system_key = 'UNALLOCATED';
+    """, (p_id,))
+    if not unalloc_row:
+        await message.answer("🚨 В портфеле нет буферной стратегии «Неопределённая» -- обратись к администратору.")
+        return
+    s_id = int(unalloc_row["id"])
+
+    result = await asyncio.to_thread(db_sys.execute_query, """
+        INSERT INTO public.order_pipelines
+            (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+             target_quantity, initial_entry_price, pending_broker_order_id, entry_trigger_override, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, 1, 'PENDING', %s, %s, NULL, %s::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id;
+    """, (p_id, l_id, t_id, s_id, qty, price, json.dumps({"mode": "market"})))
+    if not result:
+        await message.answer("⚠️ Не удалось создать план -- возможно, по этой бумаге в «Неопределённой» уже есть активный план.")
+        return
+    pipeline_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    await asyncio.to_thread(db_sys.ensure_watchlist_row_v2, portfolio_id=p_id, listing_id=l_id, reason="watched")
+
+    logging.info(f"✅ [OutsideBuy]: План #{pipeline_id} вне стратегии создан (ticker_id={t_id}, {qty} шт, портфель {p_id}).")
+
+    back_kb = generate_nav_back_keyboard(
+        one_step_back_text="🔙 К карточке бумаги",
+        full_back_callback=MenuAction(action="view_ticker", portfolio_id=p_id, listing_id=l_id, sub_view="owner").pack()
+    )
+    try:
+        await message.answer(
+            f"✅ **План создан** (#{pipeline_id}, «{unalloc_row['strategy_name']}»)\n\n"
+            f"~{qty} шт по рынку.\n\nЖду рынка.",
+            parse_mode="Markdown", reply_markup=back_kb
+        )
     except TelegramBadRequest:
         pass

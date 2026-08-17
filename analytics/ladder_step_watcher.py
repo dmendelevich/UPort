@@ -79,8 +79,15 @@ class LadderStepWatcher:
             WHERE strategy_id = %s AND step_number = %s;
         """, (strat_id, curr_step))
         if not tactic:
-            # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E)
-            return None
+            # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E).
+            # Исключение -- шаг 1 с entry_trigger_override (Claude/BACKLOG.md №122): бумага вне
+            # стратегии (побуждение 3б, «Неопределённая») -- у буферной стратегии тактик нет
+            # вообще, но решение уже принято целиком в момент «К сделке», лесенки тут не
+            # бывает по определению -- весь target_quantity одним шагом (budget_share_pct=100).
+            if curr_step == 1 and row.get("entry_trigger_override"):
+                tactic = {"budget_share_pct": 100.0, "trigger_conditions": {}}
+            else:
+                return None
 
         # Шпаргалка «К сделке» (Claude/BACKLOG.md №122/123) -- выбор ASAP/оптимальная цена
         # индивидуален для КАЖДОГО решения купить/продать, а strategy_tactics задаёт ОДНО
