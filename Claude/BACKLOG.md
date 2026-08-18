@@ -228,6 +228,8 @@
 
 ## Открыто — Трек C (Наведение порядка)
 
+128. **Заменить все `UPSERT` (`INSERT ... ON CONFLICT ... DO UPDATE`) на явные раздельные `UPDATE`/`INSERT`.** Решение зафиксировано со слов пользователя, принципы и мотивация не обсуждались — записать для будущего разговора. Инвентарь живых мест (grep по всей кодовой базе, не по памяти) — `database.py`, `cron_scheduler.py`, `brokers_connectors/paper_broker.py` (в т.ч. только что написанный `_upsert_asset_quantity`), `brokers_connectors/sync_strategy_asset_fb.py`, `brokers_connectors/sync_account_fb.py`, `brokers_connectors/sync_alerts_fb.py`, `bot_handlers/paper_execution.py`, `site_connectors/market_scanner.py`, плюс разовые скрипты (`add_strategy_template_tactics.py`, `exchanges_info/load_exchanges_*.py`, `run_gateway_test.py`) — последние, вероятно, вне периметра (не часть живого процесса). Не начато. *(зафиксировано 2026-08-17, со слов пользователя, Трек C)*
+
 10. **Актуализировать архитектурное описание системы.** `ARCHITECTURE/ARCHITECTURE_tickers.md` (v10.2) описывает только справочный слой (`tickers`/`exchanges`/паспортизация/сигналы/фундаментал) и не отражает слой `brokers` → `listings` → `watchlist` → `portfolios`, введённый рефакторингом v3.0 (коммит `d2bc335`). Нужно новое полное описание архитектуры БД и потоков данных. *(зафиксировано 2026-07-20)*
 
 11. **Удалить портфель 9999 "Семейная лаборатория ИИ".** Устаревшая концепция — её роль (отслеживание общего интереса к бумаге) теперь выполняет `provenance` в `tickers`. Пока НЕ удалять — есть риск, что что-то на неё завязано; сначала найти и убрать все зависимости. *(зафиксировано 2026-07-20)*
