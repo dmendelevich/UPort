@@ -558,6 +558,14 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                         listing_id=int(listing_id), strategy_id=int(strategy_id)
                     ).pack()
                 ))
+            elif recommendation == "TOP_UP" and listing_id:
+                row.append(types.InlineKeyboardButton(
+                    text=f"🤝 К покупке: {item['label']}",
+                    callback_data=MenuAction(
+                        action="deal_start_topup", portfolio_id=portfolio_id,
+                        listing_id=int(listing_id), strategy_id=int(strategy_id)
+                    ).pack()
+                ))
         builder.row(*row)
 
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())

@@ -215,3 +215,66 @@ def create_trim_plan(db_instance, portfolio_id: int, strategy_id: int, listing_i
 
     logging.info(f"✅ [DealPlanner]: План подрезки #{pipeline_id} создан ({symbol}, {trim_shares} из {held_qty:g} шт, портфель {portfolio_id}).")
     return {"ok": True, "pipeline_id": pipeline_id, "symbol": symbol, "qty": trim_shares, "listing_id": listing_id, "override": override}
+
+
+def create_topup_plan(db_instance, portfolio_id: int, strategy_id: int, listing_id: int, cheat_sheet: str) -> dict:
+    """
+    Докупка просевшей позиции до планового слота (Claude/13_portfolio_construction_and_
+    rebalancing_rules.md, миграция на «К сделке» -- Claude/BACKLOG.md, 2026-08-18) --
+    в отличие от create_trim_plan, СО шпаргалкой ASAP/оптимальная цена (согласовано с
+    пользователем -- это решение добавить денег в конкретную бумагу, единообразие с
+    остальным «К сделке» важнее минимальной разницы с подрезкой).
+
+    Перепроверяет PortfolioRebalancer заново (не по цифрам утреннего дайджеста) --
+    разворот мог перестать быть подтверждённым, слот мог заполниться другой докупкой.
+    qty -- целые акции, ограничено реальным доступным кэшем (как у create_buy_plan).
+    """
+    alerts = PortfolioRebalancer(db_instance).evaluate_portfolio(portfolio_id)
+    match = next(
+        (a for a in alerts
+         if a.get("recommendation") == "TOP_UP" and int(a.get("listing_id", -1)) == listing_id and int(a.get("strategy_id", -1)) == strategy_id),
+        None
+    )
+    if not match:
+        return {"ok": False, "error": "Условия изменились -- докупка больше не актуальна."}
+
+    ticker_id = int(match["ticker_id"])
+    symbol = match["symbol"]
+
+    listing_row = db_instance.execute_row("SELECT last_price FROM public.listings WHERE id = %s;", (listing_id,))
+    price = float((listing_row or {}).get("last_price") or 0.0)
+    if price <= 0:
+        return {"ok": False, "error": "Не удалось получить цену, попробуй позже."}
+
+    cash_row = db_instance.execute_row(
+        "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = 'USD';", (portfolio_id,)
+    )
+    cash_available = float((cash_row or {}).get("cash_available") or 0.0)
+
+    qty = max(1, round(float(match["quantity"])))
+    qty = min(qty, int(cash_available // price))
+    if qty <= 0:
+        return {"ok": False, "error": "Недостаточно свободного кэша для докупки."}
+
+    override = resolve_cheat_sheet(db_instance, listing_id, "BUY", cheat_sheet)
+    if "error" in override:
+        return {"ok": False, "error": override["error"]}
+
+    result = db_instance.execute_query(
+        """
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, entry_trigger_override, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, 1, 'PENDING', %s, %s, NULL, %s::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id;
+        """,
+        (portfolio_id, listing_id, ticker_id, strategy_id, qty, price, json.dumps(override))
+    )
+    if not result:
+        return {"ok": False, "error": "Не удалось создать план -- возможно, по этой бумаге уже есть активный план."}
+    pipeline_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    db_instance.ensure_watchlist_row_v2(portfolio_id=portfolio_id, listing_id=listing_id, reason="watched")
+
+    logging.info(f"✅ [DealPlanner]: План докупки #{pipeline_id} создан ({symbol}, {qty} шт, портфель {portfolio_id}, шпаргалка={cheat_sheet}).")
+    return {"ok": True, "pipeline_id": pipeline_id, "symbol": symbol, "qty": qty, "listing_id": listing_id, "override": override}

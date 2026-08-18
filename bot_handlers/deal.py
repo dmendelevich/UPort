@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard
-from analytics.deal_planner import create_buy_plan, create_sell_plan, create_trim_plan
+from analytics.deal_planner import create_buy_plan, create_sell_plan, create_trim_plan, create_topup_plan
 
 """
 «К сделке» -- единая точка входа для решения «беру»/«продаю» (Claude/BACKLOG.md
@@ -130,6 +130,48 @@ async def process_deal_confirm_sell(callback: types.CallbackQuery, callback_data
         pass
 
 
+@router.callback_query(MenuAction.filter(F.action == "deal_start_topup"))
+async def process_deal_start_topup(callback: types.CallbackQuery, callback_data: MenuAction):
+    """Докупка просевшей позиции -- со шпаргалкой, как обычная покупка (согласовано 2026-08-18)."""
+    await callback.answer()
+    keyboard = _cheat_sheet_keyboard(
+        "deal_confirm_topup", callback_data.portfolio_id, callback_data.strategy_id, listing_id=callback_data.listing_id
+    )
+    keyboard.attach(InlineKeyboardBuilder.from_markup(_back_to_digest_keyboard(callback_data.portfolio_id)))
+    try:
+        await callback.message.edit_text(
+            "🤝 Как действуем?\n\n"
+            "⚡ *Как можно скорее* — заявка близко к текущей цене, минимум ожидания.\n"
+            "🎯 *Оптимальная цена* — система подождёт более выгодную цену и сообщит, когда пора.",
+            parse_mode="Markdown", reply_markup=keyboard.as_markup()
+        )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "deal_confirm_topup"))
+async def process_deal_confirm_topup(callback: types.CallbackQuery, callback_data: MenuAction):
+    p_id, s_id, l_id = callback_data.portfolio_id, callback_data.strategy_id, callback_data.listing_id
+    cheat_sheet = callback_data.sub_view
+
+    await callback.answer("Создаю план...")
+    result = await asyncio.to_thread(create_topup_plan, db_sys, p_id, s_id, l_id, cheat_sheet)
+
+    back_kb = _back_to_digest_keyboard(p_id)
+    if not result["ok"]:
+        try:
+            await callback.message.edit_text(f"⚠️ {result['error']}", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    text = _format_plan_created_text(result, is_topup=True)
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_kb)
+    except TelegramBadRequest:
+        pass
+
+
 @router.callback_query(MenuAction.filter(F.action == "deal_trim"))
 async def process_deal_trim(callback: types.CallbackQuery, callback_data: MenuAction):
     """
@@ -158,7 +200,7 @@ async def process_deal_trim(callback: types.CallbackQuery, callback_data: MenuAc
         pass
 
 
-def _format_plan_created_text(result: dict, is_sell: bool = False, is_trim: bool = False) -> str:
+def _format_plan_created_text(result: dict, is_sell: bool = False, is_trim: bool = False, is_topup: bool = False) -> str:
     """
     Единый текст для реального И бумажного портфеля -- намеренно не говорит
     "исполнено", План только создан, дальше решает LadderStepWatcher/paper_broker
@@ -167,7 +209,7 @@ def _format_plan_created_text(result: dict, is_sell: bool = False, is_trim: bool
     symbol = result["symbol"]
     qty = abs(result["qty"])
     override = result["override"]
-    verb = "подрезки" if is_trim else ("продажи" if is_sell else "входа")
+    verb = "подрезки" if is_trim else ("докупки" if is_topup else ("продажи" if is_sell else "входа"))
 
     if override["mode"] == "market":
         # Нейтрально по execution_mode (Claude/BACKLOG.md №131, 2026-08-18) -- раньше
