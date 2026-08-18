@@ -493,10 +493,6 @@ async def process_new_execute(callback: types.CallbackQuery, state: FSMContext):
 # IS NULL), поэтому дальнейшая привязка ордера отрабатывает существующим кодом без правок.
 # =========================================================================
 
-class NewIdeaPlanStates(StatesGroup):
-    waiting_for_target_quantity = State()
-
-
 def _back_to_plan_keyboard(portfolio_id: int, listing_id: int):
     return generate_nav_back_keyboard(
         one_step_back_text="🔙 К плану",
@@ -593,172 +589,15 @@ async def process_plan_from_idea_strategy(callback: types.CallbackQuery, callbac
         )
         return
 
-    prior_data = await state.get_data()
-    await state.set_state(NewIdeaPlanStates.waiting_for_target_quantity)
-    await state.update_data(
-        user_db_id=prior_data.get("user_db_id"),
-        is_admin=prior_data.get("is_admin", False),
-        idea_plan_portfolio_id=p_id,
-        idea_plan_ticker_id=t_id,
-        idea_plan_listing_id=l_id,
-        idea_plan_strategy_id=s_id,
-        menu_msg_id=callback.message.message_id,
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="🔙 Отмена", callback_data=MenuAction(action="plan_from_idea_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-    ))
-
-    try:
-        await callback.message.edit_text(
-            "📝 **План входа**\n\nЕщё ничего не куплено. Отправьте в чат итоговое количество акций на ВЕСЬ план "
-            "(все шаги суммарно) -- покупать пока ничего не нужно, план будет ждать вашей покупки в терминале брокера.",
-            parse_mode="Markdown",
-            reply_markup=builder.as_markup()
-        )
-    except TelegramBadRequest:
-        pass
-
-
-@router.message(NewIdeaPlanStates.waiting_for_target_quantity)
-async def process_idea_plan_quantity_text(message: types.Message, state: FSMContext, bot: Bot):
-    user_data = await state.get_data()
-    raw = (message.text or "").strip().replace(",", ".")
-
-    try:
-        await message.delete()
-    except Exception as del_err:
-        logging.warning(f"⚠️ [ПЛАН ВХОДА]: Не удалось удалить сообщение пользователя: {del_err}")
-
-    menu_msg_id = user_data.get("menu_msg_id")
-    p_id = int(user_data.get("idea_plan_portfolio_id", 0))
-    l_id = int(user_data.get("idea_plan_listing_id", 0))
-
-    menu_message = types.Message(message_id=menu_msg_id, date=message.date, chat=message.chat, from_user=message.from_user)
-    menu_message._bot = bot
-
-    try:
-        target_qty = float(raw)
-    except ValueError:
-        target_qty = 0.0
-
-    if target_qty <= 0:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(
-            text="🔙 Отмена", callback_data=MenuAction(action="plan_from_idea_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-        ))
-        await menu_message.edit_text(
-            "⚠️ Введите число больше 0. Отправьте ещё раз.",
-            reply_markup=builder.as_markup()
-        )
-        return
-
-    await state.update_data(idea_plan_target_quantity=target_qty)
-
-    strat_row = await asyncio.to_thread(
-        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('idea_plan_strategy_id', 0)),)
-    )
-    strategy_name = (strat_row or {}).get("strategy_name", "?")
-
-    confirm_text = generate_confirm_screen(
-        header_text="📝 **План входа**",
-        action_title="ПОДТВЕРЖДЕНИЕ СОЗДАНИЯ",
-        details_list=[
-            f"Стратегия: {strategy_name}",
-            f"Итого на весь план: {target_qty:.0f} шт",
-            "Ничего ещё не куплено -- план будет ждать вашей покупки в терминале брокера.",
-        ],
-        parse_mode="Markdown"
-    )
-    reply_markup = generate_confirm_keyboard(
-        yes_text="🚀 Да, создать план",
-        yes_callback_packed=MenuAction(action="plan_from_idea_execute").pack(),
-        no_text="❌ Отмена",
-        no_callback_packed=MenuAction(action="plan_from_idea_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-    )
-    await menu_message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
-
-
-@router.callback_query(MenuAction.filter(F.action == "plan_from_idea_cancel"))
-async def process_idea_plan_cancel(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
-    user_data = await state.get_data()
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
-
-    p_id = callback_data.portfolio_id
-    l_id = callback_data.listing_id
-    try:
-        await callback.message.edit_text("Отменено.", reply_markup=_back_to_plan_keyboard(p_id, l_id))
-    except TelegramBadRequest:
-        pass
-
-
-@router.callback_query(MenuAction.filter(F.action == "plan_from_idea_execute"))
-async def process_idea_plan_execute(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Создаёт "голый" план -- шаг 1, без pending_broker_order_id. Уже совместим с
-    process_link_order (тот ищет планы именно с pending_broker_order_id IS NULL) --
-    правок в реконсиляции/привязке ордера не требуется.
-    """
-    user_data = await state.get_data()
-    await callback.answer("🚀 Создаю план...")
-
-    p_id = int(user_data.get("idea_plan_portfolio_id", 0))
-    t_id = int(user_data.get("idea_plan_ticker_id", 0))
-    l_id = int(user_data.get("idea_plan_listing_id", 0))
-    s_id = int(user_data.get("idea_plan_strategy_id", 0))
-    target_qty = float(user_data.get("idea_plan_target_quantity", 0))
-
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
-
-    back_kb = _back_to_plan_keyboard(p_id, l_id)
-
-    if target_qty <= 0:
-        try:
-            await callback.message.edit_text("❌ Сбой: данные плана устарели. Начните заново.", reply_markup=back_kb)
-        except TelegramBadRequest:
-            pass
-        return
-
-    result = await asyncio.to_thread(
-        db_sys.execute_query,
-        """
-            INSERT INTO public.order_pipelines
-                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
-                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
-            VALUES
-                (%s, %s, %s, %s, 1, 'PENDING',
-                 %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            RETURNING id;
-        """,
-        (p_id, l_id, t_id, s_id, target_qty)
-    )
-    if not result:
-        logging.error(f"❌ [ПЛАН ВХОДА]: Сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
-        try:
-            await callback.message.edit_text("❌ Сбой создания плана. Проверьте лог.", reply_markup=back_kb)
-        except TelegramBadRequest:
-            pass
-        return
-
-    pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
-    logging.info(f"✅ [ПЛАН ВХОДА]: order_pipelines #{pipe_id} создан без ордера (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
-
-    try:
-        await callback.message.edit_text(
-            f"✅ **План создан** (#{pipe_id})\nПокупайте в терминале брокера, когда будете готовы -- "
-            f"потом привяжите ордер через «🔗 Привязать ордер к плану».",
-            parse_mode="Markdown",
-            reply_markup=back_kb
-        )
-    except TelegramBadRequest:
-        pass
+    # Стратегия подтверждена, не держится в другой -- дальше решение "сколько и по
+    # какой цене" уже не забота этой развилки (Claude/BACKLOG.md №122/123): передаём
+    # прямо в «К сделке» (шпаргалка ASAP/оптимальная цена, авто-размер слота), не
+    # спрашиваем количество вручную -- verify_buy_candidate/compute_slot_size уже
+    # умеют посчитать его для ЛЮБОГО кандидата, прошедшего экран, не только для
+    # лидера дайджеста.
+    from bot_handlers import deal
+    deal_action = MenuAction(action="deal_start_buy", portfolio_id=p_id, strategy_id=s_id, ticker_id=t_id)
+    await deal.process_deal_start_buy(callback, deal_action)
 
 
 # =========================================================================
@@ -769,10 +608,6 @@ async def process_idea_plan_execute(callback: types.CallbackQuery, state: FSMCon
 # реконсиляции не требуется. На сегодня -- один шаг (продать сразу нужное количество),
 # лесенка частичных продаж -- отдельный открытый вопрос (см. BACKLOG.md).
 # =========================================================================
-
-class ExitPlanStates(StatesGroup):
-    waiting_for_sell_quantity = State()
-
 
 @router.callback_query(MenuAction.filter(F.action == "plan_exit_start"))
 async def process_plan_exit_start(callback: types.CallbackQuery, callback_data: MenuAction):
@@ -844,219 +679,12 @@ async def process_plan_exit_strategy(callback: types.CallbackQuery, callback_dat
         await callback.answer("⚠️ В этой стратегии уже нечего продавать.", show_alert=True)
         return
 
-    prior_data = await state.get_data()
-    await state.set_state(ExitPlanStates.waiting_for_sell_quantity)
-    await state.update_data(
-        user_db_id=prior_data.get("user_db_id"),
-        is_admin=prior_data.get("is_admin", False),
-        exit_plan_portfolio_id=p_id,
-        exit_plan_ticker_id=t_id,
-        exit_plan_listing_id=l_id,
-        exit_plan_strategy_id=s_id,
-        exit_plan_held_qty=held_qty,
-        menu_msg_id=callback.message.message_id,
-    )
-
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(
-        text="🔙 Отмена", callback_data=MenuAction(action="plan_exit_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-    ))
-
-    try:
-        await callback.message.edit_text(
-            f"📋 **План выхода**\n\nВ этой стратегии сейчас {held_qty:.0f} шт. Отправьте в чат количество, "
-            f"которое хотите продать (не больше {held_qty:.0f}) -- продавать пока ничего не нужно, план будет "
-            f"ждать вашей продажи в терминале брокера.",
-            parse_mode="Markdown",
-            reply_markup=builder.as_markup()
-        )
-    except TelegramBadRequest:
-        pass
-
-
-@router.message(ExitPlanStates.waiting_for_sell_quantity)
-async def process_exit_plan_quantity_text(message: types.Message, state: FSMContext, bot: Bot):
-    user_data = await state.get_data()
-    raw = (message.text or "").strip().replace(",", ".")
-
-    try:
-        await message.delete()
-    except Exception as del_err:
-        logging.warning(f"⚠️ [ПЛАН ВЫХОДА]: Не удалось удалить сообщение пользователя: {del_err}")
-
-    menu_msg_id = user_data.get("menu_msg_id")
-    p_id = int(user_data.get("exit_plan_portfolio_id", 0))
-    l_id = int(user_data.get("exit_plan_listing_id", 0))
-    held_qty = float(user_data.get("exit_plan_held_qty", 0))
-
-    menu_message = types.Message(message_id=menu_msg_id, date=message.date, chat=message.chat, from_user=message.from_user)
-    menu_message._bot = bot
-
-    try:
-        sell_qty = float(raw)
-    except ValueError:
-        sell_qty = 0.0
-
-    if sell_qty <= 0 or sell_qty > held_qty:
-        builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(
-            text="🔙 Отмена", callback_data=MenuAction(action="plan_exit_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-        ))
-        await menu_message.edit_text(
-            f"⚠️ Введите число больше 0 и не больше {held_qty:.0f}. Отправьте ещё раз.",
-            reply_markup=builder.as_markup()
-        )
-        return
-
-    await state.update_data(exit_plan_sell_quantity=sell_qty)
-
-    strat_row = await asyncio.to_thread(
-        db_bot.execute_row, "SELECT strategy_name FROM public.strategies WHERE id = %s;", (int(user_data.get('exit_plan_strategy_id', 0)),)
-    )
-    strategy_name = (strat_row or {}).get("strategy_name", "?")
-
-    confirm_text = generate_confirm_screen(
-        header_text="📋 **План выхода**",
-        action_title="ПОДТВЕРЖДЕНИЕ СОЗДАНИЯ",
-        details_list=[
-            f"Стратегия: {strategy_name}",
-            f"Продать: {sell_qty:.0f} шт из {held_qty:.0f}",
-            "Ничего ещё не продано -- план будет ждать вашей продажи в терминале брокера.",
-        ],
-        parse_mode="Markdown"
-    )
-    reply_markup = generate_confirm_keyboard(
-        yes_text="🚀 Да, создать план",
-        yes_callback_packed=MenuAction(action="plan_exit_execute").pack(),
-        no_text="❌ Отмена",
-        no_callback_packed=MenuAction(action="plan_exit_cancel", portfolio_id=p_id, listing_id=l_id).pack()
-    )
-    await menu_message.edit_text(confirm_text, parse_mode="Markdown", reply_markup=reply_markup)
-
-
-@router.callback_query(MenuAction.filter(F.action == "plan_exit_cancel"))
-async def process_exit_plan_cancel(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
-    user_data = await state.get_data()
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
-
-    p_id = callback_data.portfolio_id
-    l_id = callback_data.listing_id
-    try:
-        await callback.message.edit_text("Отменено.", reply_markup=_back_to_plan_keyboard(p_id, l_id))
-    except TelegramBadRequest:
-        pass
-
-
-@router.callback_query(MenuAction.filter(F.action == "plan_exit_execute"))
-async def process_exit_plan_execute(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Создаёт "голый" план выхода -- шаг 1, ОТРИЦАТЕЛЬНОЕ target_quantity, без
-    pending_broker_order_id. Уже совместим с process_link_order/_find_target_strategy
-    без единой правки -- знак там уже давно учитывается.
-    """
-    user_data = await state.get_data()
-    await callback.answer("🚀 Создаю план...")
-
-    p_id = int(user_data.get("exit_plan_portfolio_id", 0))
-    t_id = int(user_data.get("exit_plan_ticker_id", 0))
-    l_id = int(user_data.get("exit_plan_listing_id", 0))
-    s_id = int(user_data.get("exit_plan_strategy_id", 0))
-    sell_qty = float(user_data.get("exit_plan_sell_quantity", 0))
-
-    is_admin = user_data.get("is_admin", False)
-    user_db_id = user_data.get("user_db_id", None)
-    await state.clear()
-    await state.update_data(user_db_id=user_db_id, is_admin=is_admin)
-
-    back_kb = _back_to_plan_keyboard(p_id, l_id)
-
-    if sell_qty <= 0:
-        try:
-            await callback.message.edit_text("❌ Сбой: данные плана устарели. Начните заново.", reply_markup=back_kb)
-        except TelegramBadRequest:
-            pass
-        return
-
-    result = await asyncio.to_thread(
-        db_sys.execute_query,
-        """
-            INSERT INTO public.order_pipelines
-                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
-                 target_quantity, initial_entry_price, pending_broker_order_id, created_at, updated_at)
-            VALUES
-                (%s, %s, %s, %s, 1, 'PENDING',
-                 %s, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            RETURNING id;
-        """,
-        (p_id, l_id, t_id, s_id, -sell_qty)
-    )
-    if not result:
-        logging.error(f"❌ [ПЛАН ВЫХОДА]: Сбой INSERT order_pipelines (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
-        try:
-            await callback.message.edit_text(
-                "❌ Сбой создания плана. Возможно, по этой стратегии уже есть активный план (входа или выхода) -- "
-                "сначала заверши или отмени его.",
-                reply_markup=back_kb
-            )
-        except TelegramBadRequest:
-            pass
-        return
-
-    pipe_id = result[0]["id"] if isinstance(result, list) else result["id"]
-    logging.info(f"✅ [ПЛАН ВЫХОДА]: order_pipelines #{pipe_id} создан без ордера, target={-sell_qty} (портфель {p_id}, тикер {t_id}, стратегия {s_id}).")
-
-    try:
-        await callback.message.edit_text(
-            f"✅ **План выхода создан** (#{pipe_id})\nПродавайте в терминале брокера, когда будете готовы -- "
-            f"потом привяжите ордер через «🔗 Привязать ордер к плану».",
-            parse_mode="Markdown",
-            reply_markup=back_kb
-        )
-    except TelegramBadRequest:
-        pass
-
-
-# =========================================================================
-# 🔄 "ПЕРЕНОС" -- ЕДИНЫЙ МЕХАНИЗМ ПЕРЕНОСА МЕЖДУ СТРАТЕГИЯМИ (согласовано 2026-07-30,
-# см. Claude/11_asset_lifecycle_and_plan.md, "реинкарнация"). Две двери в один и тот же
-# код: прямая кнопка на карточке тикера (transfer_start), и обнаружение "держится в
-# другой стратегии" внутри "Плана входа" (process_plan_from_idea_strategy выше) --
-# оба ведут в _show_transfer_confirm_with_plan, не в две параллельные реализации.
-# Перенос в СОДЕРЖАТЕЛЬНУЮ стратегию всегда сопровождается планом; перенос в служебную
-# (пока только "Неопределённая", "Кэш/Резерв" как приёмник исключён -- бессмысленно для
-# реальной позиции в бумаге) -- просто перенос, без плана, планировать там нечего.
-#
-# Переносится ВСЕГДА вся доля источника целиком, без запроса "сколько" (согласовано
-# 2026-08-13) -- перенос это не новый вход, а признание того, чем бумага УЖЕ стала
-# (например, "выпускница" Револьверной, см. PositionExitEvaluator._check_revolver_exit).
-# План в приёмнике поэтому сразу заводится ЗАВЕРШЁННЫМ (target_quantity = перенесённое
-# количество) -- не половина нового полноразмерного входа целевой стратегии, ждущая
-# докупки. Раньше экран спрашивал "сколько итого на весь план" и, ответив числом больше
-# перенесённого, можно было создать PENDING-план: у всех трёх содержательных стратегий
-# шаг 1 -- "market, immediate" (безусловный), LadderStepWatcher принял бы его за готовый
-# к исполнению на следующем цикле котировок и прислал бы ложное "докупи ещё" -- ровно то,
-# от чего предостерёг пользователь. Если позже понадобится вернуть часть обратно -- тот
-# же процесс переноса в обратную сторону, отдельного "частичного" переноса не нужно.
-# =========================================================================
-
-
-async def _get_current_holders(portfolio_id: int, listing_id: int) -> list:
-    rows = await asyncio.to_thread(
-        db_bot.execute_query,
-        """
-            SELECT sa.strategy_id, s.strategy_name, sa.allocated_quantity
-            FROM public.strategy_assets sa
-            JOIN public.assets a ON sa.asset_id = a.id
-            JOIN public.strategies s ON sa.strategy_id = s.id
-            WHERE a.portfolio_id = %s AND a.listing_id = %s
-              AND sa.allocated_quantity > 0;
-        """,
-        (portfolio_id, listing_id)
-    )
-    return rows if isinstance(rows, list) else ([rows] if rows else [])
+    # Стратегия-держатель подтверждена -- «К сделке» сама перепроверит остаток и
+    # продаст целиком (полный выход, Claude/BACKLOG.md №122/123), ручной ввод
+    # количества не нужен.
+    from bot_handlers import deal
+    deal_action = MenuAction(action="deal_start_sell", portfolio_id=p_id, strategy_id=s_id, listing_id=l_id)
+    await deal.process_deal_start_sell(callback, deal_action)
 
 
 @router.callback_query(MenuAction.filter(F.action == "transfer_start"))

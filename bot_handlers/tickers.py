@@ -309,73 +309,13 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if view == "plan":
         await callback.answer("Загрузка плана...")
 
-        # Бумажный портфель (execution_mode='CONFIRM') -- реального брокера нет, план
-        # входа/выхода через терминал + привязка ордера в принципе не могут завершиться
-        # (живой тупик, найден пользователем 2026-08-04: создал "План входа", а привязать
-        # приказ неоткуда). Вместо реальной ветки ниже -- прямая кнопка, переиспользующая
-        # ГОТОВЫЙ обработчик подтверждения (paper_execution.py), тот же action, что и у
-        # кнопки "Да" в ежедневном push, просто с другим спусковым крючком.
-        exec_mode_row = db_bot.execute_row("SELECT execution_mode FROM public.portfolios WHERE id = %s;", (p_id,))
-        if (exec_mode_row or {}).get("execution_mode") == "CONFIRM":
-            held_anywhere = db_bot.execute_row("""
-                SELECT sa.strategy_id FROM public.strategy_assets sa
-                JOIN public.assets a ON sa.asset_id = a.id
-                WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0
-                LIMIT 1;
-            """, (p_id, l_id))
-            action_builder = InlineKeyboardBuilder()
-            if held_anywhere:
-                # Держится -- strategy_id из callback_data может быть 0 (например, пришли
-                # из "Состав портфеля", где контекст стратегии не передаётся), берём
-                # реальную стратегию-держателя из strategy_assets, а не из callback_data.
-                holder_strategy_id = int(held_anywhere["strategy_id"])
-                action_builder.row(types.InlineKeyboardButton(
-                    text="📤 Продать виртуально",
-                    callback_data=MenuAction(action="paper_sell_yes", portfolio_id=p_id, listing_id=l_id, strategy_id=holder_strategy_id).pack()
-                ))
-                # "Всё равно продать" -- ручной форс-оверрайд совета системы (BACKLOG.md
-                # №73, по просьбе пользователя 2026-08-04): в реальном терминале брокера
-                # никто не мешает продать вопреки совету (например, срочно нужны деньги) --
-                # бумажный портфель должен уметь то же самое, отдельно от дисциплины Да/Нет.
-                action_builder.row(types.InlineKeyboardButton(
-                    text="🔴 Всё равно продать",
-                    callback_data=MenuAction(action="paper_sell_force_ask", portfolio_id=p_id, listing_id=l_id, strategy_id=holder_strategy_id).pack()
-                ))
-            else:
-                action_builder.row(types.InlineKeyboardButton(
-                    text="📥 Купить виртуально",
-                    callback_data=MenuAction(action="paper_buy_yes", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
-                ))
-                # "Всё равно купить" -- только если известна стратегия (без неё непонятно,
-                # по какой формуле считать размер слота, см. CashDeploymentAdvisor.compute_slot_size).
-                if strategy_id > 0:
-                    action_builder.row(types.InlineKeyboardButton(
-                        text="🔴 Всё равно купить",
-                        callback_data=MenuAction(action="paper_buy_force_ask", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
-                    ))
-            nav_kb = generate_nav_back_keyboard(
-                one_step_back_text="🔙 К карточке бумаги",
-                full_back_callback=MenuAction(
-                    action="view_ticker", portfolio_id=p_id, listing_id=l_id,
-                    ticker_name=pure_symbol, sub_view="owner", strategy_id=strategy_id
-                ).pack()
-            )
-            final_builder = InlineKeyboardBuilder.from_markup(action_builder.as_markup())
-            final_builder.attach(InlineKeyboardBuilder.from_markup(nav_kb))
-            try:
-                await callback.message.edit_text(
-                    header_text + "📋 **ПЛАН:**\n\n🧪 Это бумажный портфель — реального брокера нет, "
-                    "план через терминал не нужен. Подтверди действие напрямую:",
-                    parse_mode="Markdown", reply_markup=final_builder.as_markup()
-                )
-            except TelegramBadRequest:
-                pass
-            return
-
+        # Единая логика для реального И бумажного портфеля (Claude/BACKLOG.md
+        # №122/123) -- execution_mode больше не ветвит этот экран вообще, только то,
+        # что происходит ПОСЛЕ создания Плана (человек у брокера vs paper_broker.py).
         plan_rows = db_bot.execute_query("""
             SELECT op.id, op.strategy_id, s.strategy_name, s.rules_config,
                    op.current_step, op.target_quantity, op.initial_entry_price,
-                   op.pending_broker_order_id, op.step_ready_notified_at,
+                   op.pending_broker_order_id, op.step_ready_notified_at, op.entry_trigger_override,
                    sa.allocated_quantity,
                    EXTRACT(DAY FROM (CURRENT_TIMESTAMP - a.position_opened_at))::int AS days_held,
                    (SELECT COUNT(*) FROM public.strategy_tactics st WHERE st.strategy_id = op.strategy_id) AS total_steps,
@@ -424,10 +364,16 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 if current_step > total_steps:
                     report_text += "└ Все ступени лесенки уже пройдены.\n"
                 else:
-                    conditions = plan.get("current_step_conditions") or {}
+                    # Шаг 1 с entry_trigger_override (шпаргалка «К сделке», Claude/BACKLOG.md
+                    # №122/123) -- условие зафиксировано на самом Плане, не в strategy_tactics
+                    # (у «Неопределённой», например, тактик нет вообще).
+                    override = plan.get("entry_trigger_override") or {}
+                    conditions = override if (current_step == 1 and override) else (plan.get("current_step_conditions") or {})
                     mode = conditions.get("mode")
                     if mode == "market":
                         report_text += "└ Условие следующего шага: рыночная заявка, можно ставить сразу.\n"
+                    elif mode == "limit_fixed" and conditions.get("price"):
+                        report_text += f"└ Условие следующего шага: цена ${float(conditions['price']):,.2f}.\n"
                     elif mode == "limit":
                         cond_parts = []
                         if conditions.get("max_rsi") is not None:
@@ -458,6 +404,9 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         # Кнопка видна, только если реально есть что привязывать -- та же проверка,
         # что и в самом pipeline_link_start (order_pipelines.py), по просьбе
         # пользователя 2026-07-29 (раньше показывалась всегда, даже без единого приказа).
+        # Для бумажного портфеля это условие практически никогда не выполняется --
+        # paper_broker.py исполняет через distribute_asset_delta напрямую, минуя
+        # "висящий непривязанный приказ" целиком (Claude/BACKLOG.md №117, Вопрос 5).
         unlinked_order = db_bot.execute_row("""
             SELECT 1 FROM public.orders o
             WHERE o.portfolio_id = %s AND o.ticker_id = %s
@@ -473,25 +422,46 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
                 text="🔗 Привязать ордер к плану",
                 callback_data=MenuAction(action="pipeline_link_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
             ))
-        if not plan_rows:
-            action_builder.row(types.InlineKeyboardButton(
-                text="📝 План входа",
-                callback_data=MenuAction(action="plan_from_idea_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
-            ))
 
-        # "План выхода" -- симметрично "Плану входа" (см. Claude/11_asset_lifecycle_and_plan.md,
-        # "Смерть"), видна только если бумага реально держится хоть в одной стратегии.
-        held_anywhere = db_bot.execute_row("""
-            SELECT 1 FROM public.strategy_assets sa
+        # «🤝 К сделке» (Claude/BACKLOG.md №122/123) -- заменяет «📝 План входа», единая
+        # кнопка для реального И бумажного портфеля. strategy_id уже известен из контекста
+        # (пришли с карточки стратегии) -- сразу в шпаргалку; неизвестен -- через пикер
+        # стратегии (plan_from_idea_start, сохранён -- проверяет "держится в другой
+        # стратегии" и предлагает перенос вместо дублирующей покупки).
+        if not plan_rows:
+            if strategy_id > 0:
+                action_builder.row(types.InlineKeyboardButton(
+                    text="🤝 К сделке",
+                    callback_data=MenuAction(action="deal_start_buy", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
+                ))
+            else:
+                action_builder.row(types.InlineKeyboardButton(
+                    text="🤝 К сделке",
+                    callback_data=MenuAction(action="plan_from_idea_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+                ))
+
+        # Симметрично для продажи -- видна только если бумага реально держится хоть в
+        # одной стратегии. Если держится в НЕСКОЛЬКИХ -- ведёт через plan_exit_start
+        # (пикер стратегии-источника, сохранён), иначе сразу в шпаргалку.
+        holder_rows = db_bot.execute_query("""
+            SELECT sa.strategy_id FROM public.strategy_assets sa
             JOIN public.assets a ON sa.asset_id = a.id
-            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0
-            LIMIT 1;
+            WHERE a.portfolio_id = %s AND a.listing_id = %s AND sa.allocated_quantity > 0;
         """, (p_id, l_id))
-        if held_anywhere:
-            action_builder.row(types.InlineKeyboardButton(
-                text="📋 План выхода",
-                callback_data=MenuAction(action="plan_exit_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
-            ))
+        holder_rows = holder_rows if isinstance(holder_rows, list) else ([holder_rows] if holder_rows else [])
+        if holder_rows:
+            if len(holder_rows) == 1:
+                action_builder.row(types.InlineKeyboardButton(
+                    text="🤝 К сделке",
+                    callback_data=MenuAction(
+                        action="deal_start_sell", portfolio_id=p_id, strategy_id=int(holder_rows[0]["strategy_id"]), listing_id=l_id
+                    ).pack()
+                ))
+            else:
+                action_builder.row(types.InlineKeyboardButton(
+                    text="🤝 К сделке",
+                    callback_data=MenuAction(action="plan_exit_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
+                ))
             # "Перенос" -- единый механизм переноса между стратегиями (согласовано
             # 2026-07-30, см. Claude/11_asset_lifecycle_and_plan.md, "реинкарнация").
             action_builder.row(types.InlineKeyboardButton(
