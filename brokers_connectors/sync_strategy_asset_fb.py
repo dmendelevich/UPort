@@ -352,11 +352,17 @@ class SyncStrategyAssetFB:
         system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
 
         if action == 'COMPLETE_PIPELINE':
-            # Цель достигнута полностью, закрываем конвейер
+            # Цель достигнута полностью, закрываем конвейер. step_ready_notified_at
+            # сбрасывается той же логикой, что и у NEXT_STEP ниже (см. её комментарий) --
+            # без сброса завершённый План продолжал бы вечно показываться в дайджесте
+            # строкой "🪜 условие выполнено" (живой баг, найден пользователем на живом
+            # П10 -- дублирующиеся строки OPEN, Claude/BACKLOG.md, тот же корень для
+            # обоих действий, не только для NEXT_STEP).
             sql = """
                 UPDATE public.order_pipelines
                 SET pipeline_status = 'COMPLETED',
                     pending_broker_order_id = NULL,
+                    step_ready_notified_at = NULL,
                     updated_at = %s
                 WHERE id = %s;
             """

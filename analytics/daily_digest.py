@@ -210,7 +210,8 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
         JOIN public.listings l ON l.id = op.listing_id
         JOIN public.strategy_tactics st ON st.strategy_id = op.strategy_id AND st.step_number = op.current_step
         WHERE op.portfolio_id = %s AND op.step_ready_notified_at IS NOT NULL
-          AND op.pending_broker_order_id IS NULL;
+          AND op.pending_broker_order_id IS NULL
+          AND op.pipeline_status IN ('PENDING', 'ACTIVE');
     """, (portfolio_id,))
     ladder_rows = ladder_rows if isinstance(ladder_rows, list) else ([ladder_rows] if ladder_rows else [])
     for step in ladder_rows:
