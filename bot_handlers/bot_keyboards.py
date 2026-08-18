@@ -507,7 +507,10 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
             row.append(types.InlineKeyboardButton(
                 text=f"{badge} {item['label']}",
                 callback_data=MenuAction(
-                    action="view_ticker", portfolio_id=portfolio_id, listing_id=int(listing_id), sub_view="owner"
+                    # "owner/digest" -- составной sub_view (тот же приём, что и alerts_origin в
+                    # tickers.py) -- карточка тикера отсюда должна вернуть "Назад к дайджесту",
+                    # не "К списку активов" (живой баг, найден пользователем 2026-08-18 на EME).
+                    action="view_ticker", portfolio_id=portfolio_id, listing_id=int(listing_id), sub_view="owner/digest"
                 ).pack()
             ))
         elif ticker_id:

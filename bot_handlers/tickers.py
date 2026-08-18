@@ -56,6 +56,15 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         if len(parts) > 1:
             alerts_origin = parts[1]
 
+    # Контекст "пришли из дайджеста" -- тот же приём составного sub_view, что и у
+    # alerts_origin выше (найдено пользователем на живой карточке EME/ножницы, 2026-08-18:
+    # кнопка навигации из дайджеста вела на карточку, а "назад" всегда уводил "К списку
+    # активов", терялся путь обратно в дайджест). Заводится только из bot_keyboards.py
+    # (навигационная кнопка "К подрезке"/бейдж в разделах "signals"/"schedule" дайджеста).
+    digest_origin = view.startswith("owner/digest")
+    if digest_origin:
+        view = "owner"
+
     logging.debug(f"📥 [ТИКЕР]: l_id={l_id} | ticker_name='{t_name}' | view='{view}'")
 
     # 1. РЕЛЯЦИОННОЕ ОПРЕДЕЛЕНИЕ ТИКЕРА И ПЛОЩАДКИ БРОКЕРА
@@ -581,6 +590,11 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     if strategy_id > 0:
         back_text = "🔙 К стратегии"
         back_callback = MenuAction(action="view_strategy", strategy_id=strategy_id, portfolio_id=p_id).pack()
+    elif digest_origin:
+        # Тот же приём, что у deal.py::_back_to_digest_keyboard -- всегда в раздел
+        # "signals" целиком (не различает "пришли из schedule или signals", как и там).
+        back_text = "🔙 Назад к дайджесту"
+        back_callback = MenuAction(action="view_digest", portfolio_id=p_id, sub_view="signals").pack()
     elif is_owner_view:
         back_text = "🔙 К списку активов"
         back_callback = MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()
