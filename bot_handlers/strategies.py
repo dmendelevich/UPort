@@ -240,7 +240,7 @@ async def process_strategy_ideas(callback: types.CallbackQuery, callback_data: M
                 lines.append(f"*{leg['symbol']}*: ${leg['held_usd']:,.2f} / ${leg['target_usd']:,.2f} ({pct_text})")
                 if leg.get("ticker_id"):
                     builder.row(types.InlineKeyboardButton(
-                        text=f"🤝 К сделке: {leg['symbol']} ({pct_text})",
+                        text=f"🤝 К покупке: {leg['symbol']} ({pct_text})",
                         callback_data=MenuAction(
                             action="deal_start_buy", portfolio_id=p_id, strategy_id=s_id, ticker_id=int(leg["ticker_id"])
                         ).pack()

@@ -203,7 +203,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "label": a["symbol"],
             "listing_id": a["listing_id"],
             "strategy_id": a["strategy_id"],
-            "recommendation": a["recommendation"],  # "TRIM_DOWN" -- кнопка "Исполнить" его сознательно НЕ покрывает пока (см. BACKLOG.md)
+            "recommendation": a["recommendation"],  # "TRIM_DOWN" -- своя кнопка "✂️ К подрезке" (bot_keyboards.py)
         }
         for a in rebalance_alerts
     ]

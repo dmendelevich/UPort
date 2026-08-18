@@ -431,12 +431,12 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         if not plan_rows:
             if strategy_id > 0:
                 action_builder.row(types.InlineKeyboardButton(
-                    text="🤝 К сделке",
+                    text="🤝 К покупке",
                     callback_data=MenuAction(action="deal_start_buy", portfolio_id=p_id, strategy_id=strategy_id, ticker_id=t_id).pack()
                 ))
             else:
                 action_builder.row(types.InlineKeyboardButton(
-                    text="🤝 К сделке",
+                    text="🤝 К покупке",
                     callback_data=MenuAction(action="plan_from_idea_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
                 ))
 
@@ -452,14 +452,14 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
         if holder_rows:
             if len(holder_rows) == 1:
                 action_builder.row(types.InlineKeyboardButton(
-                    text="🤝 К сделке",
+                    text="🤝 К продаже",
                     callback_data=MenuAction(
                         action="deal_start_sell", portfolio_id=p_id, strategy_id=int(holder_rows[0]["strategy_id"]), listing_id=l_id
                     ).pack()
                 ))
             else:
                 action_builder.row(types.InlineKeyboardButton(
-                    text="🤝 К сделке",
+                    text="🤝 К продаже",
                     callback_data=MenuAction(action="plan_exit_start", portfolio_id=p_id, ticker_id=t_id, listing_id=l_id).pack()
                 ))
             # "Перенос" -- единый механизм переноса между стратегиями (согласовано

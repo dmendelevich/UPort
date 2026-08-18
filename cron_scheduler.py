@@ -20,7 +20,6 @@ from analytics.daily_digest import assemble_portfolio_digest_data
 from analytics.portfolio_inspector import PortfolioInspector
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
-from bot_handlers.paper_execution import send_paper_trim_recommendations
 
 
 
@@ -417,14 +416,9 @@ async def digest_clock_loop(db_instance, bot):
                         db_instance, "daily_digest",
                         lambda: send_daily_digests(db_instance, bot)
                     )
-                    # BUY/SELL бумажного портфеля переехали на «🤝 К сделке» прямо в
-                    # дайджесте (Claude/BACKLOG.md №122/123, 2026-08-17) -- отдельная
-                    # труба (send_paper_buy/sell_recommendations) больше не нужна.
-                    # TRIM_DOWN пока остаётся на старой трубе (сознательно отложено).
-                    await run_daily_job_once(
-                        db_instance, "paper_trim_recommendations",
-                        lambda: send_paper_trim_recommendations(db_instance, bot)
-                    )
+                    # BUY/SELL/TRIM_DOWN бумажного портфеля переехали на кнопку исполнения
+                    # прямо в дайджесте (Claude/BACKLOG.md №122/123, 2026-08-17/18) --
+                    # отдельные трубы (send_paper_buy/sell/trim_recommendations) больше не нужны.
                     # Фаза 3 -- суточный снимок NAV для измерения доходности.
                     await run_daily_job_once(
                         db_instance, "portfolio_value_snapshot",

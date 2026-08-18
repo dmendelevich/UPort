@@ -189,6 +189,26 @@ def format_pnl_suffix(db_instance, qty, avg_price, current_price, currency: str)
     return f" ({sign}${abs(pnl_usd):,.2f}, {sign}{abs(pnl_pct):.1f}%)"
 
 
+def resolve_trim_shares(trim_qty_raw: float, held_qty: float) -> int:
+    """
+    PortfolioRebalancer считает trim_qty непрерывно (для реальных портфелей -- просто
+    текст, человек сам округляет на глаз у брокера). Для исполнения (analytics/
+    deal_planner.py::create_trim_plan) нужны целые акции -- округляем здесь, единственном
+    месте, где это число превращается в target_quantity Плана, не трогая саму
+    PortfolioRebalancer (общая для расчёта и для исполнения).
+    Всегда оставляем ХОТЯ БЫ 1 акцию -- продать всё целиком умеет SELL
+    (PositionExitEvaluator), TRIM_DOWN по определению частичный. Возвращает 0,
+    если после округления/защиты подрезать нечего (позиция слишком маленькая,
+    напр. держится 1 шт). Перенесено из bot_handlers/paper_execution.py вместе с
+    миграцией TRIM_DOWN на «К сделке» (Claude/BACKLOG.md, 2026-08-18) -- нужна и
+    deal_planner.py (реальный и бумажный портфель), не только бумажному исполнению.
+    """
+    held_int = int(held_qty)
+    if held_int <= 1:
+        return 0
+    return max(0, min(round(trim_qty_raw), held_int - 1))
+
+
 def check_sector_ceiling_breach(sector_exposure_usd: dict, total_capital_usd: float,
                                  sector_target_config: dict, sector: str,
                                  additional_usd: float = 0.0) -> dict:

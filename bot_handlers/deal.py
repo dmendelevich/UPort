@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from database import db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard
-from analytics.deal_planner import create_buy_plan, create_sell_plan
+from analytics.deal_planner import create_buy_plan, create_sell_plan, create_trim_plan
 
 """
 «К сделке» -- единая точка входа для решения «беру»/«продаю» (Claude/BACKLOG.md
@@ -82,7 +82,7 @@ async def process_deal_confirm_buy(callback: types.CallbackQuery, callback_data:
             pass
         return
 
-    text = _format_plan_created_text(result, cheat_sheet)
+    text = _format_plan_created_text(result)
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_kb)
     except TelegramBadRequest:
@@ -123,14 +123,42 @@ async def process_deal_confirm_sell(callback: types.CallbackQuery, callback_data
             pass
         return
 
-    text = _format_plan_created_text(result, cheat_sheet, is_sell=True)
+    text = _format_plan_created_text(result, is_sell=True)
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_kb)
     except TelegramBadRequest:
         pass
 
 
-def _format_plan_created_text(result: dict, cheat_sheet: str, is_sell: bool = False) -> str:
+@router.callback_query(MenuAction.filter(F.action == "deal_trim"))
+async def process_deal_trim(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    Подрезка перевешенной позиции -- в отличие от покупки/продажи, без шпаргалки
+    ASAP/оптимальная цена (согласовано с пользователем 2026-08-18: подрезка --
+    гигиена портфеля, не решение о моменте, всегда рынком) -- один клик сразу
+    создаёт План, минуя промежуточный экран выбора.
+    """
+    p_id, s_id, l_id = callback_data.portfolio_id, callback_data.strategy_id, callback_data.listing_id
+
+    await callback.answer("Создаю план...")
+    result = await asyncio.to_thread(create_trim_plan, db_sys, p_id, s_id, l_id)
+
+    back_kb = _back_to_digest_keyboard(p_id)
+    if not result["ok"]:
+        try:
+            await callback.message.edit_text(f"⚠️ {result['error']}", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
+    text = _format_plan_created_text(result, is_trim=True)
+    try:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_kb)
+    except TelegramBadRequest:
+        pass
+
+
+def _format_plan_created_text(result: dict, is_sell: bool = False, is_trim: bool = False) -> str:
     """
     Единый текст для реального И бумажного портфеля -- намеренно не говорит
     "исполнено", План только создан, дальше решает LadderStepWatcher/paper_broker
@@ -139,7 +167,7 @@ def _format_plan_created_text(result: dict, cheat_sheet: str, is_sell: bool = Fa
     symbol = result["symbol"]
     qty = abs(result["qty"])
     override = result["override"]
-    verb = "продажи" if is_sell else "входа"
+    verb = "подрезки" if is_trim else ("продажи" if is_sell else "входа")
 
     if override["mode"] == "market":
         # Нейтрально по execution_mode (Claude/BACKLOG.md №131, 2026-08-18) -- раньше

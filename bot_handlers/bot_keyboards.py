@@ -463,16 +463,18 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     наблюдения (bot_handlers/watchlist.py::execute_watchlist_fixation) по этой
     пометке вернёт "🔙 Назад к дайджесту", а не только "В главное меню".
 
-    "🤝 К сделке" (2026-08-17, Claude/BACKLOG.md №122/123, продолжение темы «Исполнить
-    из дайджеста») -- ОДНА и та же кнопка для реальных И бумажных портфелей, execution_
-    mode больше не ветвит её видимость (заменяет и старое "▶️ Исполнить", и отдельную
-    трубу бумажного портфеля send_paper_buy/sell_recommendations). Различие теперь
-    только в том, что происходит ПОСЛЕ создания Плана -- человек у брокера или эмулятор
-    (analytics/deal_planner.py, analytics/ladder_step_watcher.py, brokers_connectors/
-    paper_broker.py). Только для полного BUY/SELL (не TRIM_DOWN -- сознательно отложено,
-    у него пока остаётся старая труба) -- в ОДНОМ ряду с навигационной кнопкой, не
-    отдельной строкой. Решается ПО РЕКОМЕНДАЦИИ и strategy_id, не по тому, какая ветка
-    навигации сработала -- см. ниже, почему это важно разводить.
+    Кнопка исполнения (2026-08-17, Claude/BACKLOG.md №122/123, продолжение темы
+    «Исполнить из дайджеста»; TRIM_DOWN подключен 2026-08-18) -- ОДИН и тот же механизм
+    для реальных И бумажных портфелей, execution_mode больше не ветвит её видимость
+    (заменяет старое "▶️ Исполнить" и отдельные трубы бумажного портфеля
+    send_paper_buy/sell/trim_recommendations). Различие только в том, что происходит
+    ПОСЛЕ создания Плана -- человек у брокера или эмулятор (analytics/deal_planner.py,
+    analytics/ladder_step_watcher.py, brokers_connectors/paper_broker.py). Подпись
+    разведена по направлению (согласовано с пользователем 2026-08-18, было единое
+    "🤝 К сделке" -- решили, что явное направление понятнее до клика) -- "К покупке"/
+    "К продаже"/"✂️ К подрезке", в ОДНОМ ряду с навигационной кнопкой, не отдельной
+    строкой. Решается ПО РЕКОМЕНДАЦИИ и strategy_id, не по тому, какая ветка навигации
+    сработала -- см. ниже, почему это важно разводить.
 
     Навигационная кнопка (2026-08-14, доработано): раньше была одна безликая "🔗" на
     ЛЮБОЙ пункт с listing_id -- не отличала слом тренда от протухания приказа.
@@ -521,15 +523,13 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                 callback_data=MenuAction(action="digest_stub").pack()
             ))
 
-        # «🤝 К сделке» (Claude/BACKLOG.md №122/123) -- ОДНА и та же кнопка для реальных
-        # и бумажных портфелей (execution_mode больше не ветвит видимость, только то,
-        # что происходит ПОСЛЕ создания Плана -- см. analytics/deal_planner.py). TRIM_DOWN
-        # пока не сюда -- сознательно отложено (Группа A, №117), у неё пока остаётся
-        # старая труба бумажного портфеля (send_paper_trim_recommendations).
+        # Кнопка исполнения -- ОДИН и тот же механизм для реальных и бумажных портфелей
+        # (execution_mode больше не ветвит видимость, только то, что происходит ПОСЛЕ
+        # создания Плана -- см. analytics/deal_planner.py). Подпись по направлению.
         if strategy_id:
             if recommendation == "SELL" and listing_id:
                 row.append(types.InlineKeyboardButton(
-                    text=f"🤝 К сделке: {item['label']}",
+                    text=f"🤝 К продаже: {item['label']}",
                     callback_data=MenuAction(
                         action="deal_start_sell", portfolio_id=portfolio_id,
                         listing_id=int(listing_id), strategy_id=int(strategy_id)
@@ -537,10 +537,18 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                 ))
             elif recommendation == "BUY" and ticker_id:
                 row.append(types.InlineKeyboardButton(
-                    text=f"🤝 К сделке: {item['label']}",
+                    text=f"🤝 К покупке: {item['label']}",
                     callback_data=MenuAction(
                         action="deal_start_buy", portfolio_id=portfolio_id,
                         ticker_id=int(ticker_id), strategy_id=int(strategy_id)
+                    ).pack()
+                ))
+            elif recommendation == "TRIM_DOWN" and listing_id:
+                row.append(types.InlineKeyboardButton(
+                    text=f"✂️ К подрезке: {item['label']}",
+                    callback_data=MenuAction(
+                        action="deal_trim", portfolio_id=portfolio_id,
+                        listing_id=int(listing_id), strategy_id=int(strategy_id)
                     ).pack()
                 ))
         builder.row(*row)

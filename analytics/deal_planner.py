@@ -4,6 +4,8 @@ import logging
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.execution_price_advisor import suggest_execution_terms
 from analytics.execution_price_advisor import suggest_optimal_price
+from analytics.portfolio_rebalancer import PortfolioRebalancer
+from analytics.analytics_utils import resolve_trim_shares
 
 """
 «К сделке» -- единая точка входа для решения «беру» (Claude/BACKLOG.md №122/123),
@@ -161,3 +163,55 @@ def create_sell_plan(db_instance, portfolio_id: int, strategy_id: int, listing_i
 
     logging.info(f"✅ [DealPlanner]: План выхода #{pipeline_id} создан ({symbol}, {qty:g} шт, портфель {portfolio_id}, шпаргалка={cheat_sheet}).")
     return {"ok": True, "pipeline_id": pipeline_id, "symbol": symbol, "qty": qty, "listing_id": listing_id, "override": override}
+
+
+def create_trim_plan(db_instance, portfolio_id: int, strategy_id: int, listing_id: int) -> dict:
+    """
+    Подрезка перевешенной позиции (Claude/13_portfolio_construction_and_rebalancing_rules.md,
+    миграция на «К сделке» -- Claude/BACKLOG.md, 2026-08-18) -- ЧАСТИЧНЫЙ выход, в отличие
+    от create_sell_plan. Без шпаргалки ASAP/оптимальная цена (согласовано с пользователем --
+    подрезка это гигиена портфеля, не решение о моменте входа/выхода) -- всегда рынком.
+
+    Перепроверяет PortfolioRebalancer заново (не по цифрам утреннего дайджеста) -- позиция
+    могла перестать быть перевешенной, если цена откатилась. trim_shares -- см.
+    analytics_utils.resolve_trim_shares (целые акции, минимум 1 остаётся).
+    """
+    alerts = PortfolioRebalancer(db_instance).evaluate_portfolio(portfolio_id)
+    match = next(
+        (a for a in alerts
+         if a.get("recommendation") == "TRIM_DOWN" and int(a.get("listing_id", -1)) == listing_id and int(a.get("strategy_id", -1)) == strategy_id),
+        None
+    )
+    if not match:
+        return {"ok": False, "error": "Условия изменились -- подрезка больше не актуальна."}
+
+    asset_id = int(match["asset_id"])
+    ticker_id = int(match["ticker_id"])
+    symbol = match["symbol"]
+
+    asset_row = db_instance.execute_row("SELECT quantity FROM public.assets WHERE id = %s;", (asset_id,))
+    held_qty = float((asset_row or {}).get("quantity") or 0.0)
+    trim_shares = resolve_trim_shares(float(match["quantity"]), held_qty)
+    if trim_shares <= 0:
+        return {"ok": False, "error": "Условия изменились -- подрезка больше не актуальна."}
+
+    override = {"mode": "market"}
+
+    result = db_instance.execute_query(
+        """
+            INSERT INTO public.order_pipelines
+                (portfolio_id, listing_id, ticker_id, strategy_id, current_step, pipeline_status,
+                 target_quantity, initial_entry_price, pending_broker_order_id, entry_trigger_override, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, 1, 'PENDING', %s, 0, NULL, %s::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id;
+        """,
+        (portfolio_id, listing_id, ticker_id, strategy_id, -trim_shares, json.dumps(override))
+    )
+    if not result:
+        return {"ok": False, "error": "Не удалось создать план -- возможно, по этой бумаге уже есть активный план."}
+    pipeline_id = result[0]["id"] if isinstance(result, list) else result["id"]
+
+    db_instance.ensure_watchlist_row_v2(portfolio_id=portfolio_id, listing_id=listing_id, reason="watched")
+
+    logging.info(f"✅ [DealPlanner]: План подрезки #{pipeline_id} создан ({symbol}, {trim_shares} из {held_qty:g} шт, портфель {portfolio_id}).")
+    return {"ok": True, "pipeline_id": pipeline_id, "symbol": symbol, "qty": trim_shares, "listing_id": listing_id, "override": override}
