@@ -204,6 +204,10 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "listing_id": a["listing_id"],
             "strategy_id": a["strategy_id"],
             "recommendation": a["recommendation"],  # "TRIM_DOWN" -- своя кнопка "✂️ К подрезке" (bot_keyboards.py)
+            # Кнопка показывается только если реально есть что подрезать целыми акциями
+            # (см. portfolio_rebalancer.py, живой баг с EME 2026-08-18 -- 1 акция, подрезать
+            # нечего, кнопка раньше всё равно появлялась и всегда отказывала).
+            "trim_shares": a.get("trim_shares", 0),
         }
         for a in rebalance_alerts
     ]

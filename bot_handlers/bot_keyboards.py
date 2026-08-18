@@ -546,7 +546,11 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                         ticker_id=int(ticker_id), strategy_id=int(strategy_id)
                     ).pack()
                 ))
-            elif recommendation == "TRIM_DOWN" and listing_id:
+            elif recommendation == "TRIM_DOWN" and listing_id and item.get("trim_shares", 0) > 0:
+                # trim_shares=0 -- позиция целая единственная акция, подрезать физически
+                # нечего (живой случай EME, 2026-08-18) -- кнопка отказывала бы всегда
+                # "условия изменились", хотя условие не менялось; текст-предупреждение
+                # в строке дайджеста остаётся, просто без кнопки действия.
                 row.append(types.InlineKeyboardButton(
                     text=f"✂️ К подрезке: {item['label']}",
                     callback_data=MenuAction(

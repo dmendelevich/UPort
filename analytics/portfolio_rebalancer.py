@@ -1,5 +1,5 @@
 import settings
-from analytics.analytics_utils import convert_to_base_currency
+from analytics.analytics_utils import convert_to_base_currency, resolve_trim_shares
 from analytics.portfolio_inspector import PortfolioInspector
 
 
@@ -68,7 +68,7 @@ class PortfolioRebalancer:
 
             sql_positions = """
                 SELECT a.id AS asset_id, a.listing_id, lt.id AS ticker_id, lt.symbol,
-                       sa.allocated_quantity, a.avg_price, l.last_price, l.currency_id, lt.signal_ema20_streak_days,
+                       sa.allocated_quantity, a.quantity AS held_quantity, a.avg_price, l.last_price, l.currency_id, lt.signal_ema20_streak_days,
                        (SELECT op.id FROM public.order_pipelines op
                          WHERE op.portfolio_id = a.portfolio_id AND op.listing_id = a.listing_id
                            AND op.strategy_id = sa.strategy_id AND op.pipeline_status IN ('PENDING', 'ACTIVE')
@@ -103,15 +103,31 @@ class PortfolioRebalancer:
 
                 if value_usd > overweight_threshold:
                     trim_qty = qty * (1 - target_slot / value_usd)
+                    # Сколько РЕАЛЬНО можно подрезать целыми акциями (resolve_trim_shares --
+                    # общая утилита с deal_planner.py::create_trim_plan, тот же расчёт, не
+                    # дублируем) -- от ФИЗИЧЕСКОГО held_quantity (assets.quantity), не от
+                    # allocated_quantity: create_trim_plan проверяет именно физический остаток.
+                    # 0, если позиция -- целая единственная акция (живой случай EME, 2026-08-18,
+                    # найдено пользователем -- кнопка "К подрезке" появлялась и всегда отказывала
+                    # "условия изменились", хотя условие не менялось, подрезать было нечего с
+                    # самого начала) -- в этом случае кнопку в дайджесте показывать не нужно,
+                    # текст-предупреждение остаётся (см. bot_keyboards.py/daily_digest.py).
+                    trim_shares = resolve_trim_shares(trim_qty, float(pos.get("held_quantity") or 0.0))
+                    action_text = (
+                        "Подрежь до планового размера, освободившийся капитал пойдёт на диверсификацию."
+                        if trim_shares > 0 else
+                        "Частично подрезать нечего (позиция — цельная единственная акция) — "
+                        "либо смириться с перевесом, либо продать целиком."
+                    )
                     alerts.append({
                         **base,
                         "quantity": round(trim_qty, 4),
+                        "trim_shares": trim_shares,
                         "recommendation": "TRIM_DOWN",
                         "reason": (
                             f"Позиция выросла до ${value_usd:,.2f} — {value_usd / ideal_budget * 100:.1f}% "
                             f"стратегии, больше {self.OVERWEIGHT_MULTIPLIER:.0f}× планового слота "
-                            f"(${target_slot:,.2f}, {slot_pct:.0f}% цели). Подрежь до планового размера, "
-                            f"освободившийся капитал пойдёт на диверсификацию."
+                            f"(${target_slot:,.2f}, {slot_pct:.0f}% цели). {action_text}"
                         ),
                         "metrics": {
                             "current_value_usd": round(value_usd, 2),
