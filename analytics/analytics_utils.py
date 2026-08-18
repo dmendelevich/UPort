@@ -161,6 +161,34 @@ def convert_to_base_currency(db_instance, amount: float, from_currency: str, to_
         return float(amount)
 
 
+def format_pnl_suffix(db_instance, qty, avg_price, current_price, currency: str) -> str:
+    """
+    Единая точка расчёта прибыли/убытка для дайджеста -- суффикс вида " (+$142.00, +12.4%)",
+    переиспользуется PositionExitEvaluator (SELL, вся позиция) и PortfolioRebalancer
+    (TRIM_DOWN, только подрезаемый кусок -- qty передаёт вызывающий, не обязательно вся
+    позиция). Один расчёт в одном месте -- решено 2026-08-18 (Claude/BACKLOG.md), чтобы не
+    расходиться при будущих правках.
+
+    avg_price/current_price -- БРОКЕРСКИЙ слой (assets.avg_price/listings.last_price, уже в
+    настоящих единицах валюты листинга) -- convert_currency_amount (без multiplier), НЕ
+    convert_to_base_currency (тот -- для канонического слоя tickers/Yahoo, см.
+    Claude/07_glossary.md). Возвращает "" при недостатке данных -- строка молча не добавляется,
+    а не падает "N/A" в текст.
+    """
+    if qty is None or avg_price is None or current_price is None:
+        return ""
+    qty, avg_price, current_price = float(qty), float(avg_price), float(current_price)
+    if qty <= 0 or avg_price <= 0 or current_price <= 0:
+        return ""
+
+    pnl_pct = (current_price - avg_price) / avg_price * 100.0
+    pnl_native = (current_price - avg_price) * qty
+    pnl_usd = convert_currency_amount(db_instance, pnl_native, from_currency=currency)
+
+    sign = "+" if pnl_usd >= 0 else "-"
+    return f" ({sign}${abs(pnl_usd):,.2f}, {sign}{abs(pnl_pct):.1f}%)"
+
+
 def check_sector_ceiling_breach(sector_exposure_usd: dict, total_capital_usd: float,
                                  sector_target_config: dict, sector: str,
                                  additional_usd: float = 0.0) -> dict:

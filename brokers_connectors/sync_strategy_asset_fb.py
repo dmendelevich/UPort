@@ -36,10 +36,13 @@ class SyncStrategyAssetFB:
         # Если записи в assets нет (абсолютно новая бумага) — возвращаем 0.0
         return 0.0
 
-    def distribute_asset_delta(self, portfolio_id: int, listing_id: int, ticker_id: int, old_qty: float, new_qty: float):
+    def distribute_asset_delta(self, portfolio_id: int, listing_id: int, ticker_id: int, old_qty: float, new_qty: float, price: float = None):
         """
         Метод 2: Главный диспетчер распределения. Вычисляется дельта движения акций
         (плюс при покупке, минус при продаже) и зачисляется в нужную стратегию.
+
+        price -- цена исполнения, если вызывающий её знает (см. _notify_step_filled) --
+        прокидывается только в уведомление, на саму дельту/бухгалтерию не влияет.
         """
         delta = new_qty - old_qty
 
@@ -74,13 +77,13 @@ class SyncStrategyAssetFB:
             logging.info(f"✅ [UPort Стратегии]: Экстренная продажа (стратегия ID: {target_strategy_id}) распределена без предварительного плана -- пишу историю задним числом.")
             new_pipe_id = self._record_retroactive_exit(portfolio_id, listing_id, ticker_id, target_strategy_id, matched_qty)
             if new_pipe_id:
-                self._notify_step_filled(new_pipe_id, 'COMPLETE_PIPELINE', matched_qty)
+                self._notify_step_filled(new_pipe_id, 'COMPLETE_PIPELINE', matched_qty, price=price)
         elif action in ('NEXT_STEP', 'COMPLETE_PIPELINE'):
             logging.info(f"✅ [UPort Стратегии]: Шаг плана (стратегия ID: {target_strategy_id}) засчитан -- {action}")
             # Уведомление -- ДО обновления статуса конвейера, пока current_step/pending_broker_order_id
             # ещё не сброшены (см. Claude/09_pipeline_reconciliation.md, реального "срочного канала" не
             # требуется -- вызов сидит на уже существующем реальном времени WebSocket-триггера ФБ)
-            self._notify_step_filled(pipeline_id, action, matched_qty)
+            self._notify_step_filled(pipeline_id, action, matched_qty, price=price)
             self._update_pipeline_status(pipeline_id, action)
         elif action == 'PARTIAL_NO_ADVANCE':
             logging.info(f"ℹ️ [UPort Стратегии]: Частичное исполнение шага (стратегия ID: {target_strategy_id}) -- зачтено в план, шаг пока не продвинут (ждём остаток заявки)")
@@ -285,12 +288,21 @@ class SyncStrategyAssetFB:
         """
         self.db.execute_query(sql_upsert, (asset_id, strategy_id, delta, system_now))
 
-    def _notify_step_filled(self, pipeline_id: int, action: str, matched_qty: float):
+    def _notify_step_filled(self, pipeline_id: int, action: str, matched_qty: float, price: float = None):
         """
-        Присылает владельцу портфеля сообщение в Telegram о том, что шаг плана исполнен
-        и распределён в стратегию. Вызывается ДО _update_pipeline_status, пока current_step
-        и pending_broker_order_id ещё не сброшены. Сбой отправки не должен ломать сверку --
-        это уведомление, а не критическая операция.
+        Присылает владельцу портфеля сообщение в Telegram о том, что шаг плана исполнен.
+        Вызывается ДО _update_pipeline_status, пока current_step и pending_broker_order_id
+        ещё не сброшены. Сбой отправки не должен ломать сверку -- это уведомление, а не
+        критическая операция.
+
+        price -- цена ИСПОЛНЕНИЯ именно этого шага, если вызывающий её знает напрямую
+        (paper_broker.py -- эмулятор сам её только что зафиксировал). Если None (реальный
+        брокерский синк, sync_account_fb.py -- там нет цены конкретной сделки, только
+        снэпшот позиции) -- откат на старую эвристику (см. BACKLOG.md, найденный баг
+        2026-08-18): order_price по привязанному ордеру, иначе assets.avg_price. Для ПРОДАЖИ
+        эта эвристика систематически ошибается -- avg_price намеренно НЕ меняется при частичном
+        выходе (себестоимость остатка), а не цена только что состоявшейся продажи -- отсюда и
+        живой баг (TPR продан по $133.90, уведомление показало $129.62, старую цену покупки).
         """
         try:
             row = self.db.execute_row("""
@@ -309,24 +321,25 @@ class SyncStrategyAssetFB:
             if not row or not row.get("telegram_id"):
                 return
 
-            # Цена ордера есть только у шага, привязанного вручную (pending_broker_order_id) --
-            # у "голого" плана ("План входа", см. Claude/11_asset_lifecycle_and_plan.md), пойманного
-            # автоматически при покупке рынком, order_price всегда NULL. Реальная цена в этом
-            # случае уже лежит в assets.avg_price (только что записана этим же циклом синхронизации).
-            fallback_price = row.get("order_price") if row.get("order_price") is not None else row.get("avg_price")
+            if price is not None:
+                fallback_price = price
+            else:
+                fallback_price = row.get("order_price") if row.get("order_price") is not None else row.get("avg_price")
             price_str = f"{float(fallback_price):.2f}" if fallback_price is not None else "?"
             qty_str = f"{abs(float(matched_qty)):.0f}"
+            is_buy = float(matched_qty) > 0
+            verb_done = "Куплено" if is_buy else "Продано"
 
             if action == 'COMPLETE_PIPELINE':
                 text = (
                     f"✅ План по *{row['symbol']}* ({row['strategy_name']}, портфель {row['portfolio_name']}) "
-                    f"завершён: {qty_str} шт по {price_str}. Распределено в стратегию."
+                    f"завершён: {verb_done} {qty_str} шт по {price_str}."
                 )
             else:
                 text = (
                     f"✅ Шаг {int(row['current_step'])} плана по *{row['symbol']}* ({row['strategy_name']}, "
-                    f"портфель {row['portfolio_name']}) исполнен: {qty_str} шт по {price_str}. "
-                    f"Распределено в стратегию. Следующий шаг: {int(row['current_step']) + 1}."
+                    f"портфель {row['portfolio_name']}) исполнен: {verb_done} {qty_str} шт по {price_str}. "
+                    f"Следующий шаг: {int(row['current_step']) + 1}."
                 )
 
             token = os.getenv("TELEGRAM_TOKEN")

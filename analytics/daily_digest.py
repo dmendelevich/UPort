@@ -5,7 +5,7 @@ from analytics.position_exit_evaluator import PositionExitEvaluator
 from analytics.cash_deployment_advisor import CashDeploymentAdvisor
 from analytics.portfolio_inspector import PortfolioInspector
 from analytics.portfolio_rebalancer import PortfolioRebalancer
-from analytics.analytics_utils import expected_step_quantity
+from analytics.analytics_utils import expected_step_quantity, format_pnl_suffix
 from analytics.order_alert_staleness import evaluate_portfolio_staleness
 
 # Порядок и подписи разделов дайджеста -- единый источник правды для сборки данных
@@ -94,6 +94,14 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     def order_note(ticker_id, direction_set):
         return " ⚠️ уже есть активный приказ" if ticker_id in direction_set else ""
 
+    def pnl_note(a):
+        # Прибыль/убыток от рекомендуемой продажи -- только SELL/TRIM_DOWN (не HOLD/BUY/TOP_UP),
+        # единый суффикс в конце строки, один расчёт на весь дайджест (analytics_utils.format_pnl_suffix,
+        # зафиксировано 2026-08-18, Claude/BACKLOG.md).
+        if a.get("recommendation") not in ("SELL", "TRIM_DOWN"):
+            return ""
+        return format_pnl_suffix(db_instance, a.get("quantity"), a.get("avg_price"), a.get("current_price"), a.get("currency"))
+
     # "strategy_id"/"recommendation" -- добавлены 2026-08-14 (BACKLOG.md, тема «Исполнить
     # из дайджеста») специально для кнопки одного клика у РЕАЛЬНЫХ портфелей: та кнопка
     # показывается только для recommendation == 'SELL' (полный выход) и нуждается в
@@ -102,6 +110,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     schedule_items = [
         {
             "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + pnl_note(a)
                     + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
@@ -113,6 +122,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     signal_items = [
         {
             "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + pnl_note(a)
                     + (order_note(a["ticker_id"], active_sell_ticker_ids) if a["recommendation"] == "SELL" else ""),
             "label": a["symbol"],
             "listing_id": a["listing_id"],
@@ -188,6 +198,7 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     signal_items += [
         {
             "text": f"{ACTION_BADGES[a['recommendation']]} {a['symbol']} ({a['strategy_name']}): {a['reason']}"
+                    + pnl_note(a)
                     + order_note(a["ticker_id"], active_sell_ticker_ids if a["recommendation"] == "TRIM_DOWN" else active_buy_ticker_ids),
             "label": a["symbol"],
             "listing_id": a["listing_id"],

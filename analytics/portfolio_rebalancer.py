@@ -68,7 +68,7 @@ class PortfolioRebalancer:
 
             sql_positions = """
                 SELECT a.id AS asset_id, a.listing_id, lt.id AS ticker_id, lt.symbol,
-                       sa.allocated_quantity, l.last_price, l.currency_id, lt.signal_ema20_streak_days,
+                       sa.allocated_quantity, a.avg_price, l.last_price, l.currency_id, lt.signal_ema20_streak_days,
                        (SELECT op.id FROM public.order_pipelines op
                          WHERE op.portfolio_id = a.portfolio_id AND op.listing_id = a.listing_id
                            AND op.strategy_id = sa.strategy_id AND op.pipeline_status IN ('PENDING', 'ACTIVE')
@@ -118,6 +118,11 @@ class PortfolioRebalancer:
                             "target_slot_usd": round(target_slot, 2),
                             "pct_of_strategy_target": round(value_usd / ideal_budget * 100, 2),
                         },
+                        # Сырые поля для прибыли/убытка (analytics_utils.format_pnl_suffix) --
+                        # именно от подрезаемого куска (trim_qty), не от всей позиции (BACKLOG.md, 2026-08-18).
+                        "avg_price": pos.get("avg_price"),
+                        "current_price": last_price,
+                        "currency": curr,
                     })
                     continue
 

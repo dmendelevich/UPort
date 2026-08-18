@@ -42,7 +42,7 @@ class PositionExitEvaluator:
         sql = """
             SELECT
                 a.id AS asset_id, a.portfolio_id, a.listing_id, a.quantity, a.avg_price, a.position_opened_at,
-                lt.id AS ticker_id, lt.symbol, lt.listing_last_price AS current_price,
+                lt.id AS ticker_id, lt.symbol, lt.listing_last_price AS current_price, lt.listing_currency_id,
                 lt.return_on_equity, lt.debt_to_equity, lt.pe_trailing,
                 lt.signal_rsi, lt.signal_macd, lt.signal_ema_20, lt.signal_sma_50, lt.signal_ema20_streak_days,
                 s.id AS strategy_id, s.strategy_name, s.rules_config,
@@ -96,6 +96,11 @@ class PositionExitEvaluator:
             "recommendation": recommendation,  # "SELL" | "HOLD"
             "reason": reason,
             "metrics": metrics,
+            # Сырые поля для расчёта прибыли/убытка -- analytics_utils.format_pnl_suffix,
+            # считается один раз в daily_digest.py при сборке текста, не здесь (BACKLOG.md, 2026-08-18).
+            "avg_price": pos.get("avg_price"),
+            "current_price": pos.get("current_price"),
+            "currency": pos.get("listing_currency_id"),
             # "price" -- сработало от цены/RSI/фундаментала; "calendar" -- сработало от
             # прошедшего времени (напр. тайм-аут слота Револьверной), см. Claude/BACKLOG.md
             # (реорганизация дайджеста на разделы "по расписанию" vs "сигналы", 2026-07-30).

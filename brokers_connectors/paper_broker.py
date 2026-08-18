@@ -113,7 +113,7 @@ def _try_fill(db_instance, row: dict, met: dict):
 
     strat_sync.distribute_asset_delta(
         portfolio_id=portfolio_id, listing_id=listing_id, ticker_id=ticker_id,
-        old_qty=old_qty, new_qty=new_qty,
+        old_qty=old_qty, new_qty=new_qty, price=price,
     )
 
     if new_qty == 0:
