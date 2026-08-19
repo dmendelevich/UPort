@@ -202,15 +202,28 @@ async def snapshot_portfolio_values(db_instance):
         try:
             inspector = PortfolioInspector(db_instance, p_id)
             total_value = await asyncio.to_thread(inspector.calculate_total_capital)
-            await asyncio.to_thread(
-                db_instance.execute_query,
-                """
-                    INSERT INTO public.portfolio_value_history (portfolio_id, snapshot_date, total_value)
-                    VALUES (%s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, %s)
-                    ON CONFLICT (portfolio_id, snapshot_date) DO UPDATE SET total_value = EXCLUDED.total_value;
-                """,
-                (p_id, float(total_value))
+            # SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md №128) -- гонки
+            # нет: единственный писатель в эту таблицу, раз в сутки, последовательный цикл.
+            existing_row = await asyncio.to_thread(
+                db_instance.execute_row,
+                "SELECT id FROM public.portfolio_value_history WHERE portfolio_id = %s AND snapshot_date = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date;",
+                (p_id,)
             )
+            if existing_row:
+                await asyncio.to_thread(
+                    db_instance.execute_query,
+                    "UPDATE public.portfolio_value_history SET total_value = %s WHERE id = %s;",
+                    (float(total_value), int(existing_row["id"]))
+                )
+            else:
+                await asyncio.to_thread(
+                    db_instance.execute_query,
+                    """
+                        INSERT INTO public.portfolio_value_history (portfolio_id, snapshot_date, total_value)
+                        VALUES (%s, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, %s);
+                    """,
+                    (p_id, float(total_value))
+                )
             logging.info(f"📸 [NAV Snapshot]: '{p['name']}' (ID: {p_id}) -- ${float(total_value):,.2f}")
         except Exception as e:
             error_count += 1
