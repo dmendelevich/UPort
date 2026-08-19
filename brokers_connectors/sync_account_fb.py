@@ -236,14 +236,27 @@ class FreedomBrokerSyncManager:
                                 (portfolio_id, listing_id)
                             )
 
-                        # Фиксируем холдинг-дни position_opened_at
+                        # Фиксируем холдинг-дни position_opened_at -- SELECT (asset_search, выше)
+                        # уже подтвердил, что строки нет, поэтому просто INSERT, не UPSERT
+                        # (Claude/BACKLOG.md №128). RETURNING + фолбэк на случай гонки (два разных
+                        # счёта одного портфеля -- торговый и накопительный -- сериализованы каждый
+                        # СВОИМ asyncio.Lock, теоретически могут задеть один листинг параллельно).
                         sql_asset_insert = """
                             INSERT INTO assets (portfolio_id, listing_id, quantity, avg_price, last_updated, position_opened_at)
                             VALUES (%s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (portfolio_id, listing_id)
-                            DO UPDATE SET quantity = EXCLUDED.quantity, avg_price = EXCLUDED.avg_price, last_updated = EXCLUDED.last_updated;
+                            RETURNING id;
                         """
-                        self.db.execute_query(sql_asset_insert, (portfolio_id, listing_id, quantity, avg_price, session_start_time, session_start_time))
+                        ins_res = self.db.execute_query(sql_asset_insert, (portfolio_id, listing_id, quantity, avg_price, session_start_time, session_start_time))
+                        if not ins_res:
+                            race_row = self.db.execute_row(
+                                "SELECT id FROM assets WHERE portfolio_id = %s AND listing_id = %s;",
+                                (portfolio_id, listing_id)
+                            )
+                            if race_row:
+                                self.db.execute_query(
+                                    "UPDATE assets SET quantity = %s, avg_price = %s, last_updated = %s WHERE id = %s;",
+                                    (quantity, avg_price, session_start_time, int(race_row["id"]))
+                                )
 
                     # 🔥 НАЧАЛО ВНЕДРЕНИЯ (ТОЧКА 2): Базовый asset обновлен! Запускаем умное распределение по стратегиям   #!!!!!!!!!!!!!!!!!!!
                     # quantity — это то новое количество, которое только что прислал брокер

@@ -188,12 +188,19 @@ def _upsert_asset_quantity(db_instance, portfolio_id: int, listing_id: int, old_
     strategy_assets (живой баг найден при тестировании -- та же ловушка есть и у
     настоящего брокерского синка).
     """
+    # Один SELECT на оба случая (раньше дублировался в каждой ветке) -- заодно даёт id
+    # для UPDATE. SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md №128) --
+    # гонки нет: единственный вызывающий (_try_fill, из run_paper_broker_cycle) идёт
+    # последовательно в одном цикле котировок, эта строка assets больше никому не пишется
+    # (реальный брокерский синк бумажных портфелей не касается, execution_mode='CONFIRM').
+    existing_row = db_instance.execute_row(
+        "SELECT id, avg_price FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;",
+        (portfolio_id, listing_id)
+    )
+    raw_avg_price = (existing_row or {}).get("avg_price")
+
     if new_qty > old_qty:
-        old_row = db_instance.execute_row(
-            "SELECT avg_price FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;",
-            (portfolio_id, listing_id)
-        )
-        old_avg_price = float((old_row or {}).get("avg_price") or 0.0)
+        old_avg_price = float(raw_avg_price or 0.0)
         bought_qty = new_qty - old_qty
         new_avg_price = (
             (old_qty * old_avg_price + bought_qty * fill_price) / new_qty
@@ -201,20 +208,18 @@ def _upsert_asset_quantity(db_instance, portfolio_id: int, listing_id: int, old_
         )
     else:
         # Продажа (частичная) -- средняя цена держащегося остатка не меняется.
-        old_row = db_instance.execute_row(
-            "SELECT avg_price FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;",
-            (portfolio_id, listing_id)
-        )
-        new_avg_price = float((old_row or {}).get("avg_price") or fill_price)
+        new_avg_price = float(raw_avg_price or fill_price)
 
+    if existing_row:
+        db_instance.execute_query(
+            "UPDATE public.assets SET quantity = %s, avg_price = %s, last_updated = CURRENT_TIMESTAMP WHERE id = %s;",
+            (new_qty, new_avg_price, int(existing_row["id"]))
+        )
+        return
     db_instance.execute_query(
         """
             INSERT INTO public.assets (portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at)
-            VALUES (%s, %s, %s, %s, 'USD', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT (portfolio_id, listing_id) DO UPDATE SET
-                quantity = EXCLUDED.quantity,
-                avg_price = EXCLUDED.avg_price,
-                last_updated = EXCLUDED.last_updated;
+            VALUES (%s, %s, %s, %s, 'USD', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
         """,
         (portfolio_id, listing_id, new_qty, new_avg_price)
     )

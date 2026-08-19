@@ -262,11 +262,15 @@ class SyncStrategyAssetFB:
     def _apply_strategy_balance(self, portfolio_id: int, listing_id: int, strategy_id: int, delta: float):
         """
         Внутренний бухгалтерский узел. Зачисляет или списывает дельту (включая отрицательные числа)
-        в таблицу strategy_assets. Использует UPSERT (ON CONFLICT).
+        в таблицу strategy_assets. SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md
+        №128) -- INSERT с RETURNING и фолбэком на повторный SELECT при проигранной гонке (не
+        сериализовано так же чисто, как accounts: два разных счёта одного портфеля -- торговый
+        и накопительный -- сериализованы каждый СВОИМ asyncio.Lock в fb_websocket_daemon.py,
+        теоретически могут задеть один и тот же (asset_id, strategy_id) параллельно).
         """
         # Стерильный UTC-срез времени UPort без микросекунд и таймзон
         system_now = datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None).isoformat(sep=" ")
-        
+
         # Получаем ID связи из assets, так как таблица strategy_assets жестко привязана к общему котлу
         sql_asset = "SELECT id FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;"
         asset_row = self.db.execute_row(sql_asset, (portfolio_id, listing_id))
@@ -277,16 +281,31 @@ class SyncStrategyAssetFB:
 
         asset_id = int(asset_row['id'])
 
-        # Магия сквозной математики: просто прибавляем дельту (неважно, +5 или -5)
-        sql_upsert = """
+        sql_check = "SELECT id, allocated_quantity FROM public.strategy_assets WHERE asset_id = %s AND strategy_id = %s;"
+        existing = self.db.execute_row(sql_check, (asset_id, strategy_id))
+        if existing:
+            new_qty = float(existing["allocated_quantity"] or 0.0) + delta
+            self.db.execute_query(
+                "UPDATE public.strategy_assets SET allocated_quantity = %s, last_updated_at = %s WHERE id = %s;",
+                (new_qty, system_now, int(existing["id"]))
+            )
+            return
+
+        sql_insert = """
             INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (asset_id, strategy_id)
-            DO UPDATE SET
-                allocated_quantity = public.strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
-                last_updated_at = EXCLUDED.last_updated_at;
+            RETURNING id;
         """
-        self.db.execute_query(sql_upsert, (asset_id, strategy_id, delta, system_now))
+        ins_res = self.db.execute_query(sql_insert, (asset_id, strategy_id, delta, system_now))
+        if not ins_res:
+            # Проиграли гонку -- строку уже создал параллельный вызов между нашим SELECT и INSERT.
+            existing2 = self.db.execute_row(sql_check, (asset_id, strategy_id))
+            if existing2:
+                new_qty = float(existing2["allocated_quantity"] or 0.0) + delta
+                self.db.execute_query(
+                    "UPDATE public.strategy_assets SET allocated_quantity = %s, last_updated_at = %s WHERE id = %s;",
+                    (new_qty, system_now, int(existing2["id"]))
+                )
 
     def _notify_step_filled(self, pipeline_id: int, action: str, matched_qty: float, price: float = None):
         """
