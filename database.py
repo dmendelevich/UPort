@@ -105,12 +105,27 @@ class Database:
         self.execute_query(sql, (currency_id, currency_id))
 
     def ensure_account_sub_row(self, user_id: int, portfolio_id: int, broker_id: int, account_number: str, account_type: str, currency_id: str):
-        """Кит №2: Гарантирует наличие мультивалютной строки субсчета в таблице accounts."""
+        """
+        Кит №2: Гарантирует наличие мультивалютной строки субсчета в таблице accounts.
+
+        SELECT-затем-INSERT, не INSERT...ON CONFLICT DO NOTHING (Claude/BACKLOG.md №128,
+        принципы согласованы 2026-08-18) -- ON CONFLICT жжёт sequence ДАЖЕ на конфликтной
+        ветке (Postgres дёргает nextval() до проверки конфликта). Живая находка (№128) --
+        именно эта таблица спалила ~223 383 id при 10 живых строках. Гонки SELECT/INSERT
+        нет: единственный вызывающий (sync_by_account_number) уже сериализован по
+        account_number через asyncio.Lock в fb_websocket_daemon.py -- страховочный
+        ON CONFLICT тут не нужен вообще, не только не оптимален.
+        """
         p_id_val = portfolio_id if portfolio_id else None
+        existing = self.execute_query(
+            "SELECT 1 FROM public.accounts WHERE account_number = %s AND currency_id = %s LIMIT 1;",
+            (account_number, currency_id)
+        )
+        if existing:
+            return
         sql = """
         INSERT INTO public.accounts (user_id, portfolio_id, broker_id, account_number, account_type, currency_id, cash_available, cash_reserved, assets_value)
-        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, 0)
-        ON CONFLICT (account_number, currency_id) DO NOTHING;
+        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, 0);
         """
         self.execute_query(sql, (user_id, p_id_val, broker_id, account_number, account_type, currency_id))
 
