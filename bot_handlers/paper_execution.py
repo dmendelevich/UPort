@@ -100,23 +100,56 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
     spent = quantity * price
     now = _system_now()
 
-    sql = """
-        WITH upsert_asset AS (
-            INSERT INTO public.assets (portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at)
-            VALUES (%s, %s, %s, %s, 'USD', %s, %s)
-            ON CONFLICT (portfolio_id, listing_id) DO UPDATE SET
-                avg_price = (assets.quantity * assets.avg_price + EXCLUDED.quantity * EXCLUDED.avg_price) / (assets.quantity + EXCLUDED.quantity),
-                quantity = assets.quantity + EXCLUDED.quantity,
-                last_updated = EXCLUDED.last_updated
-            RETURNING id
-        ),
-        upsert_strategy_asset AS (
-            INSERT INTO public.strategy_assets (asset_id, strategy_id, allocated_quantity, last_updated_at)
-            SELECT id, %s, %s, %s FROM upsert_asset
-            ON CONFLICT (asset_id, strategy_id) DO UPDATE SET
-                allocated_quantity = strategy_assets.allocated_quantity + EXCLUDED.allocated_quantity,
-                last_updated_at = EXCLUDED.last_updated_at
-        ),
+    # SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md №128) -- средневзвешенная
+    # цена считается здесь, в Python (было формулой внутри SQL), CTE-фрагменты для assets/
+    # strategy_assets выбираются динамически (UPDATE если строка уже есть, иначе INSERT) --
+    # остаются структурными f-строками, собранными самим кодом, не пользовательским вводом
+    # (см. Claude/BACKLOG.md №81) -- значения по-прежнему параметризованы. Атомарность всех
+    # 4 таблиц сохранена -- это по-прежнему ОДИН SQL-запрос (WITH...), execute_transaction
+    # не понадобился: цепочку "id только что вставленной assets -> strategy_assets" CTE
+    # умеет сама, через RETURNING/SELECT FROM, без второго HTTP-вызова к шлюзу.
+    existing_asset = await asyncio.to_thread(
+        db_sys.execute_row,
+        "SELECT id, quantity, avg_price FROM public.assets WHERE portfolio_id = %s AND listing_id = %s;",
+        (p_id, listing_id)
+    )
+
+    if existing_asset:
+        old_qty = float(existing_asset["quantity"] or 0.0)
+        old_avg = float(existing_asset["avg_price"] or 0.0)
+        new_qty = old_qty + quantity
+        new_avg = (old_qty * old_avg + quantity * price) / new_qty if new_qty > 0 else price
+        asset_cte = "upsert_asset AS (UPDATE public.assets SET quantity = %s, avg_price = %s, last_updated = %s WHERE id = %s RETURNING id)"
+        asset_params = (new_qty, new_avg, now, int(existing_asset["id"]))
+
+        existing_strategy_asset = await asyncio.to_thread(
+            db_sys.execute_row,
+            "SELECT id, allocated_quantity FROM public.strategy_assets WHERE asset_id = %s AND strategy_id = %s;",
+            (int(existing_asset["id"]), s_id)
+        )
+    else:
+        asset_cte = (
+            "upsert_asset AS (INSERT INTO public.assets "
+            "(portfolio_id, listing_id, quantity, avg_price, currency_id, last_updated, position_opened_at) "
+            "VALUES (%s, %s, %s, %s, 'USD', %s, %s) RETURNING id)"
+        )
+        asset_params = (p_id, listing_id, quantity, price, now, now)
+        existing_strategy_asset = None  # новый asset -- строки strategy_assets для него ещё физически нет
+
+    if existing_strategy_asset:
+        new_alloc = float(existing_strategy_asset["allocated_quantity"] or 0.0) + quantity
+        strat_cte = "upsert_strategy_asset AS (UPDATE public.strategy_assets SET allocated_quantity = %s, last_updated_at = %s WHERE id = %s RETURNING id)"
+        strat_params = (new_alloc, now, int(existing_strategy_asset["id"]))
+    else:
+        strat_cte = (
+            "upsert_strategy_asset AS (INSERT INTO public.strategy_assets "
+            "(asset_id, strategy_id, allocated_quantity, last_updated_at) SELECT id, %s, %s, %s FROM upsert_asset)"
+        )
+        strat_params = (s_id, quantity, now)
+
+    sql = f"""
+        WITH {asset_cte},
+        {strat_cte},
         new_pipeline AS (
             INSERT INTO public.order_pipelines
                 (portfolio_id, listing_id, strategy_id, ticker_id, current_step, pipeline_status, target_quantity, initial_entry_price, is_manual_override)
@@ -126,15 +159,18 @@ async def _execute_virtual_buy(p_id: int, s_id: int, t_id: int, amount: float, i
             UPDATE public.accounts SET cash_available = cash_available - %s, last_updated = %s
             WHERE portfolio_id = %s AND currency_id = 'USD'
         )
-        SELECT 1;
+        SELECT id AS asset_id FROM upsert_asset;
     """
-    params = (
-        p_id, listing_id, quantity, price, now, now,
-        s_id, quantity, now,
+    params = asset_params + strat_params + (
         p_id, listing_id, s_id, t_id, quantity, price, is_manual_override,
         spent, now, p_id,
     )
-    await asyncio.to_thread(db_sys.execute_query, sql, params)
+    result = await asyncio.to_thread(db_sys.execute_query, sql, params)
+    if not result:
+        # Гонка -- строка assets появилась/пропала между нашим SELECT и записью (execute_query
+        # молча глотает ошибку СУБД, №81, вся транзакция откатывается атомарно, частичной
+        # записи быть не может). Крайне маловероятно (один пользователь, свои же клики).
+        return False, "⚠️ Не удалось исполнить -- попробуй ещё раз.", listing_id
     await asyncio.to_thread(db_sys.execute_query, _refresh_assets_value_sql(), (p_id, p_id))
     # У бумажного портфеля нет sync_account_fb.py (реальный брокерский синк) -- он и
     # заводит watchlist для реальных портфелей при покупке. Без этого вызова позиции
