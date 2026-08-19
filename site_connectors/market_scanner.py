@@ -74,21 +74,45 @@ class StockDonorsScanner:
                     # Вживляем 'MS_SP500' -- create_missing=true (было false, Claude/BACKLOG.md №90,
                     # находка M): для тикера, УЖЕ существовавшего в tickers до прогона сканера
                     # (подавляющее большинство), jsonb_set с false молча не создавал ключ вообще.
-                    sql_save = """
-                        INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, provenance)
-                        VALUES (%s, %s, %s, jsonb_build_object('MS_SP500', %s))
-                        ON CONFLICT (symbol)
-                        DO UPDATE SET
-                            provenance = jsonb_set(
-                                public.tickers.provenance,
-                                '{MS_SP500}',
-                                to_jsonb(%s::text),
-                                true
-                            ),
-                            yahoo_symbol = EXCLUDED.yahoo_symbol,
-                            exchange_mic = EXCLUDED.exchange_mic;
-                    """
-                    self.db_instance.execute_query(sql_save, (clean_sym, yahoo_symbol, mic, timestamp_str, timestamp_str))
+                    #
+                    # SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md №128) -- жгло
+                    # sequence на КАЖДОМ уже существующем тикере при каждом прогоне (подавляющее
+                    # большинство S&P500 уже в базе после первого раза) -- крупнейшая находка
+                    # инвентаря (~7000 спалено). INSERT с RETURNING на случай гонки с живым
+                    # ensure_ticker_v3 (не сериализовано, в отличие от accounts) -- проиграли,
+                    # execute_query молча глотает ошибку уникальности (№81), добираем id повторным
+                    # SELECT.
+                    existing_row = self.db_instance.execute_row(
+                        "SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;", (clean_sym,)
+                    )
+                    if existing_row:
+                        sql_update = """
+                            UPDATE public.tickers
+                            SET provenance = jsonb_set(provenance, '{MS_SP500}', to_jsonb(%s::text), true),
+                                yahoo_symbol = %s,
+                                exchange_mic = %s
+                            WHERE id = %s;
+                        """
+                        self.db_instance.execute_query(sql_update, (timestamp_str, yahoo_symbol, mic, int(existing_row["id"])))
+                    else:
+                        sql_insert = """
+                            INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, provenance)
+                            VALUES (%s, %s, %s, jsonb_build_object('MS_SP500', %s))
+                            RETURNING id;
+                        """
+                        ins_res = self.db_instance.execute_query(sql_insert, (clean_sym, yahoo_symbol, mic, timestamp_str))
+                        if not ins_res:
+                            # Проиграли гонку -- строку уже создал кто-то другой между нашим SELECT и INSERT.
+                            row_id = self.db_instance.execute_row("SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;", (clean_sym,))
+                            if row_id:
+                                sql_update = """
+                                    UPDATE public.tickers
+                                    SET provenance = jsonb_set(provenance, '{MS_SP500}', to_jsonb(%s::text), true),
+                                        yahoo_symbol = %s,
+                                        exchange_mic = %s
+                                    WHERE id = %s;
+                                """
+                                self.db_instance.execute_query(sql_update, (timestamp_str, yahoo_symbol, mic, int(row_id["id"])))
                     inserted_count += 1
                     
                 logging.info(f"✅ [Контур {index_name}]: Влить в tickers: {inserted_count} шт. Провожу дельта-очистку вылетевших...")
@@ -153,24 +177,42 @@ class EtfLeadersScanner:
 
                 # Вживляем 'MS_TOP100_ETF' -- create_missing=true (была та же ошибка, что и у
                 # MS_SP500 выше, Claude/BACKLOG.md №90, находка M).
-                sql_save = """
-                    INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, asset_metadata, provenance)
-                    VALUES (%s, %s, %s, %s::jsonb, jsonb_build_object('MS_TOP100_ETF', %s))
-                    ON CONFLICT (symbol)
-                    DO UPDATE SET
-                        provenance = jsonb_set(
-                            public.tickers.provenance,
-                            '{MS_TOP100_ETF}',
-                            to_jsonb(%s::text),
-                            true
-                        ),
-                        asset_metadata = EXCLUDED.asset_metadata,
-                        yahoo_symbol = EXCLUDED.yahoo_symbol,
-                        exchange_mic = EXCLUDED.exchange_mic;
-                """
-                self.db_instance.execute_query(sql_save, (
-                    clean_ticker, yahoo_symbol, mic, asset_json_str, timestamp_str, timestamp_str
-                ))
+                #
+                # SELECT-затем-UPDATE/INSERT, не ON CONFLICT (Claude/BACKLOG.md №128) -- тот же
+                # приём, что и у MS_SP500 выше (см. комментарий там про сожжённый sequence и
+                # гонку с ensure_ticker_v3).
+                existing_row = self.db_instance.execute_row(
+                    "SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;", (clean_ticker,)
+                )
+                if existing_row:
+                    sql_update = """
+                        UPDATE public.tickers
+                        SET provenance = jsonb_set(provenance, '{MS_TOP100_ETF}', to_jsonb(%s::text), true),
+                            asset_metadata = %s::jsonb,
+                            yahoo_symbol = %s,
+                            exchange_mic = %s
+                        WHERE id = %s;
+                    """
+                    self.db_instance.execute_query(sql_update, (timestamp_str, asset_json_str, yahoo_symbol, mic, int(existing_row["id"])))
+                else:
+                    sql_insert = """
+                        INSERT INTO public.tickers (symbol, yahoo_symbol, exchange_mic, asset_metadata, provenance)
+                        VALUES (%s, %s, %s, %s::jsonb, jsonb_build_object('MS_TOP100_ETF', %s))
+                        RETURNING id;
+                    """
+                    ins_res = self.db_instance.execute_query(sql_insert, (clean_ticker, yahoo_symbol, mic, asset_json_str, timestamp_str))
+                    if not ins_res:
+                        row_id = self.db_instance.execute_row("SELECT id FROM public.tickers WHERE symbol = %s LIMIT 1;", (clean_ticker,))
+                        if row_id:
+                            sql_update = """
+                                UPDATE public.tickers
+                                SET provenance = jsonb_set(provenance, '{MS_TOP100_ETF}', to_jsonb(%s::text), true),
+                                    asset_metadata = %s::jsonb,
+                                    yahoo_symbol = %s,
+                                    exchange_mic = %s
+                                WHERE id = %s;
+                            """
+                            self.db_instance.execute_query(sql_update, (timestamp_str, asset_json_str, yahoo_symbol, mic, int(row_id["id"])))
                 inserted_count += 1
                 
             logging.info(f"✅ [ETF SCANNER]: Влито фондов в tickers: {inserted_count} шт. Запускаю дельта-очистку...")
