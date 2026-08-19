@@ -382,18 +382,25 @@ class Database:
             
         self.ensure_currency(target_currency)
 
-        # Фиксируем листинг с правильным именем и живой котировкой
-        sql_insert_listing = """
-            INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id, last_price)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (broker_id, broker_symbol) DO NOTHING;
-        """
-        self.execute_query(sql_insert_listing, (t_id, b_id, broker_ticker_name, target_currency, float(live_price)))
+        # Фиксируем листинг с правильным именем и живой котировкой -- SELECT-затем-INSERT
+        # (Claude/BACKLOG.md №128), не INSERT...ON CONFLICT DO NOTHING (жжёт sequence даже
+        # на конфликтной ветке). В отличие от ensure_account_sub_row, гонка тут реально
+        # возможна -- ensure_listing вызывается из многих независимых мест (market_scanner.py,
+        # ensure_ticker_v3, sync_account_fb.py и т.д.), серилизации по (broker_id,
+        # broker_symbol) нет -- поэтому INSERT под RETURNING, и если проиграли гонку
+        # (execute_query молча глотает ошибку уникальности, см. №81) -- добираем id
+        # повторным SELECT, не считаем это сбоем.
+        sql_check_listing = "SELECT id FROM public.listings WHERE broker_id = %s AND broker_symbol = %s LIMIT 1;"
+        res_id = self.execute_query(sql_check_listing, (b_id, broker_ticker_name))
+        if not (res_id and len(res_id) > 0):
+            sql_insert_listing = """
+                INSERT INTO public.listings (ticker_id, broker_id, broker_symbol, currency_id, last_price)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id;
+            """
+            insert_res = self.execute_query(sql_insert_listing, (t_id, b_id, broker_ticker_name, target_currency, float(live_price)))
+            res_id = insert_res if insert_res else self.execute_query(sql_check_listing, (b_id, broker_ticker_name))
 
-        res_id = self.execute_query(
-            "SELECT id FROM public.listings WHERE broker_id = %s AND broker_symbol = %s LIMIT 1;",
-            (b_id, broker_ticker_name)
-        )
         if res_id and len(res_id) > 0:
             # 🔥 ФИКС v5.3: Зряче извлекаем нулевой элемент списка словарей PostgreSQL
             row_id = res_id[0] if isinstance(res_id, list) else res_id
