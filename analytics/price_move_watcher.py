@@ -10,6 +10,13 @@ from bot_handlers.common import MenuAction
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Временный явный список -- глушит отправку алертов (PriceMoveWatcher + CapitalProtection,
+# оба идут через send_alert_notification ниже) конкретным получателям, не трогая сам расчёт/
+# запись в БД (условие продолжает взводиться и гаситься как обычно, просто без пуша). ЕАМ
+# (telegram_id=950280210, owner_id=2, П136) -- по просьбе пользователя 2026-08-20, снять
+# запись отсюда, когда решит возобновить.
+MUTED_ALERT_TELEGRAM_IDS = {950280210}
+
 
 def check_price_moves(db_instance, broker_id: int = 1):
     """
@@ -196,6 +203,9 @@ def send_alert_notification(telegram_id, note: str, alert_id: int, sell_action: 
     Ожидает {"portfolio_id", "strategy_id", "listing_id"}.
     """
     if not telegram_id:
+        return
+    if int(telegram_id) in MUTED_ALERT_TELEGRAM_IDS:
+        logging.debug(f"🔇 [Alerts]: Получатель {telegram_id} временно заглушен, алерт #{alert_id} не отправлен (см. MUTED_ALERT_TELEGRAM_IDS).")
         return
 
     token = os.getenv("TELEGRAM_TOKEN")
