@@ -593,7 +593,7 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
     elif digest_origin:
         # Тот же приём, что у deal.py::_back_to_digest_keyboard -- всегда в раздел
         # "signals" целиком (не различает "пришли из schedule или signals", как и там).
-        back_text = "🔙 Назад к дайджесту"
+        back_text = "🔙 Назад к делам"
         back_callback = MenuAction(action="view_digest", portfolio_id=p_id, sub_view="signals").pack()
     elif is_owner_view:
         back_text = "🔙 К списку активов"

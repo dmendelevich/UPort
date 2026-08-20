@@ -461,7 +461,7 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
     происхождения (тот же приём, что уже решил ту же природу проблемы для шторки
     алертов, см. BACKLOG.md "Сделано" п.17): экран успеха добавления в список
     наблюдения (bot_handlers/watchlist.py::execute_watchlist_fixation) по этой
-    пометке вернёт "🔙 Назад к дайджесту", а не только "В главное меню".
+    пометке вернёт "🔙 Назад к делам", а не только "В главное меню".
 
     Кнопка исполнения (2026-08-17, Claude/BACKLOG.md №122/123, продолжение темы
     «Исполнить из дайджеста»; TRIM_DOWN подключен 2026-08-18) -- ОДИН и тот же механизм
@@ -508,7 +508,7 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
                 text=f"{badge} {item['label']}",
                 callback_data=MenuAction(
                     # "owner/digest" -- составной sub_view (тот же приём, что и alerts_origin в
-                    # tickers.py) -- карточка тикера отсюда должна вернуть "Назад к дайджесту",
+                    # tickers.py) -- карточка тикера отсюда должна вернуть "Назад к делам",
                     # не "К списку активов" (живой баг, найден пользователем 2026-08-18 на EME).
                     action="view_ticker", portfolio_id=portfolio_id, listing_id=int(listing_id), sub_view="owner/digest"
                 ).pack()
@@ -570,7 +570,7 @@ def generate_digest_section_keyboard(portfolio_id: int, section_key: str, items:
 
     final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
     back_kb = generate_nav_back_keyboard(
-        one_step_back_text="🔙 Назад к дайджесту",
+        one_step_back_text="🔙 Назад к делам",
         full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, strategy_id=filter_strategy_id, sub_view="overview").pack()
     )
     final_builder.attach(InlineKeyboardBuilder.from_markup(back_kb))

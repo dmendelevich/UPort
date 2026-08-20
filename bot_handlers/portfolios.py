@@ -221,7 +221,7 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
         ("📦 Состав портфеля", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"assets/{origin}")),
         ("🩻 Паспорт качества", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"passport/{origin}")),
         ("🎯 Стратегии", MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view=f"strategies/{origin}")),
-        ("📅 Дайджест", MenuAction(action="view_digest", portfolio_id=p_id, sub_view="overview")),
+        ("✅ Дела", MenuAction(action="view_digest", portfolio_id=p_id, sub_view="overview")),
     ]
 
     tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=f"{view}/{origin}")

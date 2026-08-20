@@ -42,7 +42,7 @@ def _cheat_sheet_keyboard(action: str, portfolio_id: int, strategy_id: int, tick
 
 def _back_to_digest_keyboard(portfolio_id: int):
     return generate_nav_back_keyboard(
-        one_step_back_text="🔙 Назад к дайджесту",
+        one_step_back_text="🔙 Назад к делам",
         full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view="signals").pack()
     )
 

@@ -640,8 +640,8 @@ async def format_portfolio_header(portfolio_id: int, target_currency: str = "USD
     тикера) -- раньше жил только внутри process_view_portfolio (bot_handlers/portfolios.py),
     не был вынесен в функцию как остальные хедеры (отступление от собственного
     стандарта проекта). Вынесен 2026-08-15, когда понадобился ещё и вкладке
-    «Дайджест» (bot_handlers/digest.py) -- одна и та же шапка теперь у всех вкладок
-    портфеля, включая дайджест, а не только у Состав/Паспорт/Стратегии.
+    «Дела» (bot_handlers/digest.py) -- одна и та же шапка теперь у всех вкладок
+    портфеля, включая «Дела», а не только у Состав/Паспорт/Стратегии.
 
     Самодостаточная функция -- сама делает свои запросы (та же лёгкая SELECT на
     имя/владельца, не тяжёлый generate_portfolio_passport, который process_view_portfolio
@@ -913,7 +913,7 @@ def render_digest_overview_text(data: dict, standalone: bool = True, capital_hin
 
     standalone=True (по умолчанию -- пуш-уведомление, cron_scheduler.py) -- текст
     самодостаточен: своя строка имени/даты + "Капитал/Кэш" (числа PortfolioInspector).
-    standalone=False (вкладка «Дайджест» портфеля/стратегии, bot_handlers/digest.py,
+    standalone=False (вкладка «Дела» портфеля/стратегии, bot_handlers/digest.py,
     2026-08-15) -- имя/капитал уже показаны в СТАНДАРТНОМ хедере экрана над этим
     текстом (format_portfolio_header/format_strategy_header+format_strategy_capital_block),
     повторять их здесь было бы чистым дублем -- вместо своей строки капитала можно
@@ -925,10 +925,10 @@ def render_digest_overview_text(data: dict, standalone: bool = True, capital_hin
     from analytics.daily_digest import SECTION_ORDER
 
     if standalone:
-        lines = [f"📊 *{data['title']}* — дайджест на {data['today_str']}", ""]
+        lines = [f"📊 *{data['title']}* — дела на {data['today_str']}", ""]
         lines.append(f"💰 Капитал: ${data['total_capital']:,.2f} · Кэш: ${data['real_cash']:,.2f}")
     else:
-        lines = [f"📅 **ДАЙДЖЕСТ НА {data['today_str']}**"]
+        lines = [f"✅ **ДЕЛА НА {data['today_str']}**"]
         if capital_hint:
             lines.append(capital_hint)
 

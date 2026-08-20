@@ -315,7 +315,7 @@ async def execute_watchlist_fixation(message: types.Message, portfolio_id: int, 
         # 5. ВЫВОД ФИНАЛЬНОГО ПРЕМИАЛЬНОГО СТАТУСА -- кнопка "назад" зависит от origin
         if origin == "digest":
             success_markup = generate_nav_back_keyboard(
-                one_step_back_text="🔙 Назад к дайджесту",
+                one_step_back_text="🔙 Назад к делам",
                 full_back_callback=MenuAction(action="view_digest", portfolio_id=portfolio_id, sub_view="signals").pack()
             )
         elif origin == "search":

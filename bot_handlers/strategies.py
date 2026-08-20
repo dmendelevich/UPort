@@ -170,7 +170,7 @@ async def process_view_strategy(callback: types.CallbackQuery, callback_data: Me
     tabs = [
         ("📦 Состав", MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id, sub_view="assets")),
         ("📊 Паспорт качества", MenuAction(action="view_strategy", portfolio_id=p_id, strategy_id=s_id, sub_view="passport")),
-        ("📅 Дайджест", MenuAction(action="view_digest", portfolio_id=p_id, strategy_id=s_id, sub_view="overview")),
+        ("✅ Дела", MenuAction(action="view_digest", portfolio_id=p_id, strategy_id=s_id, sub_view="overview")),
     ]
     tab_switch_markup = generate_tab_switch_keyboard(tabs, current_sub_view=view)
     for tab_row in tab_switch_markup.inline_keyboard:
