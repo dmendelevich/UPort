@@ -183,7 +183,9 @@ def _handle_triggered(db_instance, pos: dict, kind: str, current_price: float, r
         alert_id = int(insert_res[0]["id"])
         logging.info(f"🎯 [CapitalProtection]: Новый алерт #{alert_id} ({kind}) для {pos['symbol']} (портфель {portfolio_id})")
 
-    send_alert_notification(pos.get("telegram_id"), note, alert_id)
+    send_alert_notification(pos.get("telegram_id"), note, alert_id, sell_action={
+        "portfolio_id": portfolio_id, "strategy_id": pos["strategy_id"], "listing_id": listing_id,
+    })
 
 
 def _resolve_alerts(db_instance, listing_id: int, portfolio_id: int):

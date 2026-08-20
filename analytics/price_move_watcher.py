@@ -186,7 +186,15 @@ def _resolve_alerts(db_instance, listing_id: int):
     """, (listing_id,))
 
 
-def send_alert_notification(telegram_id, note: str, alert_id: int):
+def send_alert_notification(telegram_id, note: str, alert_id: int, sell_action: dict = None):
+    """
+    sell_action -- опционально, добавляет кнопку "🤝 К продаже" НАД "Остановить" (сама
+    "Остановить" молчит будущие повторы, не заменяет решение продать). Используется
+    только capital_protection_watcher.py (SL/TS -- конкретная рекомендация действия);
+    PriceMoveWatcher её не передаёт (просто движение цены, без готовой рекомендации,
+    см. докстринг check_price_moves) -- общая функция, но кнопка не безусловна.
+    Ожидает {"portfolio_id", "strategy_id", "listing_id"}.
+    """
     if not telegram_id:
         return
 
@@ -197,9 +205,14 @@ def send_alert_notification(telegram_id, note: str, alert_id: int):
 
     text = f"📢 {note}"
     stop_callback = MenuAction(action="stop_price_alert", alert_id=int(alert_id)).pack()
-    reply_markup = {
-        "inline_keyboard": [[{"text": "🛑 Остановить", "callback_data": stop_callback}]]
-    }
+    buttons = [[{"text": "🛑 Остановить", "callback_data": stop_callback}]]
+    if sell_action:
+        sell_callback = MenuAction(
+            action="deal_start_sell", portfolio_id=int(sell_action["portfolio_id"]),
+            strategy_id=int(sell_action["strategy_id"]), listing_id=int(sell_action["listing_id"])
+        ).pack()
+        buttons.insert(0, [{"text": "🤝 К продаже", "callback_data": sell_callback}])
+    reply_markup = {"inline_keyboard": buttons}
     try:
         requests.post(
             TELEGRAM_API_URL.format(token=token),
