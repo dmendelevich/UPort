@@ -73,31 +73,35 @@ class LadderStepWatcher:
         if row.get("system_key") == "CONSERVATIVE_ACCUMULATION" and conservative_fundamental_break_reasons(row):
             return None
 
+        # Шпаргалка «К сделке» -- решение (купить/продать/подрезать/докупить) уже принято
+        # ЦЕЛИКОМ в момент клика, не делится по лесенке стратегии -- даже если у стратегии
+        # ЕСТЬ своя многошаговая тактика (Claude/BACKLOG.md, живой баг найден 2026-08-20 на
+        # TJX/Консервативной: budget_share_pct шага 1 там 30% -- это ПОКУПОЧНАЯ лесенка входа
+        # в 3 транша, у продажи через override с ней нет ничего общего, но применялась
+        # безусловно -- продалось 30% вместо 100%, План застрял на шаге 2, ожидая ПОКУПОЧНОЕ
+        # условие, для продажи не имеющее смысла). Раньше 100% подставлялись ТОЛЬКО когда
+        # у стратегии тактики нет вовсе (буферная «Неопределённая») -- теперь безусловно при
+        # наличии override на шаге 1, независимо от того, есть ли у стратегии своя тактика.
+        has_override = curr_step == 1 and bool(row.get("entry_trigger_override"))
+
         tactic = self.db.execute_row("""
             SELECT budget_share_pct, trigger_conditions
             FROM public.strategy_tactics
             WHERE strategy_id = %s AND step_number = %s;
         """, (strat_id, curr_step))
         if not tactic:
-            # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E).
-            # Исключение -- шаг 1 с entry_trigger_override (Claude/BACKLOG.md №122): бумага вне
-            # стратегии (побуждение 3б, «Неопределённая») -- у буферной стратегии тактик нет
-            # вообще, но решение уже принято целиком в момент «К сделке», лесенки тут не
-            # бывает по определению -- весь target_quantity одним шагом (budget_share_pct=100).
-            if curr_step == 1 and row.get("entry_trigger_override"):
+            # Шаг не описан в strategy_tactics вообще -- нечего оценивать (см. BACKLOG.md #29/E),
+            # кроме случая override на шаге 1 (см. комментарий выше).
+            if has_override:
                 tactic = {"budget_share_pct": 100.0, "trigger_conditions": {}}
             else:
                 return None
 
-        # Шпаргалка «К сделке» (Claude/BACKLOG.md №122/123) -- выбор ASAP/оптимальная цена
-        # индивидуален для КАЖДОГО решения купить/продать, а strategy_tactics задаёт ОДНО
-        # общее условие на всю стратегию. entry_trigger_override живёт на самом Плане и
-        # действует ТОЛЬКО на шаг 1 (первый вход/выход -- решение, принятое в момент «К
-        # сделке»); budget_share_pct всё равно берётся из strategy_tactics -- это вопрос
-        # устройства лесенки, не выбора цены, шпаргалка его не трогает.
         conditions = tactic.get("trigger_conditions") or {}
-        if curr_step == 1 and row.get("entry_trigger_override"):
+        budget_share_pct = tactic["budget_share_pct"]
+        if has_override:
             conditions = row["entry_trigger_override"]
+            budget_share_pct = 100.0
         mode = conditions.get("mode")
 
         if not conditions or not mode:
@@ -176,7 +180,7 @@ class LadderStepWatcher:
         if not condition_met:
             return None
 
-        expected_qty = expected_step_quantity(row["target_quantity"], tactic["budget_share_pct"])
+        expected_qty = expected_step_quantity(row["target_quantity"], budget_share_pct)
         suggested_price = float(row.get("last_price") or 0)
 
         return {
