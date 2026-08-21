@@ -126,3 +126,17 @@ OPTIMAL_PRICE_VOLATILITY_MULTIPLIER = 1.25
 # бэктестом на реальных данных -- см. дизайн-документ), не здесь. Здесь -- только
 # системная механика повтора, симметрично PRICE_MOVE_WATCHER_PERIODIC_SEC выше.
 CAPITAL_PROTECTION_PERIODIC_SEC = 3600      # повтор уведомления, пока условие не снято
+
+# ─── СИГНАЛ D: ПОРТФЕЛЬНЫЙ ТРЕЙЛИНГ-СТОП ПРИБЫЛИ (Claude/23_session_followups_2026-08-20.md, 2026-08-21) ───
+# В отличие от K_стоп/K_трейлинг (per-стратегия, strategies.rules_config) -- этот K один
+# на систему, сигнал портфельный, не завязан на конкретную стратегию. Порог = K × дневная
+# волатильность NAV портфеля, применяется к all-time пику total_capital (не к цене входа).
+PORTFOLIO_DRAWDOWN_TRAILING_K = 6.0
+PORTFOLIO_DRAWDOWN_PERIODIC_SEC = 3600      # повтор уведомления, пока условие не снято (симметрично выше)
+# Волатильность NAV считается по portfolio_value_history (ежесуточный снимок,
+# cron_scheduler.py::snapshot_portfolio_values), тем же способом, что и
+# tickers.signal_daily_volatility_pct (std дневных % изменений, sync_signals_yf.py) --
+# но своё окно и свой минимум точек, у портфеля история короче и накапливается медленнее.
+PORTFOLIO_NAV_VOLATILITY_WINDOW_DAYS = 20
+PORTFOLIO_NAV_VOLATILITY_MIN_HISTORY_DAYS = 10   # меньше -- не доверяем оценке, используем фолбэк
+PORTFOLIO_NAV_VOLATILITY_FALLBACK_PCT = 1.0      # плоский фолбэк для портфеля без истории (диверсифицированный портфель, не отдельная бумага)

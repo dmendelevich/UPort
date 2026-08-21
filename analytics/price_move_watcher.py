@@ -193,8 +193,12 @@ def _resolve_alerts(db_instance, listing_id: int):
     """, (listing_id,))
 
 
-def send_alert_notification(telegram_id, note: str, alert_id: int, sell_action: dict = None):
+def send_alert_notification(telegram_id, note: str, alert_id: int = None, sell_action: dict = None):
     """
+    alert_id -- опционально: если задан, добавляет кнопку "🛑 Остановить" (мутит конкретную
+    строку public.alerts). portfolio_drawdown_watcher.py (сигнал D) зовёт без alert_id --
+    портфельное условие не привязано к строке alerts (та требует NOT NULL listing_id/
+    ticker, см. Claude/23_session_followups_2026-08-20.md), пуш уходит вовсе без кнопок.
     sell_action -- опционально, добавляет кнопку "🤝 К продаже" НАД "Остановить" (сама
     "Остановить" молчит будущие повторы, не заменяет решение продать). Используется
     только capital_protection_watcher.py (SL/TS -- конкретная рекомендация действия);
@@ -214,19 +218,25 @@ def send_alert_notification(telegram_id, note: str, alert_id: int, sell_action: 
         return
 
     text = f"📢 {note}"
-    stop_callback = MenuAction(action="stop_price_alert", alert_id=int(alert_id)).pack()
-    buttons = [[{"text": "🛑 Остановить", "callback_data": stop_callback}]]
+    payload = {"chat_id": int(telegram_id), "text": text}
+
+    buttons = []
+    if alert_id is not None:
+        stop_callback = MenuAction(action="stop_price_alert", alert_id=int(alert_id)).pack()
+        buttons.append([{"text": "🛑 Остановить", "callback_data": stop_callback}])
     if sell_action:
         sell_callback = MenuAction(
             action="deal_start_sell", portfolio_id=int(sell_action["portfolio_id"]),
             strategy_id=int(sell_action["strategy_id"]), listing_id=int(sell_action["listing_id"])
         ).pack()
         buttons.insert(0, [{"text": "🤝 К продаже", "callback_data": sell_callback}])
-    reply_markup = {"inline_keyboard": buttons}
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+
     try:
         requests.post(
             TELEGRAM_API_URL.format(token=token),
-            json={"chat_id": int(telegram_id), "text": text, "reply_markup": reply_markup},
+            json=payload,
             timeout=10
         )
     except Exception as send_err:

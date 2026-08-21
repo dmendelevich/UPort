@@ -13,6 +13,7 @@ from brokers_connectors.fb_client import FreedomBrokerClient
 from analytics.ladder_step_watcher import check_ladder_step_triggers
 from analytics.price_move_watcher import check_price_moves
 from analytics.capital_protection_watcher import check_capital_protection
+from analytics.portfolio_drawdown_watcher import check_portfolio_drawdown
 from brokers_connectors.paper_broker import run_paper_broker_cycle
 
 def sync_quotes_fb_autonomous():
@@ -149,6 +150,14 @@ def sync_quotes_fb_autonomous():
         check_capital_protection(db_sys)
     except Exception as capital_protection_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки защиты капитала (CapitalProtectionWatcher): {capital_protection_err}")
+
+    # Портфельный трейлинг-стоп прибыли (сигнал D, Claude/23_session_followups_2026-08-20.md) --
+    # тот же рыночно-зависимый ритм, что и сигналы A/B выше, но по total_capital ВСЕГО
+    # портфеля, не по отдельной позиции.
+    try:
+        check_portfolio_drawdown(db_sys)
+    except Exception as portfolio_drawdown_err:
+        logging.error(f"⚠️ [REST FB]: Сбой проверки портфельной просадки (PortfolioDrawdownWatcher): {portfolio_drawdown_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла

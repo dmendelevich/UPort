@@ -18,6 +18,7 @@ from site_connectors.sync_signals_yf import sync_global_yahoo_signals
 from utils import was_us_market_open_yesterday
 from analytics.daily_digest import assemble_portfolio_digest_data
 from analytics.portfolio_inspector import PortfolioInspector
+from analytics.volatility_utils import compute_portfolio_nav_volatility
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
 
@@ -183,16 +184,15 @@ async def snapshot_portfolio_values(db_instance):
     """
     Фаза 3 темы «Бумажный портфель» (Claude/14_paper_portfolio.md) -- суточный снимок
     NAV в portfolio_value_history, нужен для измерения доходности через год (сравнение
-    с S&P500 и с целевыми ~15% годовых). Функция и таблица сделаны портфель-агностично
-    (переиспользуемый механизм, не одноразовый хак под «ПБум») -- если понадобится
-    измерять эффективность и реальных портфелей (roadmap п.9,
-    12_investment_goal_and_mechanisms_roadmap.md), достаточно убрать фильтр по
-    execution_mode ниже, переписывать не придётся. Пока сознательно ограничено только
-    CONFIRM-портфелями -- эта тема не про реальные П10/П136.
+    с S&P500 и с целевыми ~15% годовых), и как источник истории для дневной волатильности
+    NAV (Сигнал D, Claude/23_session_followups_2026-08-20.md). Функция и таблица сделаны
+    портфель-агностично (переиспользуемый механизм, не одноразовый хак под «ПБум») --
+    раньше фильтровала только CONFIRM-портфели ("ПБум"), с 2026-08-21 снято: Сигналу D
+    нужна история NAV для ВСЕХ портфелей, не только бумажного.
     """
     portfolios = await asyncio.to_thread(
         db_instance.execute_query,
-        "SELECT id, name FROM public.portfolios WHERE execution_mode = 'CONFIRM';"
+        "SELECT id, name FROM public.portfolios;"
     )
     portfolios = portfolios if isinstance(portfolios, list) else ([portfolios] if portfolios else [])
 
@@ -225,6 +225,14 @@ async def snapshot_portfolio_values(db_instance):
                     (p_id, float(total_value))
                 )
             logging.info(f"📸 [NAV Snapshot]: '{p['name']}' (ID: {p_id}) -- ${float(total_value):,.2f}")
+
+            nav_volatility = await asyncio.to_thread(compute_portfolio_nav_volatility, db_instance, p_id)
+            if nav_volatility is not None:
+                await asyncio.to_thread(
+                    db_instance.execute_query,
+                    "UPDATE public.portfolios SET nav_daily_volatility_pct = %s WHERE id = %s;",
+                    (nav_volatility, p_id)
+                )
         except Exception as e:
             error_count += 1
             logging.error(f"❌ [NAV Snapshot]: Не удалось снять снимок для '{p['name']}' (ID: {p_id}): {e}")
