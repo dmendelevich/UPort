@@ -44,7 +44,7 @@ def check_capital_protection(db_instance, broker_id: int = 1):
             a.id AS asset_id, a.portfolio_id, a.listing_id, a.avg_price, a.peak_price_since_entry,
             lt.id AS ticker_id, lt.symbol, lt.listing_last_price AS current_price, lt.signal_daily_volatility_pct,
             s.id AS strategy_id, s.strategy_name, s.rules_config, tpl.system_key,
-            op.id AS active_entry_pipeline_id,
+            op.id AS active_entry_pipeline_id, op_exit.id AS active_exit_pipeline_id,
             p.name AS portfolio_name, u.telegram_id
         FROM public.assets a
         JOIN public.v_listings_tickers lt ON a.listing_id = lt.listing_id
@@ -57,6 +57,10 @@ def check_capital_protection(db_instance, broker_id: int = 1):
             ON op.portfolio_id = a.portfolio_id AND op.listing_id = a.listing_id
            AND op.strategy_id = s.id AND op.pipeline_status IN ('PENDING', 'ACTIVE')
            AND op.target_quantity > 0
+        LEFT JOIN public.order_pipelines op_exit
+            ON op_exit.portfolio_id = a.portfolio_id AND op_exit.listing_id = a.listing_id
+           AND op_exit.strategy_id = s.id AND op_exit.pipeline_status IN ('PENDING', 'ACTIVE')
+           AND op_exit.target_quantity < 0
         WHERE a.quantity > 0 AND lt.broker_id = %s
           AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING', 'CONSERVATIVE_ACCUMULATION')
           AND lt.listing_last_price IS NOT NULL AND lt.listing_last_price > 0;
@@ -116,7 +120,8 @@ def _check_one_position(db_instance, pos: dict):
     _resolve_alerts(db_instance, pos["listing_id"], pos["portfolio_id"])
 
 
-def _build_note(kind: str, portfolio_name: str, symbol: str, current_price: float, reference_price: float, strategy_name: str) -> str:
+def _build_note(kind: str, portfolio_name: str, symbol: str, current_price: float, reference_price: float,
+                 strategy_name: str, has_pending_exit: bool = False) -> str:
     pct = (current_price - reference_price) / reference_price * 100.0
     if kind == "stop_loss":
         label = "🔴 Стоп-лосс"
@@ -126,7 +131,11 @@ def _build_note(kind: str, portfolio_name: str, symbol: str, current_price: floa
         ref_label = "пика"
     text = f"{label}: {symbol} {pct:+.1f}% от цены {ref_label} (${reference_price:.2f} → ${current_price:.2f})."
     text += f" В портфеле {portfolio_name}, стратегия «{strategy_name}»."
-    text += " Стоит рассмотреть продажу."
+    # Уже есть ожидающий Плана выхода ("К сделке") -- не повторяем рекомендацию продать
+    # (BACKLOG.md, живая находка 2026-08-20 -- пользователь уже создал План по TJX, но SL
+    # продолжал приходить, будто ничего не сделано), но текст в самой строке "Алерты"
+    # остаётся честным -- условие правда всё ещё выполняется, просто решение уже принято.
+    text += " Уже есть ожидающий План выхода — жду исполнения." if has_pending_exit else " Стоит рассмотреть продажу."
     return text
 
 
@@ -144,7 +153,9 @@ def _handle_triggered(db_instance, pos: dict, kind: str, current_price: float, r
         ORDER BY triggered_at DESC LIMIT 1;
     """, (portfolio_id, listing_id, condition_code))
 
-    note = _build_note(kind, pos["portfolio_name"], pos["symbol"], current_price, reference_price, pos["strategy_name"])
+    has_pending_exit = bool(pos.get("active_exit_pipeline_id"))
+    note = _build_note(kind, pos["portfolio_name"], pos["symbol"], current_price, reference_price,
+                        pos["strategy_name"], has_pending_exit=has_pending_exit)
     trigger_pct = round(abs((current_price - reference_price) / reference_price * 100.0), 2)
 
     if existing:
@@ -182,6 +193,12 @@ def _handle_triggered(db_instance, pos: dict, kind: str, current_price: float, r
             return
         alert_id = int(insert_res[0]["id"])
         logging.info(f"🎯 [CapitalProtection]: Новый алерт #{alert_id} ({kind}) для {pos['symbol']} (портфель {portfolio_id})")
+
+    if has_pending_exit:
+        # План выхода уже создан ("К сделке") -- решение принято, не пестуем повторным
+        # пушем "продай" (строка алерта выше всё равно обновлена честно, видно в "Алерты").
+        logging.debug(f"🔇 [CapitalProtection]: Алерт #{alert_id} ({kind}) для {pos['symbol']} -- пуш пропущен, уже есть План выхода #{pos['active_exit_pipeline_id']}.")
+        return
 
     send_alert_notification(pos.get("telegram_id"), note, alert_id, sell_action={
         "portfolio_id": portfolio_id, "strategy_id": pos["strategy_id"], "listing_id": listing_id,
