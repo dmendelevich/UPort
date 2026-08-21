@@ -338,7 +338,14 @@ class TickerEvaluator:
     # Freedom Broker (short_name='FB') ограничен рынком США -- см.
     # analytics/cash_deployment_advisor.py и BACKLOG.md, Трек C, п.21 (путаница
     # пенсов/фунтов на LSE). CashDeploymentAdvisor переиспользует эту константу.
-    US_EXCHANGE_CODES = ("XNYS", "XNAS", "ARCX", "XNMS", "EDGX", "OTCM")
+    #
+    # XNCM/IEXG/XKAS/XAST -- дописаны 2026-08-20 (Claude/BACKLOG.md, живая находка): utils.py
+    # УЖЕ признаёт все четыре валидными американскими кодами биржи (несколько мест, включая
+    # ensure_ticker_v3), но именно этот список не обновили. XNCM держит 159 тикеров -- в
+    # основном крупные качественные бумаги NASDAQ (AAPL/MSFT/GOOGL/AMZN/NVDA/META/NFLX/AVGO
+    # и т.д.) -- все тихо исключались из ЛЮБОЙ системной рекомендации (и CashDeploymentAdvisor,
+    # и «Предложения») для ЛЮБОЙ стратегии, всё время работы, хотя по факту проходят экран.
+    US_EXCHANGE_CODES = ("XNYS", "XNAS", "ARCX", "XNMS", "EDGX", "OTCM", "XNCM", "IEXG", "XKAS", "XAST")
 
     def __init__(self, db_instance):
         """
