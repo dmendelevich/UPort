@@ -347,8 +347,12 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
     # =======================================================================================================
     fb_ticker_result = "UNSUPPORTED"
     
-    # Сегрегация на берегу: если биржа не из пула США/Казахстана, шлюз ФБ полностью пропускаем
-    if target_mic and target_mic not in ["XNAS", "XNYS", "ARCX", "IEXG", "XNMS", "XNCM", "XKAS", "XAST"]:
+    # Сегрегация на берегу: если биржа не из пула США/Казахстана, шлюз ФБ полностью пропускаем.
+    # EDGX добавлен 2026-08-21 (BACKLOG.md №147, живая находка -- CBOE, компонент S&P500,
+    # сегрегировался ДО обращения к брокеру, ticker_name_map['FB'] был 'UNSUPPORTED' без единого
+    # реального запроса) -- этот пул должен зеркалить TickerEvaluator.US_EXCHANGE_CODES
+    # (analytics_utils.py), иначе кандидат проходит скрининг, но легализация его отсекает вслепую.
+    if target_mic and target_mic not in ["XNAS", "XNYS", "ARCX", "IEXG", "XNMS", "XNCM", "XKAS", "XAST", "EDGX"]:
         logging.info(f"   [GATEWAY - СЕГРЕГАЦИЯ]: Биржа {target_mic} вне зоны ФБ. Маркер UNSUPPORTED.")
     else:
         try:
@@ -371,7 +375,7 @@ def ensure_ticker_passport_in_db(db_instance, raw_string: str, fb_client) -> int
                             bridge_mic = mkt_bridge_rows[0].get("uport_default_mic")
                             if bridge_mic and target_mic and bridge_mic.upper() == target_mic.upper():
                                 is_exchange_match = True
-                            elif broker_market_code == "FIX" and target_mic in ["XNAS", "XNYS", "ARCX", "IEXG", "XNMS", "XNCM"]:
+                            elif broker_market_code == "FIX" and target_mic in ["XNAS", "XNYS", "ARCX", "IEXG", "XNMS", "XNCM", "EDGX"]:
                                 is_exchange_match = True
 
                         if is_exchange_match:
