@@ -17,6 +17,15 @@ def check_capital_protection(db_instance, broker_id: int = 1):
     Не замена собственных правил выхода стратегий (тренд/фундаментал) -- отдельная,
     более быстрая защита ИМЕННО ДЕНЕГ поверх них.
 
+    `UNALLOCATED` («Неопределённая») добавлена в область 2026-08-29 (Claude/BACKLOG.md,
+    тема «Агентские бумажные портфели») -- раньше буфер вообще не пасся никем (та же
+    дыра, что и у `PositionExitEvaluator`, см. `16_selection_logic_audit.md`, находка I,
+    живой пример NVDA). Безопасно для уже существующих портфелей: K-множители не заданы
+    в общем шаблоне `UNALLOCATED` (`strategy_templates`), только `if k_stop:`/`if k_trail:`
+    ниже решает, проверять ли позицию -- защита включается только там, где K явно
+    прописан в СОБСТВЕННОЙ копии `rules_config` конкретной стратегии портфеля, не молча
+    для всех.
+
     Два независимых, самостоятельных триггера на каждую позицию:
     - **Стоп-лосс** (`tactic_stop_loss_k`, все три стратегии) -- от `assets.avg_price`
       (цена входа), "сколько теряю от вложенного".
@@ -62,7 +71,7 @@ def check_capital_protection(db_instance, broker_id: int = 1):
            AND op_exit.strategy_id = s.id AND op_exit.pipeline_status IN ('PENDING', 'ACTIVE')
            AND op_exit.target_quantity < 0
         WHERE a.quantity > 0 AND lt.broker_id = %s
-          AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING', 'CONSERVATIVE_ACCUMULATION')
+          AND tpl.system_key IN ('REVOLVER', 'TREND_FOLLOWING', 'CONSERVATIVE_ACCUMULATION', 'UNALLOCATED')
           AND lt.listing_last_price IS NOT NULL AND lt.listing_last_price > 0;
     """, (broker_id,))
     positions = positions if isinstance(positions, list) else ([positions] if positions else [])

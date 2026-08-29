@@ -132,8 +132,10 @@ async def process_summary_callback(callback: types.CallbackQuery):
 @router.callback_query(MenuAction.filter(F.action == "show_test_summary"))
 async def process_test_summary_callback(callback: types.CallbackQuery):
     """
-    Экран «Тестовый капитал» -- сводка ВИРТУАЛЬНЫХ портфелей (execution_mode='CONFIRM',
-    см. Claude/14_paper_portfolio.md), стандартизирован по образцу «Общей сводки
+    Экран «Тестовый капитал» -- сводка ВИРТУАЛЬНЫХ портфелей (`broker_id IS NULL`,
+    см. Claude/14_paper_portfolio.md; фильтр расширен с execution_mode='CONFIRM' 2026-08-29,
+    когда появились «ПБумАвто»/«ПБумКлод» с другими режимами -- см. database.py::
+    get_test_capital_summary), стандартизирован по образцу «Общей сводки
     капитала» (2026-08-03) -- общий текстовый блок (format_capital_summary_text),
     но без кнопки «Счета»: у бумажного портфеля один простой виртуальный счёт без
     деления на торговый/накопительный по разным валютам -- экран «Счета» здесь

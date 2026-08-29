@@ -19,6 +19,7 @@ from utils import was_us_market_open_yesterday
 from analytics.daily_digest import assemble_portfolio_digest_data
 from analytics.portfolio_inspector import PortfolioInspector
 from analytics.volatility_utils import compute_portfolio_nav_volatility
+from analytics.auto_paper_trader import run_auto_paper_cycle
 from bot_handlers.bot_screens import render_digest_overview_text
 from bot_handlers.bot_keyboards import generate_digest_toc_keyboard
 
@@ -440,6 +441,13 @@ async def digest_clock_loop(db_instance, bot):
                     # BUY/SELL/TRIM_DOWN бумажного портфеля переехали на кнопку исполнения
                     # прямо в дайджесте (Claude/BACKLOG.md №122/123, 2026-08-17/18) --
                     # отдельные трубы (send_paper_buy/sell/trim_recommendations) больше не нужны.
+                    # «ПБумАвто» (execution_mode='AUTO', BACKLOG.md, 2026-08-29) -- та же кнопка
+                    # "К сделке", просто нажимает её не человек, а этот цикл, ДО суточного снимка
+                    # NAV ниже, чтобы сегодняшние авто-сделки попали в сегодняшний снимок.
+                    await run_daily_job_once(
+                        db_instance, "auto_paper_trader",
+                        lambda: asyncio.to_thread(run_auto_paper_cycle, db_instance)
+                    )
                     # Фаза 3 -- суточный снимок NAV для измерения доходности.
                     await run_daily_job_once(
                         db_instance, "portfolio_value_snapshot",

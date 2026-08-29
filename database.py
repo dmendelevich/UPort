@@ -579,13 +579,19 @@ class Database:
 
     def get_test_capital_summary(self, telegram_id: int) -> dict:
         """
-        Сводка ВИРТУАЛЬНОГО (бумажного) капитала -- портфели execution_mode='CONFIRM'
-        (см. Claude/14_paper_portfolio.md). Та же агрегация, что и у реального капитала,
-        просто другой набор портфелей -- намеренно НЕ смешиваются в одном экране. Фильтр
-        через p.execution_mode сознательно портфель-зависимый -- накопительный счёт (без
-        портфеля) НИКОГДА не виртуальный, корректно не попадает сюда ни при каком фильтре.
+        Сводка ВИРТУАЛЬНОГО (бумажного) капитала -- та же агрегация, что и у реального
+        капитала, просто другой набор портфелей -- намеренно НЕ смешиваются в одном
+        экране. Фильтр -- `acc.broker_id IS NULL` (истинный признак бумажного портфеля,
+        см. Claude/14_paper_portfolio.md принцип 4), не `execution_mode` -- тот был
+        верным ТОЛЬКО пока существовал единственный бумажный портфель «ПБум»
+        (execution_mode='CONFIRM'); с появлением «ПБумАвто» (`AUTO`) и «ПБумКлод»
+        (`ADVISORY`, Claude/BACKLOG.md, 2026-08-29) старый фильтр тихо прятал бы их из
+        этого экрана -- execution_mode отвечает за то, КАК исполняется решение, не за
+        то, реальные это деньги или нет. Накопительный счёт (без портфеля) не имеет
+        broker_id=NULL по построению (всегда привязан к реальному брокеру), поэтому
+        сюда корректно не попадает ни при каком фильтре.
         """
-        return self._aggregate_capital_summary(telegram_id, "p.execution_mode = 'CONFIRM'")
+        return self._aggregate_capital_summary(telegram_id, "acc.broker_id IS NULL")
 
     def _aggregate_capital_summary(self, telegram_id: int, accounts_filter_sql: str) -> dict:
         """
