@@ -9,6 +9,7 @@ from database import db_sys
 from bot_handlers.common import MenuAction
 from bot_handlers.bot_keyboards import generate_nav_back_keyboard
 from analytics.deal_planner import create_buy_plan, create_sell_plan, create_trim_plan, create_topup_plan
+from analytics.position_exit_evaluator import PositionExitEvaluator
 
 """
 «К сделке» -- единая точка входа для решения «беру»/«продаю» (Claude/BACKLOG.md
@@ -19,6 +20,20 @@ deal_planner.py, analytics/ladder_step_watcher.py, brokers_connectors/paper_brok
 """
 
 router = Router()
+
+
+def _is_urgent_sell(portfolio_id: int, listing_id: int) -> bool:
+    """
+    Подтверждённый слом тезиса (Trend/Revolver, см. position_exit_evaluator.py::urgent) --
+    "жди получше цену" прямо противоречит "выходи раньше срока" (Claude/BACKLOG.md,
+    2026-08-27, живой случай LHX). Перепроверяется заново на каждый клик, не кэшируется --
+    та же дисциплина, что и у suggest_execution_terms.
+    """
+    alerts = PositionExitEvaluator(db_sys).evaluate_portfolio_exits(portfolio_id)
+    return any(
+        a.get("listing_id") == listing_id and a.get("recommendation") == "SELL" and a.get("urgent")
+        for a in alerts
+    )
 
 
 def _cheat_sheet_keyboard(action: str, portfolio_id: int, strategy_id: int, ticker_id: int = 0, listing_id: int = 0):
@@ -91,11 +106,35 @@ async def process_deal_confirm_buy(callback: types.CallbackQuery, callback_data:
 
 @router.callback_query(MenuAction.filter(F.action == "deal_start_sell"))
 async def process_deal_start_sell(callback: types.CallbackQuery, callback_data: MenuAction):
+    p_id, s_id, l_id = callback_data.portfolio_id, callback_data.strategy_id, callback_data.listing_id
+
+    # Подтверждённый слом тезиса -- без выбора шпаргалки вообще, сразу "как можно скорее"
+    # (та же дисциплина, что у подрезки ниже) -- "Оптимальная цена" тут означала бы "жди
+    # цену получше", прямо противоречащее причине продажи (Claude/BACKLOG.md, 2026-08-27).
+    if await asyncio.to_thread(_is_urgent_sell, p_id, l_id):
+        await callback.answer("Создаю план...")
+        result = await asyncio.to_thread(create_sell_plan, db_sys, p_id, s_id, l_id, "asap")
+        back_kb = _back_to_digest_keyboard(p_id)
+        if not result["ok"]:
+            try:
+                await callback.message.edit_text(f"⚠️ {result['error']}", reply_markup=back_kb)
+            except TelegramBadRequest:
+                pass
+            return
+        text = (
+            "⚡ Тезис по бумаге сломан, ждать более выгодную цену рискованно — "
+            "план создан сразу «как можно скорее», без выбора.\n\n"
+            + _format_plan_created_text(result, is_sell=True)
+        )
+        try:
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=back_kb)
+        except TelegramBadRequest:
+            pass
+        return
+
     await callback.answer()
-    keyboard = _cheat_sheet_keyboard(
-        "deal_confirm_sell", callback_data.portfolio_id, callback_data.strategy_id, listing_id=callback_data.listing_id
-    )
-    keyboard.attach(InlineKeyboardBuilder.from_markup(_back_to_digest_keyboard(callback_data.portfolio_id)))
+    keyboard = _cheat_sheet_keyboard("deal_confirm_sell", p_id, s_id, listing_id=l_id)
+    keyboard.attach(InlineKeyboardBuilder.from_markup(_back_to_digest_keyboard(p_id)))
     try:
         await callback.message.edit_text(
             "🤝 Как действуем?\n\n"

@@ -82,7 +82,7 @@ class PositionExitEvaluator:
 
         return alerts
 
-    def _build_alert(self, pos: dict, recommendation: str, reason: str, metrics: dict, trigger_kind: str = "price") -> dict:
+    def _build_alert(self, pos: dict, recommendation: str, reason: str, metrics: dict, trigger_kind: str = "price", urgent: bool = False) -> dict:
         return {
             "asset_id": pos.get("asset_id"),
             "portfolio_id": pos.get("portfolio_id"),
@@ -96,6 +96,12 @@ class PositionExitEvaluator:
             "recommendation": recommendation,  # "SELL" | "HOLD"
             "reason": reason,
             "metrics": metrics,
+            # Подтверждённый слом тезиса (не "цель достигнута, есть время подождать") --
+            # у "К сделке" отключает шпаргалку «Оптимальная цена» (Claude/BACKLOG.md,
+            # 2026-08-27, живой случай LHX -- план продажи был создан с целью ВЫШЕ рынка
+            # при уже 7 дней подряд подтверждённом сломе, "жди получше" прямо
+            # противоречило "выходи раньше срока"). См. analytics/deal_planner.py.
+            "urgent": urgent,
             # Сырые поля для расчёта прибыли/убытка -- analytics_utils.format_pnl_suffix,
             # считается один раз в daily_digest.py при сборке текста, не здесь (BACKLOG.md, 2026-08-18).
             "avg_price": pos.get("avg_price"),
@@ -121,6 +127,11 @@ class PositionExitEvaluator:
         target_profit_pct = self._get_rule_value(rules, "tactic_target_profit_pct", 15.0)
         time_limit_days = int(self._get_rule_value(rules, "tactic_time_limit_days", 30))
         trend_protection_rsi = self._get_rule_value(rules, "tactic_trend_protection_rsi", 65.0)
+        # tactic_confirm_days (Claude/BACKLOG.md, 2026-08-28) -- собственный, более широкий
+        # запас Револьверной перед "подтверждённым сломом" (12 дней, не общие 3 дня
+        # settings.TREND_REVERSAL_CONFIRM_DAYS, откалиброван бэктестом 30 тикеров/2015-2026:
+        # при 3 днях 96% сделок выбивало сломом раньше, чем цена успевала куда-либо дойти).
+        confirm_days = int(self._get_rule_value(rules, "tactic_confirm_days", settings.TREND_REVERSAL_CONFIRM_DAYS))
 
         profit_pct = (current_price - entry_price) / entry_price * 100.0
         rsi = float(pos.get("signal_rsi") or 0.0)
@@ -129,8 +140,8 @@ class PositionExitEvaluator:
         # "Жив" ли ещё импульс -- RSI (как раньше) ИЛИ подтверждённый рост по streak; "сломан" --
         # подтверждённое падение. Один и тот же signal_ema20_streak_days, что и у слома тренда/
         # входа Консервативной, см. Claude/12_investment_goal_and_mechanisms_roadmap.md.
-        momentum_alive = rsi > trend_protection_rsi or (streak is not None and int(streak) >= settings.TREND_REVERSAL_CONFIRM_DAYS)
-        momentum_broken = streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS
+        momentum_alive = rsi > trend_protection_rsi or (streak is not None and int(streak) >= confirm_days)
+        momentum_broken = streak is not None and int(streak) <= -confirm_days
         metrics = {"profit_pct": round(profit_pct, 2), "rsi": rsi, "days_held": days_held, "ema20_streak_days": streak}
 
         # Револьверная — без усреднений вниз и без частичного выхода по замыслу (быстрый оборот
@@ -157,6 +168,7 @@ class PositionExitEvaluator:
                 f"Цель ещё не достигнута (факт {profit_pct:.1f}%), но подтверждённый слом тренда "
                 f"({abs(int(streak))} дн. подряд ниже EMA20) — ставка не отыгрывается, выходи раньше срока.",
                 metrics,
+                urgent=True,
             )
 
         if days_held >= time_limit_days:
@@ -237,12 +249,16 @@ class PositionExitEvaluator:
         # не сырое однодневное пересечение -- см. Claude/12_investment_goal_and_mechanisms_roadmap.md
         # (живой пример VRTX/BA, где однодневный кросс ничего не значил, против MU/META, где
         # серия уже устойчиво держится много дней).
+        # Все три причины выхода Трендовой -- технический слом уже идущего движения, не
+        # "цель достигнута, можно подождать получше" (в отличие от Револьверной, у
+        # Трендовой такой ветки вообще нет) -- все три urgent=True.
         if streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS:
             return self._build_alert(
                 pos, "SELL",
                 f"Цена держится ниже EMA20 ({ema20:.2f}) уже {abs(int(streak))} торговых дней подряд "
                 f"(текущая {current_price:.2f}) — подтверждённый слом тренда.",
                 metrics,
+                urgent=True,
             )
 
         if ema20 > 0 and sma50 > 0 and ema20 < sma50:
@@ -250,6 +266,7 @@ class PositionExitEvaluator:
                 pos, "SELL",
                 f"EMA20 ({ema20:.2f}) ушла ниже SMA50 ({sma50:.2f}) — разворот тренда.",
                 metrics,
+                urgent=True,
             )
 
         if rsi > rsi_overheat and macd < 0:
@@ -257,6 +274,7 @@ class PositionExitEvaluator:
                 pos, "SELL",
                 f"Экстремальный перегрев: RSI={rsi:.1f} (>{rsi_overheat:.0f}), MACD развернулся в минус ({macd:.3f}).",
                 metrics,
+                urgent=True,
             )
 
         return None

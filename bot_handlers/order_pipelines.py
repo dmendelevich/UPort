@@ -11,7 +11,7 @@ from bot_handlers.common import MenuAction
 from bot_handlers.bot_screens import generate_confirm_screen
 from bot_handlers.bot_keyboards import generate_confirm_keyboard, generate_nav_back_keyboard
 from bot_handlers.bot_utils import execute_virtual_transfer
-from analytics.analytics_utils import TickerEvaluator
+from analytics.analytics_utils import TickerEvaluator, compute_limit_threshold_price
 
 router = Router()
 
@@ -687,6 +687,22 @@ async def process_plan_exit_strategy(callback: types.CallbackQuery, callback_dat
     await deal.process_deal_start_sell(callback, deal_action)
 
 
+async def _get_current_holders(portfolio_id: int, listing_id: int) -> list:
+    rows = await asyncio.to_thread(
+        db_bot.execute_query,
+        """
+            SELECT sa.strategy_id, s.strategy_name, sa.allocated_quantity
+            FROM public.strategy_assets sa
+            JOIN public.assets a ON sa.asset_id = a.id
+            JOIN public.strategies s ON sa.strategy_id = s.id
+            WHERE a.portfolio_id = %s AND a.listing_id = %s
+              AND sa.allocated_quantity > 0;
+        """,
+        (portfolio_id, listing_id)
+    )
+    return rows if isinstance(rows, list) else ([rows] if rows else [])
+
+
 @router.callback_query(MenuAction.filter(F.action == "transfer_start"))
 async def process_transfer_start(callback: types.CallbackQuery, callback_data: MenuAction):
     """Вход с карточки тикера. Если бумага держится в нескольких стратегиях сразу -- сначала спрашиваем источник."""
@@ -1036,3 +1052,119 @@ async def process_transfer_execute_simple(callback: types.CallbackQuery, callbac
 # «▶️ Исполнить из дайджеста» (digest_execute_buy/sell) заменена «🤝 К сделке»
 # (bot_handlers/deal.py, analytics/deal_planner.py) -- Claude/BACKLOG.md №122/123,
 # 2026-08-17. Одна и та же кнопка для реальных и бумажных портфелей.
+
+
+@router.callback_query(MenuAction.filter(F.action == "view_pending_plans"))
+async def process_view_pending_plans(callback: types.CallbackQuery, callback_data: MenuAction):
+    """
+    ⏳ ЛИСТ ОЖИДАНИЯ -- все активные Планы ВСЕГО портфеля (order_pipelines PENDING/ACTIVE),
+    независимо от того, есть ли бумага в СН -- заменяет прежнюю watchlist-версию
+    (bot_handlers/watchlist.py, sub_view="assets"), которая показывала только бумаги
+    из СН (Claude/BACKLOG.md, 2026-08-28). Для каждого плана -- расчётная цена условия
+    (лимит фиксированный, ИЛИ шаг лесенки через compute_limit_threshold_price) и, если
+    у брокера УЖЕ стоит реальный приказ на ту же бумагу в ту же сторону -- его настоящая
+    цена рядом, с явной пометкой при расхождении (живой урок LHX -- План и реальный
+    приказ разошлись, узнали случайно по скриншоту, не от системы).
+    """
+    p_id = callback_data.portfolio_id
+    await callback.answer("Собираю лист ожидания...")
+
+    p_row = await asyncio.to_thread(db_bot.execute_row, "SELECT name FROM public.portfolios WHERE id = %s;", (p_id,))
+    portfolio_name = (p_row or {}).get("name") or f"Портфель {p_id}"
+
+    plans_query = """
+        SELECT op.listing_id, op.strategy_id, op.current_step, op.target_quantity,
+               op.entry_trigger_override, s.strategy_name, t.symbol,
+               a.avg_price, t.signal_daily_volatility_pct, tac.trigger_conditions
+        FROM public.order_pipelines op
+        JOIN public.strategies s ON s.id = op.strategy_id
+        JOIN public.listings l ON l.id = op.listing_id
+        JOIN public.tickers t ON t.id = l.ticker_id
+        LEFT JOIN public.assets a ON a.portfolio_id = op.portfolio_id AND a.listing_id = op.listing_id
+        LEFT JOIN public.strategy_tactics tac ON tac.strategy_id = op.strategy_id AND tac.step_number = op.current_step
+        WHERE op.portfolio_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+        ORDER BY t.symbol ASC;
+    """
+    plans_raw = await asyncio.to_thread(db_bot.execute_query, plans_query, (p_id,))
+    plans = plans_raw if isinstance(plans_raw, list) else ([plans_raw] if plans_raw else [])
+
+    orders_query = """
+        SELECT o.listing_id, o.oper, o.p AS order_price
+        FROM public.orders o
+        WHERE o.portfolio_id = %s AND o.status = 'active';
+    """
+    orders_raw = await asyncio.to_thread(db_bot.execute_query, orders_query, (p_id,))
+    orders_rows = orders_raw if isinstance(orders_raw, list) else ([orders_raw] if orders_raw else [])
+    orders_by_listing = {}
+    for o in orders_rows:
+        orders_by_listing.setdefault(int(o["listing_id"]), []).append(o)
+
+    report_text = f"⏳ **ЛИСТ ОЖИДАНИЯ: {portfolio_name.upper()}**\n───────"
+    builder = InlineKeyboardBuilder()
+    seen_listings = set()
+
+    if not plans:
+        report_text += "\n\n*Сейчас нечего ждать -- ни одного активного плана.*"
+
+    for plan in plans:
+        l_id = int(plan["listing_id"])
+        override = plan.get("entry_trigger_override") or {}
+        mode = override.get("mode")
+        target_qty = float(plan["target_quantity"] or 0)
+
+        if mode == "market":
+            wait_text = "рынка"
+        elif mode == "limit_fixed" and override.get("price"):
+            wait_text = f"цены ${float(override['price']):,.2f}"
+        else:
+            conditions = plan.get("trigger_conditions") or {}
+            tac_mode = conditions.get("mode")
+            if tac_mode == "market":
+                wait_text = "открытия рынка"
+            elif tac_mode == "limit":
+                threshold = compute_limit_threshold_price(
+                    plan.get("avg_price"), plan.get("signal_daily_volatility_pct"), conditions
+                )
+                wait_text = f"цены ≤${threshold:,.2f} (шаг лесенки)" if threshold is not None else "условия следующего шага лесенки"
+            else:
+                wait_text = "условия следующего шага лесенки"
+
+        verb = "докупки" if target_qty > 0 and int(plan["current_step"]) > 1 else ("входа" if target_qty > 0 else "выхода")
+        line = f"\n⏳ *{plan['symbol']}* ({plan['strategy_name']}) — план {verb}, жду {wait_text}."
+
+        # Сверка с реальным приказом у брокера (живой урок LHX, 2026-08-27) -- ищем
+        # приказ ТОЙ ЖЕ стороны (BUY: oper 1/2, SELL: oper 3), не любой активный приказ
+        # по бумаге (иначе перепутали бы встречные направления).
+        direction_orders = [
+            o for o in orders_by_listing.get(l_id, [])
+            if (target_qty > 0 and int(o["oper"]) in (1, 2)) or (target_qty < 0 and int(o["oper"]) == 3)
+        ]
+        if direction_orders:
+            broker_price = float(direction_orders[0]["order_price"] or 0)
+            plan_price = float(override.get("price") or 0) or None
+            if plan_price and abs(broker_price - plan_price) > 0.01:
+                line += f"\n   ⚠️ У брокера реально стоит приказ по ${broker_price:,.2f} — разошлось с планом."
+            else:
+                line += f"\n   ✅ У брокера уже стоит приказ по ${broker_price:,.2f}."
+
+        report_text += line
+
+        if l_id not in seen_listings:
+            seen_listings.add(l_id)
+            builder.row(types.InlineKeyboardButton(
+                text=f"🔎 {plan['symbol']}",
+                callback_data=MenuAction(
+                    action="view_ticker", portfolio_id=p_id, listing_id=l_id, ticker_name=plan["symbol"], sub_view="owner"
+                ).pack()
+            ))
+
+    final_builder = InlineKeyboardBuilder.from_markup(builder.as_markup())
+    final_builder.attach(InlineKeyboardBuilder.from_markup(generate_nav_back_keyboard(
+        one_step_back_text="🔙 К портфелю",
+        full_back_callback=MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+    )))
+
+    try:
+        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
+    except TelegramBadRequest:
+        pass

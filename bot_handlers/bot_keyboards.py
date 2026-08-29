@@ -174,7 +174,12 @@ def generate_main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(types.InlineKeyboardButton(text="📊 Общая сводка капитала", callback_data=MenuAction(action="show_summary").pack()))
     builder.row(types.InlineKeyboardButton(text="🧪 Тестовый капитал", callback_data=MenuAction(action="show_test_summary").pack()))
-    builder.row(types.InlineKeyboardButton(text="🔬 Списки наблюдения", callback_data=MenuAction(action="show_watchlist_focus").pack()))
+    # "🔬 Списки наблюдения" убран из главного меню (Claude/BACKLOG.md, 2026-08-28) --
+    # "Лист ожидания" переехал на экран портфеля (bot_handlers/order_pipelines.py::
+    # process_view_pending_plans), а само понятие СН как единого экрана пересматривается
+    # отдельной темой. show_watchlist_focus/view_watchlist_portfolio(sub_view="assets")
+    # в bot_handlers/watchlist.py сознательно НЕ удалены -- осиротевший, но безвредный
+    # код, ждёт темы "Интересное".
     builder.row(types.InlineKeyboardButton(text="🔄 Обновить цены рынка", callback_data=MenuAction(action="update_prices").pack()))
 
     if is_admin:

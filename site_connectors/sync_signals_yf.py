@@ -199,6 +199,21 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                             break
                     ema20_streak_days = streak_days if above_ema[-1] else -streak_days
 
+                    # Объём дня / средний объём за 20 торговых дней -- Револьверная
+                    # (Claude/BACKLOG.md, 2026-08-29): низкий объём в день входа --
+                    # худшая по бэктесту четверть сделок (тихий дрейф без реального
+                    # события), объём на уровне среднего и выше -- заметно лучше.
+                    volume_series = pd.Series(hist['Volume'].values).reset_index(drop=True)
+                    volume_avg_20d = float(volume_series.tail(20).mean())
+                    volume_ratio_20d = (raw_volume / volume_avg_20d) if volume_avg_20d > 0 else None
+
+                    # Глубина просадки от 20-дневного максимума -- Револьверная,
+                    # ранжирование (не гейт): чем глубже (нормировано на волатильность),
+                    # тем лучше результат по бэктесту -- заменяет upside_pct
+                    # (аналитический таргет, нигде не подтвердился как рабочий рычаг).
+                    high_20d = float(history_series.tail(20).max())
+                    price_to_20d_high_pct = ((raw_yf_price / high_20d) - 1) * 100 if high_20d > 0 else None
+
                     # Долгосрочный ценовой тренд (позиция цены относительно SMA100/SMA200) --
                     # НЕ инвестиционная рекомендация конкретной стратегии (та считается отдельно
                     # в analytics/analytics_utils.py). Значения намеренно не BUY/SELL, чтобы не
@@ -236,6 +251,8 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                             signal_pct_1y = %s,
                             signal_daily_volatility_pct = %s,
                             signal_ema20_streak_days = %s,
+                            signal_volume_ratio_20d = %s,
+                            signal_price_to_20d_high_pct = %s,
                             signals_last_synced_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp(0),
                             fb_market = 'YAHOO_GLOBAL',
                             fb_exchange = 'YAHOO_GLOBAL'
@@ -248,7 +265,10 @@ def sync_global_yahoo_signals(single_ticker_id=None):
                         round(sma_200 * y_multiplier, 4), round(price_to_sma200_pct, 2),
                         round(rsi_14, 2), round(macd_val * y_multiplier, 4),
                         round(pct_1d, 2), round(pct_1w, 2), round(pct_1m, 2), round(pct_1y, 2),
-                        volatility_val, ema20_streak_days, db_id
+                        volatility_val, ema20_streak_days,
+                        round(volume_ratio_20d, 4) if volume_ratio_20d is not None else None,
+                        round(price_to_20d_high_pct, 2) if price_to_20d_high_pct is not None else None,
+                        db_id
                     ))
                     total_updated += 1
 

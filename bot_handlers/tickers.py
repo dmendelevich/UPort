@@ -213,8 +213,8 @@ async def process_view_ticker(callback: types.CallbackQuery, callback_data: Menu
             )
         else:
             nav_markup = generate_nav_back_keyboard(
-                one_step_back_text="🔙 Назад к радарам слежения",
-                full_back_callback=MenuAction(action="view_watchlist_portfolio", portfolio_id=p_id, sub_view="assets").pack()
+                one_step_back_text="🔙 К листу ожидания",
+                full_back_callback=MenuAction(action="view_pending_plans", portfolio_id=p_id).pack()
             )
 
         try:

@@ -3,7 +3,7 @@ import os
 import requests
 
 import settings
-from analytics.analytics_utils import expected_step_quantity, conservative_fundamental_break_reasons
+from analytics.analytics_utils import expected_step_quantity, conservative_fundamental_break_reasons, compute_limit_threshold_price
 from utils import market_is_open
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -124,8 +124,6 @@ class LadderStepWatcher:
             last_price = float(row.get("last_price") or 0)
             rsi = row.get("signal_rsi")
             max_rsi = conditions.get("max_rsi")
-            price_drop_pct = conditions.get("price_drop_pct")
-            volatility_multiplier = conditions.get("volatility_multiplier")
 
             # Условие "limit" сегодня всегда считается ОТ avg_price (докупка к уже
             # держащейся позиции, см. обсуждение сессии про наставников ФБ/Gminy) -- без
@@ -138,21 +136,14 @@ class LadderStepWatcher:
                 return None
 
             rsi_ok = (max_rsi is None) or (rsi is not None and float(rsi) <= float(max_rsi))
-            price_ok = True
             # Гармошка (K1/K2, см. Claude/12_investment_goal_and_mechanisms_roadmap.md,
             # 2026-08-02): порог просадки нормализован по собственной волатильности бумаги,
-            # а не фиксированный %, -- предпочитается price_drop_pct, если оба заданы.
-            if volatility_multiplier is not None and avg_price > 0:
-                daily_vol = row.get("signal_daily_volatility_pct")
-                if daily_vol is not None:
-                    drop_pct = float(daily_vol) * float(volatility_multiplier)
-                    threshold_price = avg_price * (1 - drop_pct / 100.0)
-                    price_ok = last_price > 0 and last_price <= threshold_price
-                else:
-                    price_ok = False  # ещё нет истории волатильности -- не гадаем
-            elif price_drop_pct is not None and avg_price > 0:
-                threshold_price = avg_price * (1 - float(price_drop_pct) / 100.0)
-                price_ok = last_price > 0 and last_price <= threshold_price
+            # а не фиксированный %, -- предпочитается volatility_multiplier, если задан и
+            # есть история волатильности, иначе price_drop_pct (compute_limit_threshold_price,
+            # analytics_utils.py -- общая с показом цели в "Листе ожидания", 2026-08-28).
+            daily_vol = row.get("signal_daily_volatility_pct")
+            threshold_price = compute_limit_threshold_price(avg_price, daily_vol, conditions)
+            price_ok = threshold_price is not None and last_price > 0 and last_price <= threshold_price
 
             # Подтверждённый разворот (settings.TREND_REVERSAL_CONFIRM_DAYS) -- не только
             # "перепродано и просело" (RSI/price_drop выше), но и "уже видно, что перестало

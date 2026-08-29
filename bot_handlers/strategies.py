@@ -41,6 +41,9 @@ METRIC_LABELS = {
     "trend_not_confirmed_broken": "Подтверждённый слом тренда",
     "world_leader_index": "Мировой лидер (индекс)",
     "signal_daily_volatility_pct": "Дневная волатильность",
+    "idea_min_revenue_growth_pct": "Рост выручки (текущий)",
+    "portfolio_max_allowed_div_pct": "Дивидендная доходность",
+    "idea_min_volume_ratio_20d": "Объём дня / среднее за 20 дней",
 }
 STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "N/A": "➖", "WARNING": "⚠️"}
 

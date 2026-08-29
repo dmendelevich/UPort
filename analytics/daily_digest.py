@@ -81,6 +81,11 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     # точное совпадение количества/цены с конкретным планом (это отдельная, более глубокая
     # задача). Помечаем, не скрываем -- "система только советует", у уже стоящего приказа
     # может быть другое количество/причина, прятать рекомендацию рискованно.
+    # Источника два, не один (найдено 2026-08-27): `orders` -- реальный приказ, УЖЕ стоящий
+    # у брокера; `order_pipelines` -- собственный "План" системы (кнопка «К сделке»), который
+    # может существовать ещё ДО того, как пользователь поставил реальный приказ у брокера.
+    # Раньше проверялся только `orders` -- дайджест продолжал предлагать то же самое, пока
+    # План не превратился в реальный приказ, хотя решение по этой бумаге уже принято.
     active_orders_rows = db_instance.execute_query("""
         SELECT o.oper, l.ticker_id
         FROM public.orders o
@@ -91,8 +96,17 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     active_buy_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) in (1, 2)}
     active_sell_ticker_ids = {int(r["ticker_id"]) for r in active_orders_rows if int(r["oper"]) == 3}
 
+    active_pipeline_rows = db_instance.execute_query("""
+        SELECT op.ticker_id, op.target_quantity
+        FROM public.order_pipelines op
+        WHERE op.portfolio_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE');
+    """, (portfolio_id,))
+    active_pipeline_rows = active_pipeline_rows if isinstance(active_pipeline_rows, list) else ([active_pipeline_rows] if active_pipeline_rows else [])
+    active_buy_ticker_ids |= {int(r["ticker_id"]) for r in active_pipeline_rows if float(r["target_quantity"]) > 0}
+    active_sell_ticker_ids |= {int(r["ticker_id"]) for r in active_pipeline_rows if float(r["target_quantity"]) < 0}
+
     def order_note(ticker_id, direction_set):
-        return " ⚠️ уже есть активный приказ" if ticker_id in direction_set else ""
+        return " ⚠️ уже есть активный приказ или план" if ticker_id in direction_set else ""
 
     def pnl_note(a):
         # Прибыль/убыток от рекомендуемой продажи -- только SELL/TRIM_DOWN (не HOLD/BUY/TOP_UP),
@@ -194,6 +208,11 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
 
     # Подрезка перевешенных позиций (Claude/13_portfolio_construction_and_rebalancing_rules.md,
     # 2026-08-03) -- сегодня только Консервативная, см. PortfolioRebalancer.
+    # TRIM_DOWN с trim_shares=0 (позиция -- цельная единственная акция, частично подрезать
+    # физически нечего, живой случай EME) исключается из дайджеста целиком (не только кнопка,
+    # см. portfolio_rebalancer.py) -- пересмотр решения 2026-08-18 (тогда убрали только кнопку,
+    # текст оставили): предупреждение, на которое нельзя ничего сделать, каждый день -- не
+    # сигнал, а шум. Найдено пользователем 2026-08-27.
     rebalance_alerts = PortfolioRebalancer(db_instance).evaluate_portfolio(portfolio_id)
     signal_items += [
         {
@@ -204,12 +223,10 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
             "listing_id": a["listing_id"],
             "strategy_id": a["strategy_id"],
             "recommendation": a["recommendation"],  # "TRIM_DOWN" -- своя кнопка "✂️ К подрезке" (bot_keyboards.py)
-            # Кнопка показывается только если реально есть что подрезать целыми акциями
-            # (см. portfolio_rebalancer.py, живой баг с EME 2026-08-18 -- 1 акция, подрезать
-            # нечего, кнопка раньше всё равно появлялась и всегда отказывала).
             "trim_shares": a.get("trim_shares", 0),
         }
         for a in rebalance_alerts
+        if a["recommendation"] != "TRIM_DOWN" or a.get("trim_shares", 0) > 0
     ]
 
     # Готовность следующего шага лесенки -- рыночно-зависимая проверка, решается на цикле

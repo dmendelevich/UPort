@@ -228,6 +228,14 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     for tab_row in tab_switch_markup.inline_keyboard:
         builder.row(*tab_row)
 
+    # Функциональная кнопка (Claude/05_strategy_screen_and_kubiki.md: после переключателя
+    # вкладок, перед навигацией назад) -- Лист ожидания (Claude/BACKLOG.md, 2026-08-28),
+    # заменяет прежний вход через СН ("🔬 Списки наблюдения" в главном меню, убран).
+    builder.row(types.InlineKeyboardButton(
+        text="⏳ Лист ожидания",
+        callback_data=MenuAction(action="view_pending_plans", portfolio_id=p_id).pack()
+    ))
+
     # Блок навигации назад -- по умолчанию в реальную сводку, но если пришли из
     # 🧪 Тестового капитала, ведём обратно туда (BACKLOG.md, стандартизация 2026-08-03).
     tabs_markup = builder.as_markup()

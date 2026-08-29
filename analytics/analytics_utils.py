@@ -24,6 +24,32 @@ def expected_step_quantity(target_qty: float, budget_share_pct: float) -> int:
     return sign * max(1, round(abs(raw_step_qty)))
 
 
+def compute_limit_threshold_price(avg_price: float, daily_vol, conditions: dict):
+    """
+    Целевая цена шага лесенки (mode="limit", докупка от avg_price) -- та же формула
+    (K×волатильность или фиксированный %), что уже считает ladder_step_watcher.py
+    для проверки готовности шага; вынесена отдельно (2026-08-28, Claude/BACKLOG.md),
+    чтобы ту же цену можно было ПОКАЗАТЬ (Лист ожидания), не только проверять условие.
+    Предпочитается volatility_multiplier, если задан и есть история волатильности --
+    иначе price_drop_pct. None, если посчитать не из чего (нет базовой цены/условия).
+    """
+    avg_price = float(avg_price or 0)
+    if avg_price <= 0:
+        return None
+
+    volatility_multiplier = conditions.get("volatility_multiplier")
+    price_drop_pct = conditions.get("price_drop_pct")
+
+    if volatility_multiplier is not None:
+        if daily_vol is None:
+            return None
+        drop_pct = float(daily_vol) * float(volatility_multiplier)
+        return avg_price * (1 - drop_pct / 100.0)
+    elif price_drop_pct is not None:
+        return avg_price * (1 - float(price_drop_pct) / 100.0)
+    return None
+
+
 def normalize_debt_to_equity(raw_value):
     """
     Yahoo отдаёт debtToEquity в процентных пунктах (17.6 значит коэффициент 0.176), не
@@ -444,6 +470,9 @@ class TickerEvaluator:
         limit_rsi1 = self._get_rule_value(rules_config, "idea_rsi_oversold_num", 45.0)
         limit_buffer1 = self._get_rule_value(rules_config, "idea_report_buffer_days", 5)
         require_fcf1 = self._get_rule_value(rules_config, "idea_require_positive_fflow_bool", True)
+        limit_growth1 = self._get_rule_value(rules_config, "idea_min_revenue_growth_pct", 0.00)
+        limit_vol_ratio1 = self._get_rule_value(rules_config, "idea_min_volume_ratio_20d", 1.0)
+        limit_max_div1 = self._get_rule_value(rules_config, "portfolio_max_allowed_div_pct", 1.5)
 
         turnover = float(f.get("daily_turnover_usd") or 0.0)
         rsi = float(f.get("signal_rsi") or 0.0)
@@ -454,42 +483,64 @@ class TickerEvaluator:
             macd_numeric = 0.0
         rec_mean = float(f.get("recommendation_mean") or 0.0)
         fcf_status, fcf_val = na_or_check(f.get("free_cash_flow"), lambda v: v > 0)
-        curr_price = float(f.get("current_price") or 0.0)
 
-        # target_mean_price NULL (аналитики не покрывают тикер) раньше читался как $0 --
-        # ранжирование получало -100% ("аналитики ждут падения до нуля"), хотя факт в том,
-        # что мнения просто нет. Нейтральное значение (0%), не исключение из пула --
-        # остальной фундаментал тикера остаётся валидным основанием для идеи
-        # (Claude/16_selection_logic_audit.md, находка Д/E, 2026-08-08).
-        tgt_price_raw = f.get("target_mean_price")
-        if tgt_price_raw is None:
-            upside_pct = 0.0
-        else:
-            tgt_price = float(tgt_price_raw)
-            upside_pct = ((tgt_price - curr_price) / curr_price * 100.0) if curr_price > 0 else 0.0
+        # "Ростовая ракета" -- раньше только по названию философии, ни один гейт не
+        # проверял рост (Claude/16_selection_logic_audit.md разбирал только FCF/дивиденды
+        # у Револьверной, не рост). Тот же na_or_check, что у Консервативной -- NULL
+        # (данные ещё не пришли) не проваливает гейт, только явно отрицательный рост.
+        growth_status, growth_val = na_or_check(f.get("revenue_growth"), lambda v: v > limit_growth1)
+
+        # "Без дивидендов" -- заявлено в философии стратегии с самого начала (и в старой
+        # ARCHITECTURE/anal_core.md), но раньше проверялось только постфактум, после покупки
+        # (portfolio_inspector.py, "налоговый щит"), не на входе. Переиспользуем уже
+        # существующий portfolio_max_allowed_div_pct, а не заводим новый параметр --
+        # тот же порог, что и в аудите держащихся позиций.
+        div_status, div_val = na_or_check(f.get("dividend_yield"), lambda v: v <= limit_max_div1)
+
+        # Объём дня / 20-дневное среднее -- бэктест 2026-08-29 (30 тикеров, 2015-2026):
+        # ниже среднего объёма -- худшая по качеству четверть сделок (тихий дрейф без
+        # реального события), на уровне среднего и выше -- заметно лучше. Поле новое --
+        # до первого полного sync у большинства тикеров NULL, na_or_check не проваливает.
+        vol_ratio_status, vol_ratio_val = na_or_check(f.get("signal_volume_ratio_20d"), lambda v: v >= limit_vol_ratio1)
+
+        # Глубина просадки от 20-дневного максимума, нормированная на волатильность --
+        # тот же бэктест: чем глубже относительно своей волатильности, тем лучше
+        # результат, монотонно (mean +0.48% на самой мелкой четверти -> +1.57% на самой
+        # глубокой). Заменяет upside_pct (аналитический таргет) как ranking_value -- тот
+        # нигде за пределами этой функции не использовался и не был подтверждён бэктестом
+        # как рабочий рычаг, в отличие от глубины просадки. Знак инвертирован (сырое
+        # значение отрицательно ниже пика) -- выше ranking_value = глубже просадка =
+        # лучше, тот же порядок сортировки (по убыванию), что и у остальных стратегий.
+        depth_raw = f.get("signal_price_to_20d_high_pct")
+        vol_for_rank = float(f.get("signal_daily_volatility_pct") or 0.0)
+        depth_ranking = (-float(depth_raw) / vol_for_rank) if (depth_raw is not None and vol_for_rank > 0) else 0.0
 
         # Вход и выход Револьверной раньше не сверялись друг с другом -- RSI<45 не отличает
         # "только начало падать" от "уже N дней подряд подтверждённо падает без разворота",
         # а именно это второе условие -- то же самое, по которому _check_revolver_exit решает
         # "ставка не отыгрывается, сдавайся раньше срока". Итог: система могла купить бумагу
         # в момент, когда та уже удовлетворяла своему же условию немедленной продажи (живой
-        # случай MU в «ПБум», 2026-08-03). Порог -- тот же TREND_REVERSAL_CONFIRM_DAYS, что и
-        # на выходе, для согласованности.
+        # случай MU в «ПБум», 2026-08-03). Порог -- tactic_confirm_days стратегии (см. ниже),
+        # тот же, что и на выходе, для согласованности.
+        confirm_days = int(self._get_rule_value(rules_config, "tactic_confirm_days", settings.TREND_REVERSAL_CONFIRM_DAYS))
         streak = f.get("signal_ema20_streak_days")
-        momentum_broken = streak is not None and int(streak) <= -settings.TREND_REVERSAL_CONFIRM_DAYS
+        momentum_broken = streak is not None and int(streak) <= -confirm_days
 
         m1 = {
             "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover1 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover1},
             "idea_rsi_oversold_num": {"status": "PASS" if rsi < limit_rsi1 else "FAIL", "fact": rsi, "limit": limit_rsi1},
             "speculative_catalyst": {"status": "PASS" if (macd_numeric > 0 or (0 < rec_mean <= 2.0)) else "FAIL", "fact": f"MACD: {macd_val}, Rec: {rec_mean}", "limit": "MACD > 0 ИЛИ Rec <= 2.0"},
             "idea_require_positive_fflow_bool": {"status": "PASS" if not require_fcf1 else fcf_status, "fact": round(fcf_val, 2) if fcf_val is not None else None, "limit": "FCF > 0"},
-            "trend_not_confirmed_broken": {"status": "FAIL" if momentum_broken else "PASS", "fact": streak, "limit": f"> -{settings.TREND_REVERSAL_CONFIRM_DAYS}"},
+            "idea_min_revenue_growth_pct": {"status": growth_status, "fact": round(growth_val, 4) if growth_val is not None else None, "limit": limit_growth1},
+            "portfolio_max_allowed_div_pct": {"status": div_status, "fact": round(div_val, 2) if div_val is not None else None, "limit": limit_max_div1},
+            "idea_min_volume_ratio_20d": {"status": vol_ratio_status, "fact": round(vol_ratio_val, 2) if vol_ratio_val is not None else None, "limit": limit_vol_ratio1},
+            "trend_not_confirmed_broken": {"status": "FAIL" if momentum_broken else "PASS", "fact": streak, "limit": f"> -{confirm_days}"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
         }
         # N/A (показатель неприменим) не считается провалом, в отличие от FAIL -- та же
         # логика, что и в _score_conservative.
         is_compat1 = all(x["status"] in ("PASS", "N/A") for k, x in m1.items() if k != "idea_report_buffer_days")
-        return {"metrics": m1, "is_compatible": is_compat1, "ranking_value": round(upside_pct, 2)}
+        return {"metrics": m1, "is_compatible": is_compat1, "ranking_value": round(depth_ranking, 4)}
 
     def _score_conservative(self, f: dict, rules_config: dict, days_to_report: int, us_only: bool = False) -> dict:
         limit_turnover2 = self._get_rule_value(rules_config, "idea_min_turnover_usd", 100000000.0)
@@ -641,7 +692,8 @@ class TickerEvaluator:
         revenue_cagr_3y, revenue_growth, pe_trailing, dividend_yield, free_cash_flow,
         current_price, target_mean_price, recommendation_mean, signal_next_report_date,
         signal_rsi, signal_macd, signal_ema_20, signal_sma_50, signal_sma_100, signal_sma_200,
-        signal_price_to_sma200_pct, signal_daily_volatility_pct, signal_ema20_streak_days
+        signal_price_to_sma200_pct, signal_daily_volatility_pct, signal_ema20_streak_days,
+        signal_volume_ratio_20d, signal_price_to_20d_high_pct
     """
 
     def evaluate_ticker_strategy(self, ticker_id: int, target_portfolio_id: int = 2) -> dict:
