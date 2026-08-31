@@ -49,10 +49,18 @@ def run_paper_broker_cycle(db_instance):
 def _try_fill(db_instance, row: dict, met: dict):
     portfolio_id = int(row["portfolio_id"])
 
+    # Живой баг, найден 2026-08-31: раньше проверялось `execution_mode == 'CONFIRM'` --
+    # верно, ПОКА «ПБум» был единственным бумажным портфелем. С появлением «ПБумАвто»
+    # (`AUTO`) и «ПБумКлод» (`ADVISORY`, Claude/BACKLOG.md, 2026-08-29) execution_mode
+    # перестал быть надёжным признаком "это бумажный портфель" -- он отвечает на другой
+    # вопрос (КАК исполняется решение), не на "реальные это деньги или нет". Оба новых
+    # портфеля тихо никогда не исполнялись эмулятором, без единой ошибки в логе --
+    # тот же класс бага, что уже чинили в database.py::get_test_capital_summary в тот же
+    # день создания портфелей. Истинный признак -- portfolios.broker_id IS NULL.
     portfolio_row = db_instance.execute_row(
-        "SELECT execution_mode FROM public.portfolios WHERE id = %s;", (portfolio_id,)
+        "SELECT broker_id FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
-    if not portfolio_row or portfolio_row.get("execution_mode") != "CONFIRM":
+    if not portfolio_row or portfolio_row.get("broker_id") is not None:
         return  # эмулятор действует только на бумажных портфелях -- реальные не трогает
 
     qty = float(met["suggested_qty"])
