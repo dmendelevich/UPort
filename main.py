@@ -109,6 +109,13 @@ async def start_uport_system():
         )
 
     # 4. Добавляем в Event Loop запуск Telegram-бота
+    # Список команд нигде не был зарегистрирован (BACKLOG.md, 2026-09-01, со слов
+    # пользователя -- на телефоне неудобно набирать "/start" руками) -- без
+    # set_my_commands у Telegram нет ни автодополнения по "/", ни кнопки-меню рядом
+    # с полем ввода. Регистрация одной команды включает оба сразу, без нового кода
+    # экрана -- /start уже ведёт в главное меню (bot_handlers/summary.py::cmd_start).
+    from aiogram.types import BotCommand
+    await bot.set_my_commands([BotCommand(command="start", description="🏠 Главное меню")])
     await bot.delete_webhook(drop_pending_updates=True)
     async_tasks.append(
         asyncio.create_task(dp.start_polling(bot))
