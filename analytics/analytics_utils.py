@@ -515,6 +515,13 @@ class TickerEvaluator:
         vol_for_rank = float(f.get("signal_daily_volatility_pct") or 0.0)
         depth_ranking = (-float(depth_raw) / vol_for_rank) if (depth_raw is not None and vol_for_rank > 0) else 0.0
 
+        # Тот же потолок здравого смысла, что и у Трендовой (settings.py,
+        # 2026-09-02, живой случай TECH) -- формула той же формы (числитель/
+        # волатильность), тот же риск вырожденного взрыва при почти нулевой
+        # волатильности, ещё не пойман живьём именно здесь, но переиспользуемый
+        # механизм строится сразу, не дожидаясь второго живого случая.
+        depth_ratio_sane = abs(depth_ranking) <= settings.REVOLVER_DEPTH_RATIO_CEILING
+
         # Вход и выход Револьверной раньше не сверялись друг с другом -- RSI<45 не отличает
         # "только начало падать" от "уже N дней подряд подтверждённо падает без разворота",
         # а именно это второе условие -- то же самое, по которому _check_revolver_exit решает
@@ -535,6 +542,7 @@ class TickerEvaluator:
             "portfolio_max_allowed_div_pct": {"status": div_status, "fact": round(div_val, 2) if div_val is not None else None, "limit": limit_max_div1},
             "idea_min_volume_ratio_20d": {"status": vol_ratio_status, "fact": round(vol_ratio_val, 2) if vol_ratio_val is not None else None, "limit": limit_vol_ratio1},
             "trend_not_confirmed_broken": {"status": "FAIL" if momentum_broken else "PASS", "fact": streak, "limit": f"> -{confirm_days}"},
+            "depth_ratio_sane": {"status": "PASS" if depth_ratio_sane else "FAIL", "fact": round(depth_ranking, 2), "limit": f"<= {settings.REVOLVER_DEPTH_RATIO_CEILING}"},
             "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer1 else "WARNING", "fact": days_to_report, "limit": limit_buffer1}
         }
         # N/A (показатель неприменим) не считается провалом, в отличие от FAIL -- та же
@@ -652,16 +660,6 @@ class TickerEvaluator:
         # ниже, дублировать его более медленным и капризным способом незачем.
         fan_is_valid = (ema20 > sma50) and (sma50 > sma100)
 
-        m3 = {
-            "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
-            "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100"},
-            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
-            "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
-            "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
-            "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
-        }
-        is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
-
         # Risk-adjusted momentum (Claude/16_selection_logic_audit.md, находка Б,
         # 2026-08-08): сырой % отрыва от SMA200 механически выносит наверх самые
         # экстремальные движения (DELL +112%), не обязательно самые качественные
@@ -675,6 +673,26 @@ class TickerEvaluator:
         # там же зафиксировано, почему не нормализуется, пока не подключён T212).
         vol = f.get("signal_daily_volatility_pct")
         ranking_value = (price_to_sma200 / vol) if vol else price_to_sma200
+
+        # Потолок здравого смысла (Claude/BACKLOG.md, 2026-09-02, живой случай TECH/
+        # Bio-Techne под поглощением Merck KGaA -- цена прижата к цене сделки, дневная
+        # волатильность рухнула до 0.2178%, ranking взорвался до 87 при нормальном
+        # диапазоне 2-25) -- гейт по САМОМУ ОТНОШЕНИЮ (не по сырой волатильности, та у
+        # облигационных/индексных ETF тоже низкая, но законно, без искажения ranking),
+        # ловит вырожденный случай независимо от причины (M&A, застрявшая котировка,
+        # что угодно ещё) -- settings.TREND_MOMENTUM_RATIO_CEILING.
+        ratio_sane = abs(ranking_value) <= settings.TREND_MOMENTUM_RATIO_CEILING
+
+        m3 = {
+            "idea_min_turnover_usd": {"status": "PASS" if turnover >= limit_turnover3 else "FAIL", "fact": round(turnover, 2), "limit": limit_turnover3},
+            "moving_averages_fan": {"status": "PASS" if fan_is_valid else "FAIL", "fact": f"EMA20={ema20}, SMA50={sma50}, SMA100={sma100}, SMA200={sma200}", "limit": "EMA20 > SMA50 > SMA100"},
+            "signal_price_to_sma200_pct": {"status": "PASS" if price_to_sma200 > 5.00 else "FAIL", "fact": price_to_sma200, "limit": "> 5.00%"},
+            "signal_rsi": {"status": "PASS" if (50.0 <= rsi <= 72.0) else "FAIL", "fact": rsi, "limit": "50 - 72"},
+            "signal_macd": {"status": "PASS" if macd_numeric > 0 else "FAIL", "fact": macd_numeric, "limit": "> 0"},
+            "momentum_ratio_sane": {"status": "PASS" if ratio_sane else "FAIL", "fact": round(ranking_value, 2), "limit": f"<= {settings.TREND_MOMENTUM_RATIO_CEILING}"},
+            "idea_report_buffer_days": {"status": "PASS" if days_to_report >= limit_buffer3 else "WARNING", "fact": days_to_report, "limit": limit_buffer3}
+        }
+        is_compat3 = all(x["status"] == "PASS" for k, x in m3.items() if k != "idea_report_buffer_days")
 
         return {"metrics": m3, "is_compatible": is_compat3, "ranking_value": ranking_value}
 
