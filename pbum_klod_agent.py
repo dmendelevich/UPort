@@ -159,6 +159,11 @@ async def run_session(prompt: str) -> str:
 
 
 async def main():
+    from utils import was_us_market_open_yesterday
+    if not was_us_market_open_yesterday():
+        logging.info("⏭️ Вчера рынок США не торговал -- пропускаю проверку (тот же гейт, что у утреннего дайджеста).")
+        return
+
     now = datetime.now(timezone.utc).replace(microsecond=0)
     prompt = f"Ежедневная проверка ПБумКлод ({now.isoformat()} UTC). Реши, нужны ли покупки или продажи сегодня."
     try:
