@@ -49,46 +49,63 @@ class CashDeploymentAdvisor:
         )
         return row or {}
 
-    def _find_best_candidate(self, strategy_id: int, held_ids: set, us_only: bool, system_key: str,
-                              sector_exposure: dict, sector_target_config: dict,
-                              total_capital: float, target_slot_usd: float):
+    def _find_candidates_for_strategy(self, strategy_id: int, held_ids: set, us_only: bool,
+                                       sector_exposure: dict, sector_target_config: dict,
+                                       total_capital: float, available_usd: float, slot_cap: float):
         """
-        Переиспользует быстрый пакетный скан TickerEvaluator (analytics_utils.py) --
-        тот же источник правды для условий отбора, что и evaluate_ticker_strategy,
-        без N+1 запросов к БД. Результат уже отсортирован по ranking_value.
+        Заполняет столько полноразмерных слотов, сколько влезает по РЕАЛЬНЫМ деньгам
+        (available_usd), не искусственный предел "один победитель за прогон"
+        (Claude/BACKLOG.md №163, живой разбор с пользователем 2026-09-02: AAPL/JNJ/XOM
+        честно проходили вход Трендовой неделями, просто не выбирались, потому что
+        кто-то один ранжировался выше в конкретный день проверки, а система не умела
+        отдать больше одного). Переиспользует быстрый пакетный скан TickerEvaluator --
+        тот же источник правды, что и evaluate_ticker_strategy, результат уже
+        отсортирован по ranking_value.
 
-        Секторальная дисциплина (Claude/BACKLOG.md №82) различается по стратегии:
-        - Консервативная -- ЖЁСТКИЙ проактивный фильтр: пропускает кандидатов, чья
-          покупка (по прогнозу, портфель целиком) пробила бы потолок сектора, берёт
-          первого по рангу СРЕДИ НЕ пробивающих.
-        - Револьверная/Трендовая -- выбор кандидата НЕ меняется (сигнал стратегии не
-          душим), но если топ-кандидат пробивает потолок -- возвращаем предупреждение
-          отдельно, текст рекомендации его покажет, не спрячет.
+        Секторальный потолок теперь ЖЁСТКИЙ для ВСЕХ содержательных стратегий (раньше
+        был только у Консервативной, Р/Т получали лишь текстовое предупреждение,
+        BACKLOG.md №82) -- при нескольких покупках за один прогон риск ссыпать всё в
+        один сектор выше, чем при одной покупке в день, решено явно не оставлять
+        мягким.
 
-        Возвращает (candidate_or_None, sector_warning_or_None).
+        sector_exposure МУТИРУЕТСЯ по ходу (общий портфельный рентген по ВСЕМ
+        стратегиям, не по одной) -- каждая успешная покупка добавляется в бегущий
+        итог ДО проверки следующего кандидата, в том числе кандидата ДРУГОЙ стратегии
+        в этом же вызове evaluate_deployment (тот же словарь передаётся сквозь весь
+        цикл там) -- иначе три покупки в один сектор за один прогон каждая по
+        отдельности прошла бы проверку "не пробивает потолок", хотя вместе пробивают.
+
+        Возвращает список [(candidate, target_slot_usd), ...] -- пусто, если ничего
+        не прошло экран или не осталось денег/сектор везде закрыт.
         """
         results = self.evaluator.screen_universe_for_strategy(
             strategy_id, exclude_ticker_ids=held_ids, us_only=us_only
         )
-        if not results:
-            return None, None
+        picks = []
+        remaining = available_usd
+        local_held = set(held_ids)
 
-        if system_key == "CONSERVATIVE_ACCUMULATION":
-            for cand in results:
-                breach = check_sector_ceiling_breach(
-                    sector_exposure, total_capital, sector_target_config,
-                    cand.get("sector"), additional_usd=target_slot_usd,
-                )
-                if not breach:
-                    return cand, None
-            return None, None
+        for cand in results:
+            if remaining <= 0:
+                break
+            if cand["ticker_id"] in local_held:
+                continue
+            target_slot = min(slot_cap, remaining)
+            if target_slot <= 0:
+                break
+            breach = check_sector_ceiling_breach(
+                sector_exposure, total_capital, sector_target_config,
+                cand.get("sector"), additional_usd=target_slot,
+            )
+            if breach:
+                continue
+            picks.append((cand, target_slot))
+            remaining -= target_slot
+            local_held.add(cand["ticker_id"])
+            sector = cand.get("sector") or "Unknown Sector"
+            sector_exposure[sector] = sector_exposure.get(sector, 0.0) + target_slot
 
-        best = results[0]
-        warning = check_sector_ceiling_breach(
-            sector_exposure, total_capital, sector_target_config,
-            best.get("sector"), additional_usd=target_slot_usd,
-        ) or None
-        return best, warning
+        return picks
 
     def _get_index_core_leg_values(self, strategy_id: int, symbols: list) -> dict:
         """$-стоимость каждой ноги Индексного ядра (VTI/VXUS/BND), уже держимой этой стратегией."""
@@ -398,38 +415,75 @@ class CashDeploymentAdvisor:
                 break
 
             is_index_core = cand["system_key"] == "INDEX_CORE"
+            pct_underfunded_pretty = round(cand["pct_underfunded"] * 100, 1)
 
             if is_index_core:
                 # Индексное ядро не пользуется лесенкой/слотом -- весь доступный слэк
                 # разом, целиком в самую недовешенную ногу (Claude/15_index_core.md).
                 # Ниже порога сделки просто ждём, копим слэк дальше -- не отдельная
-                # рекомендация "недостаточно денег" на каждый прогон.
+                # рекомендация "недостаточно денег" на каждый прогон. У ядра по
+                # определению одна нога за раз (не конкурс кандидатов через экран) --
+                # многослотовое заполнение (BACKLOG.md №163) ядра не касается.
                 min_trade = float(cand["rules_config"].get("index_core_min_trade_usd") or 300.0)
                 target_slot = min(cand["slack_usd"], remaining_pool)
                 if target_slot < min_trade:
                     continue
                 best = self._find_index_core_leg(cand["strategy_id"], cand["rules_config"], cand["ideal_budget_usd"])
-                sector_warning = None
-            else:
-                slot_cap = self._compute_slot_cap(cand["rules_config"], cand["ideal_budget_usd"], total_capital)
-                target_slot = min(cand["slack_usd"], remaining_pool, slot_cap)
-                if target_slot <= 0:
+                if not best:
+                    recommendations.append({
+                        "portfolio_id": portfolio_id,
+                        "strategy_id": cand["strategy_id"],
+                        "strategy_name": cand["strategy_name"],
+                        "system_key": cand["system_key"],
+                        "status": "NO_CANDIDATE",
+                        "pct_underfunded": pct_underfunded_pretty,
+                        "deployable_usd": round(target_slot, 2),
+                        "reason": (
+                            f"Недофинансирована на {pct_underfunded_pretty}% от цели "
+                            f"(${target_slot:,.2f} доступно), но целевые веса ядра не заданы (rules_config)."
+                        ),
+                    })
                     continue
-                best, sector_warning = self._find_best_candidate(
-                    cand["strategy_id"], held_ids, us_only, cand["system_key"],
-                    sector_exposure, sector_target_config, total_capital, target_slot,
-                )
 
-            pct_underfunded_pretty = round(cand["pct_underfunded"] * 100, 1)
+                tactic = self._get_step1_tactic(cand["strategy_id"])
+                step1_share_pct = float(tactic.get("budget_share_pct") or 100.0)
+                step1_amount = target_slot * step1_share_pct / 100.0
+                mode = (tactic.get("trigger_conditions") or {}).get("mode", "market")
+                recommendations.append({
+                    "portfolio_id": portfolio_id,
+                    "strategy_id": cand["strategy_id"],
+                    "strategy_name": cand["strategy_name"],
+                    "system_key": cand["system_key"],
+                    "status": "CANDIDATE_FOUND",
+                    "pct_underfunded": pct_underfunded_pretty,
+                    "ticker_id": best["ticker_id"],
+                    "symbol": best["symbol"],
+                    "target_slot_usd": round(target_slot, 2),
+                    "step1_amount_usd": round(step1_amount, 2),
+                    "step1_mode": mode,
+                    "ranking_value": best["ranking_value"],
+                    "reason": (
+                        f"Индексное ядро недофинансировано на {pct_underfunded_pretty}% от цели. "
+                        f"{best['symbol']} дальше всего отстал от своего целевого веса. "
+                        f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку."
+                    ),
+                })
+                remaining_pool -= target_slot
+                continue
 
-            if not best:
-                no_candidate_reason = (
-                    f"Недофинансирована на {pct_underfunded_pretty}% от цели "
-                    f"(${target_slot:,.2f} доступно), но ни один тикер не прошёл экран стратегии."
-                    if not is_index_core else
-                    f"Недофинансирована на {pct_underfunded_pretty}% от цели "
-                    f"(${target_slot:,.2f} доступно), но целевые веса ядра не заданы (rules_config)."
-                )
+            # Р/К/Т -- заполняем столько полноразмерных слотов, сколько влезает по
+            # реальным деньгам (BACKLOG.md №163), не искусственно один за прогон.
+            slot_cap = self._compute_slot_cap(cand["rules_config"], cand["ideal_budget_usd"], total_capital)
+            available_usd = min(cand["slack_usd"], remaining_pool)
+            if available_usd <= 0:
+                continue
+
+            picks = self._find_candidates_for_strategy(
+                cand["strategy_id"], held_ids, us_only,
+                sector_exposure, sector_target_config, total_capital, available_usd, slot_cap,
+            )
+
+            if not picks:
                 recommendations.append({
                     "portfolio_id": portfolio_id,
                     "strategy_id": cand["strategy_id"],
@@ -437,54 +491,42 @@ class CashDeploymentAdvisor:
                     "system_key": cand["system_key"],
                     "status": "NO_CANDIDATE",
                     "pct_underfunded": pct_underfunded_pretty,
-                    "deployable_usd": round(target_slot, 2),
-                    "reason": no_candidate_reason,
+                    "deployable_usd": round(available_usd, 2),
+                    "reason": (
+                        f"Недофинансирована на {pct_underfunded_pretty}% от цели "
+                        f"(${available_usd:,.2f} доступно), но ни один тикер не прошёл экран стратегии "
+                        f"(с учётом секторальных лимитов)."
+                    ),
                 })
                 continue
 
             tactic = self._get_step1_tactic(cand["strategy_id"])
             step1_share_pct = float(tactic.get("budget_share_pct") or 100.0)
-            step1_amount = target_slot * step1_share_pct / 100.0
             mode = (tactic.get("trigger_conditions") or {}).get("mode", "market")
 
-            if is_index_core:
-                reason_text = (
-                    f"Индексное ядро недофинансировано на {pct_underfunded_pretty}% от цели. "
-                    f"{best['symbol']} дальше всего отстал от своего целевого веса. "
-                    f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку."
-                )
-            else:
-                reason_text = (
-                    f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
-                    f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
-                    f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
-                    f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
-                )
-                # Только для Револьверной/Трендовой -- у Консервативной такой кандидат
-                # физически не мог дойти сюда, _find_best_candidate его уже отсеял.
-                if sector_warning:
-                    reason_text += (
-                        f" ⚠️ Доведёт долю сектора {sector_warning['sector']} по портфелю до "
-                        f"{sector_warning['projected_pct']}% (лимит {sector_warning['limit_pct']}%)."
-                    )
-
-            recommendations.append({
-                "portfolio_id": portfolio_id,
-                "strategy_id": cand["strategy_id"],
-                "strategy_name": cand["strategy_name"],
-                "system_key": cand["system_key"],
-                "status": "CANDIDATE_FOUND",
-                "pct_underfunded": pct_underfunded_pretty,
-                "ticker_id": best["ticker_id"],
-                "symbol": best["symbol"],
-                "target_slot_usd": round(target_slot, 2),
-                "step1_amount_usd": round(step1_amount, 2),
-                "step1_mode": mode,
-                "ranking_value": best["ranking_value"],
-                "sector_warning": sector_warning,
-                "reason": reason_text,
-            })
-
-            remaining_pool -= target_slot
+            for best, target_slot in picks:
+                step1_amount = target_slot * step1_share_pct / 100.0
+                recommendations.append({
+                    "portfolio_id": portfolio_id,
+                    "strategy_id": cand["strategy_id"],
+                    "strategy_name": cand["strategy_name"],
+                    "system_key": cand["system_key"],
+                    "status": "CANDIDATE_FOUND",
+                    "pct_underfunded": pct_underfunded_pretty,
+                    "ticker_id": best["ticker_id"],
+                    "symbol": best["symbol"],
+                    "target_slot_usd": round(target_slot, 2),
+                    "step1_amount_usd": round(step1_amount, 2),
+                    "step1_mode": mode,
+                    "ranking_value": best["ranking_value"],
+                    "reason": (
+                        f"Стратегия недофинансирована на {pct_underfunded_pretty}% от цели. "
+                        f"Кандидат {best['symbol']} прошёл экран стратегии (ranking={best['ranking_value']}). "
+                        f"Переведи ${step1_amount:,.2f} на торговый счёт и купи {best['symbol']} по рынку "
+                        f"(шаг 1 лесенки, {step1_share_pct:.0f}% от расчётного слота ${target_slot:,.2f})."
+                    ),
+                })
+                remaining_pool -= target_slot
+                held_ids.add(best["ticker_id"])
 
         return recommendations
