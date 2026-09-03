@@ -711,6 +711,34 @@ async def format_portfolio_header(portfolio_id: int, target_currency: str = "USD
     header += f"• Прибыль/убыток: **{profit_sign}{target_sign}{abs(total_assets_profit):,.2f} ({profit_sign}{abs(total_profit_pct):.1f}%)**\n"
     header += f"• Рыночная стоимость: **{target_sign}{total_assets_cost:,.2f}**\n\n"
 
+    # Планы с mode="market" (Claude/BACKLOG.md #165) -- "решение уже принято, ждёт
+    # открытия рынка", тот же JSON-контракт entry_trigger_override во всех местах,
+    # которые его заводят (deal_planner.py::create_buy_plan/create_sell_plan,
+    # bot_handlers/ticker_search.py «Купить вне стратегии», claude_paper_trader.py).
+    # Раньше эти планы были невидимы на карточке до самого исполнения -- нашлось на
+    # живом примере ПБумКлод (заявки созданы вечером, рынок уже закрыт, карточка
+    # показывала пустой портфель, будто ничего не произошло). Не смешиваю с
+    # PENDING-шагами лесенки Р/К/Т -- те своим долгим ожиданием ценового условия
+    # (не открытия рынка) устроены иначе и уже отображаются в «⏰ По расписанию».
+    pending_res = await asyncio.to_thread(db_bot.execute_query, """
+        SELECT t.symbol, op.target_quantity, op.initial_entry_price, l.currency_id
+        FROM public.order_pipelines op
+        JOIN public.tickers t ON t.id = op.ticker_id
+        JOIN public.listings l ON l.id = op.listing_id
+        WHERE op.portfolio_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+          AND op.entry_trigger_override->>'mode' = 'market';
+    """, (portfolio_id,))
+    pending_res = pending_res if isinstance(pending_res, list) else ([pending_res] if pending_res else [])
+
+    if pending_res:
+        header += "⏳ **ОЖИДАЮТ ИСПОЛНЕНИЯ (решение принято, рынок сейчас закрыт):**\n"
+        for p in pending_res:
+            qty = float(p["target_quantity"])
+            price = float(p["initial_entry_price"] or 0) * get_fx(p.get("currency_id"))
+            direction = "Купить" if qty > 0 else "Продать"
+            header += f"• {direction} {p['symbol']}: {abs(qty):g} шт по ~{target_sign}{price:,.2f}\n"
+        header += "\n"
+
     cash_res = await asyncio.to_thread(db_bot.execute_query, """
         SELECT currency_id, cash_available, cash_reserved, currency_sign
         FROM public.v_accounts_full

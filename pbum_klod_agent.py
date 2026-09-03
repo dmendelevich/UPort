@@ -64,6 +64,13 @@ def _fmt_report(data: dict) -> str:
             )
             if h.get("exit_criteria"):
                 lines.append(f"  Критерий выхода: {h['exit_criteria']}")
+    pending = data.get("pending_orders") or []
+    if pending:
+        lines.append("Заявки, ожидающие исполнения (решение уже принято, ждут открытия рынка -- НЕ дублируй их новой покупкой/продажей):")
+        for p in pending:
+            qty = float(p["target_quantity"])
+            direction = "купить" if qty > 0 else "продать"
+            lines.append(f"- {direction} {p['symbol']}: {abs(qty):g} шт по ~${float(p['initial_entry_price'] or 0):.2f}")
     audit = data.get("limits_audit") or {}
     lines.append(f"Нарушение лимитов риска: {'ДА' if audit.get('has_violations') else 'нет'}")
     if audit.get("has_violations"):

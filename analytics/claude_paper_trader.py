@@ -73,9 +73,24 @@ def report(db_instance, portfolio_id: int = CLAUDE_PORTFOLIO_ID) -> dict:
     """, (portfolio_id, UNALLOCATED_SYSTEM_KEY))
     holdings = holdings if isinstance(holdings, list) else ([holdings] if holdings else [])
 
+    # Живая находка 2026-09-03: report() показывал только УЖЕ исполненные позиции
+    # (assets) -- планы, созданные тем же buy()/sell() в предыдущей сессии, но ещё не
+    # исполненные paper_broker.py (рынок был закрыт), были не видны агенту вообще.
+    # Итог -- повторная попытка купить ту же бумагу упиралась в SQL-ошибку уникального
+    # индекса order_pipelines_unique_active_run вместо чистой проверки заранее. Тот же
+    # фикс, что и в bot_handlers/bot_screens.py::format_portfolio_header (BACKLOG №165).
+    pending_orders = db_instance.execute_query("""
+        SELECT t.symbol, op.target_quantity, op.initial_entry_price
+        FROM public.order_pipelines op
+        JOIN public.tickers t ON t.id = op.ticker_id
+        WHERE op.portfolio_id = %s AND op.pipeline_status IN ('PENDING', 'ACTIVE')
+          AND op.entry_trigger_override->>'mode' = 'market';
+    """, (portfolio_id,))
+    pending_orders = pending_orders if isinstance(pending_orders, list) else ([pending_orders] if pending_orders else [])
+
     audit = PortfolioInspector(db_instance, portfolio_id).audit_limits_and_rules()
 
-    return {"cash_available": cash_available, "holdings": holdings, "limits_audit": audit}
+    return {"cash_available": cash_available, "holdings": holdings, "pending_orders": pending_orders, "limits_audit": audit}
 
 
 def buy(db_instance, ticker_symbol_or_id, amount_usd: float, thesis: str, exit_criteria: str = None,
