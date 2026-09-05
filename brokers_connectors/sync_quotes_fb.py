@@ -15,6 +15,7 @@ from analytics.price_move_watcher import check_price_moves
 from analytics.capital_protection_watcher import check_capital_protection
 from analytics.portfolio_drawdown_watcher import check_portfolio_drawdown
 from brokers_connectors.paper_broker import run_paper_broker_cycle
+from analytics.auto_paper_trader import run_auto_paper_cycle
 
 def sync_quotes_fb_autonomous():
     """
@@ -158,6 +159,20 @@ def sync_quotes_fb_autonomous():
         check_portfolio_drawdown(db_sys)
     except Exception as portfolio_drawdown_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки портфельной просадки (PortfolioDrawdownWatcher): {portfolio_drawdown_err}")
+
+    # «ПБумАвто» (execution_mode='AUTO', Claude/BACKLOG.md №169, 2026-09-05) -- переехал
+    # сюда с суточного digest_clock_loop: покупка (CashDeploymentAdvisor), продажа
+    # (PositionExitEvaluator) и ребаланс (PortfolioRebalancer) для портфелей AUTO больше
+    # не ждут утреннего дайджеста -- та же причина, что и у сигналов A/B/D выше: правило
+    # выхода/входа само по себе не изменилось, изменилась только частота, с которой ему
+    # вообще дают шанс сработать (найдено при разборе give-back -- позиция могла пробить
+    # цель прибыли утром и просидеть непроданной до следующего дня без всякой причины,
+    # кроме частоты проверки). Пустой цикл (нечего исполнять) молчит и сейчас -- новых
+    # уведомлений на пустых тиках не прибавится, см. analytics/auto_paper_trader.py.
+    try:
+        run_auto_paper_cycle(db_sys)
+    except Exception as auto_paper_err:
+        logging.error(f"⚠️ [REST FB]: Сбой цикла ПБумАвто (AutoPaperTrader): {auto_paper_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла
