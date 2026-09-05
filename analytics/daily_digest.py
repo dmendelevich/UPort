@@ -192,19 +192,52 @@ def assemble_portfolio_digest_data(db_instance, portfolio_id: int) -> dict:
     watchlisted_rows = watchlisted_rows if isinstance(watchlisted_rows, list) else ([watchlisted_rows] if watchlisted_rows else [])
     watchlisted_listing_by_ticker = {int(r["ticker_id"]): int(r["listing_id"]) for r in watchlisted_rows if r}
 
+    # Живой баг, найден 2026-09-05 (Claude/BACKLOG.md #166): снятие ограничения "один
+    # кандидат за цикл" в CashDeploymentAdvisor (BACKLOG №163) стало сажать в один
+    # раздел дайджеста до десятка BUY-пунктов на недофинансированную стратегию, каждый
+    # со своей КОПИЕЙ вступления "Стратегия недофинансирована на X% от цели." И
+    # инструкции "Переведи $N ... шаг 1 лесенки, K% от расчётного слота $M" -- на
+    # ПБум это раздуло текст раздела «Сигналы» до 5085 символов, Telegram режет на
+    # 4096 (`edit_text` тихо падал с TelegramBadRequest, digest.py его молча глотает
+    # -- кнопка выглядела как "перестала работать", ни строчки в логе). Оба вступления
+    # повторяем только у ПЕРВОГО кандидата на стратегию; если у следующего кандидата
+    # ТОЧНО тот же слот (типичный случай -- один и тот же расчётный бюджет на всех
+    # кандидатов стратегии в этом цикле), вырезаем и денежную инструкцию тоже -- редкий
+    # случай, когда сумма отличается (последний кандидат донабирает остаток пула), не
+    # трогаем, показываем полностью. Пункты/кнопки не трогаем -- у каждого кандидата
+    # остаётся своя строка и свой набор действий.
     cash_recs = CashDeploymentAdvisor(db_instance).evaluate_deployment(portfolio_id)
-    signal_items += [
-        {
-            "text": f"{ACTION_BADGES['BUY']} {r['strategy_name']}: {r['reason']}"
+    seen_underfunded_strategies = set()
+    strategy_slot_seen = {}
+    for r in cash_recs:
+        if r["status"] != "CANDIDATE_FOUND":
+            continue
+        reason = r["reason"]
+        strategy_key = r["strategy_id"]
+        step1_amount = float(r["step1_amount_usd"])
+        target_slot = float(r["target_slot_usd"])
+        if strategy_key in seen_underfunded_strategies:
+            intro = f"Стратегия недофинансирована на {r['pct_underfunded']}% от цели. "
+            if reason.startswith(intro):
+                reason = reason[len(intro):]
+            base_amount, base_slot = strategy_slot_seen[strategy_key]
+            if abs(step1_amount - base_amount) < 0.01 and abs(target_slot - base_slot) < 0.01:
+                reason = (
+                    f"Кандидат {r['symbol']} прошёл экран стратегии (ranking={float(r['ranking_value']):.2f}), "
+                    f"тот же слот ${base_amount:,.2f}."
+                )
+        else:
+            seen_underfunded_strategies.add(strategy_key)
+            strategy_slot_seen[strategy_key] = (step1_amount, target_slot)
+        signal_items.append({
+            "text": f"{ACTION_BADGES['BUY']} {r['strategy_name']}: {reason}"
                     + order_note(r["ticker_id"], active_buy_ticker_ids),
             "label": r["symbol"],
             "ticker_id": r["ticker_id"],
             "listing_id": watchlisted_listing_by_ticker.get(int(r["ticker_id"])),
             "strategy_id": r["strategy_id"],
             "recommendation": "BUY",
-        }
-        for r in cash_recs if r["status"] == "CANDIDATE_FOUND"
-    ]
+        })
 
     # Подрезка перевешенных позиций (Claude/13_portfolio_construction_and_rebalancing_rules.md,
     # 2026-08-03) -- сегодня только Консервативная, см. PortfolioRebalancer.
