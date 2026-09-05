@@ -228,6 +228,19 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     for tab_row in tab_switch_markup.inline_keyboard:
         builder.row(*tab_row)
 
+    # Кнопка возобновления автопокупок (Claude/BACKLOG.md №170, 2026-09-05) -- видна
+    # ТОЛЬКО когда сработал VIX-предохранитель полигона (analytics/polygon_paper_trader.py).
+    # Возобновление сознательно ручное, не автоматическое по возврату VIX в диапазон --
+    # тема #168 показала, что авто-откат по рыночному сигналу сам может дать whipsaw.
+    portfolio_pause_row = await asyncio.to_thread(
+        db_bot.execute_row, "SELECT auto_trading_paused FROM public.portfolios WHERE id = %s;", (p_id,)
+    )
+    if portfolio_pause_row and portfolio_pause_row.get("auto_trading_paused"):
+        builder.row(types.InlineKeyboardButton(
+            text="▶️ Возобновить автопокупки",
+            callback_data=MenuAction(action="resume_polygon_trading", portfolio_id=p_id).pack()
+        ))
+
     # Функциональная кнопка (Claude/05_strategy_screen_and_kubiki.md: после переключателя
     # вкладок, перед навигацией назад) -- Лист ожидания (Claude/BACKLOG.md, 2026-08-28),
     # заменяет прежний вход через СН ("🔬 Списки наблюдения" в главном меню, убран).
@@ -252,6 +265,29 @@ async def process_view_portfolio(callback: types.CallbackQuery, callback_data: M
     final_builder.attach(InlineKeyboardBuilder.from_markup(reply_markup))
 
     try:
-        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())        
+        await callback.message.edit_text(report_text, parse_mode="Markdown", reply_markup=final_builder.as_markup())
     except TelegramBadRequest:
         pass
+
+
+@router.callback_query(MenuAction.filter(F.action == "resume_polygon_trading"))
+async def process_resume_polygon_trading(callback: types.CallbackQuery, callback_data: MenuAction, state: FSMContext):
+    """
+    Ручное возобновление автопокупок после срабатывания VIX-предохранителя
+    (Claude/BACKLOG.md №170, analytics/polygon_paper_trader.py). Сознательно ручное
+    действие -- система сама пометит паузу true в следующий раз, если VIX снова
+    выйдет за диапазон, но снять её сама не может (это и есть весь смысл
+    предохранителя: решение о продолжении принимает человек, не автоматика).
+    """
+    # НЕ отвечаем на callback здесь -- process_view_portfolio ниже сам вызывает
+    # callback.answer() при перерисовке карточки; второй answerCallbackQuery на тот
+    # же callback_query_id Telegram обычно отклоняет (живая находка при мок-тесте
+    # 2026-09-05 -- unittest.mock тихо пропустил повторный вызов, реальный API нет).
+    p_id = callback_data.portfolio_id
+    await asyncio.to_thread(
+        db_bot.execute_query,
+        "UPDATE public.portfolios SET auto_trading_paused = false, auto_trading_paused_at = NULL, "
+        "auto_trading_paused_reason = NULL WHERE id = %s;",
+        (p_id,)
+    )
+    await process_view_portfolio(callback, MenuAction(action="view_portfolio", portfolio_id=p_id, sub_view="assets"), state)

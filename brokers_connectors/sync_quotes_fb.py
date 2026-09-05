@@ -16,6 +16,7 @@ from analytics.capital_protection_watcher import check_capital_protection
 from analytics.portfolio_drawdown_watcher import check_portfolio_drawdown
 from brokers_connectors.paper_broker import run_paper_broker_cycle
 from analytics.auto_paper_trader import run_auto_paper_cycle
+from analytics.polygon_paper_trader import run_polygon_cycle
 
 def sync_quotes_fb_autonomous():
     """
@@ -173,6 +174,16 @@ def sync_quotes_fb_autonomous():
         run_auto_paper_cycle(db_sys)
     except Exception as auto_paper_err:
         logging.error(f"⚠️ [REST FB]: Сбой цикла ПБумАвто (AutoPaperTrader): {auto_paper_err}")
+
+    # «ПБумПолигон» (Claude/BACKLOG.md №170, 2026-09-05) -- живой стенд для находок тем
+    # #167/#168 (жёсткий SL/TP + VIX-предохранитель). Сознательно ОТДЕЛЬНЫЙ вызов, не
+    # часть run_auto_paper_cycle выше -- этот портфель execution_mode='ADVISORY', не
+    # 'AUTO', чтобы реальный трейлинг/confirm_days Револьверной его не касались (см.
+    # докстринг analytics/polygon_paper_trader.py).
+    try:
+        run_polygon_cycle(db_sys)
+    except Exception as polygon_err:
+        logging.error(f"⚠️ [REST FB]: Сбой цикла ПБумПолигон (PolygonPaperTrader): {polygon_err}")
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла
