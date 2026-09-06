@@ -172,6 +172,41 @@ def _check_exits(db_instance):
                 logging.info(f"🟢 [Polygon]: TP сработал -- {h['symbol']} {net_pct:+.1f}% нетто (цена {change_pct:+.1f}%).")
 
 
+def _passes_eps_revision_filter(symbol: str) -> bool:
+    """
+    «Мировая практика» находка №5 (Claude/BACKLOG.md №178, 2026-09-06) -- Револьверная
+    academически является short-term reversal стратегией, литература (Robeco/SSRN)
+    предупреждает про риск "падающего ножа" (падение цены на фоне РЕАЛЬНОГО ухудшения
+    перспектив, не временной паники) и указывает конкретный усилитель -- пересмотр
+    прогнозов аналитиков (не сам консенсус, `recommendation_mean` уже используется в
+    _score_revolver, а его ДИНАМИКУ за последние 30 дней).
+
+    Только для полигона, НЕ для _score_revolver (реальной Револьверной) -- сознательное
+    решение: yfinance не отдаёт исторической версии eps_revisions на прошлую дату,
+    значит бэктестом это НЕ проверить (был бы полный lookahead bias, не "лёгкий", как у
+    FCF/роста), поэтому это живой, форвардный эксперимент, а не подтверждённое бэктестом
+    правило -- ему место в сознательной песочнице, не в правиле, которое трогает реальные
+    деньги без проверки. Live-запрос к yfinance (не БД) -- те же причины, что и для
+    комиссии реальных портфелей: это не наше решение, а рыночный факт без истории,
+    хранить его постоянно незачем (принцип "снэпшот, не архив").
+
+    Отклоняет кандидата, если пересмотры EPS на текущий квартал (0q) нетто-отрицательны
+    (понижений за 30 дней больше, чем повышений) -- признак, что падение цены сопровождается
+    реально ухудшающимися прогнозами, не только рыночной паникой. Нет данных/сбой сети --
+    не блокируем (тот же принцип na_or_check, что и у остальных гейтов Револьверной).
+    """
+    try:
+        rev = yf.Ticker(symbol).eps_revisions
+        if rev is None or rev.empty or '0q' not in rev.index:
+            return True
+        row = rev.loc['0q']
+        up, down = float(row.get('upLast30days') or 0), float(row.get('downLast30days') or 0)
+        return up >= down
+    except Exception as e:
+        logging.warning(f"⚠️ [Polygon]: Не удалось получить пересмотры прогнозов для {symbol}: {e}")
+        return True
+
+
 def _check_entries(db_instance, allow_buy: bool):
     if not allow_buy:
         return
@@ -200,6 +235,9 @@ def _check_entries(db_instance, allow_buy: bool):
     for cand in candidates:
         if filled >= open_slots or cash < SLOT_USD:
             break
+        if not _passes_eps_revision_filter(cand["symbol"]):
+            logging.info(f"⚠️ [Polygon]: {cand['symbol']} пропущен -- пересмотры прогнозов аналитиков нетто-отрицательны за 30 дней.")
+            continue
         result = cpt.buy(
             db_instance, int(cand["ticker_id"]), SLOT_USD,
             thesis=f"Полигон: прошёл экран Револьверной (ranking={cand['ranking_value']:.2f}).",
