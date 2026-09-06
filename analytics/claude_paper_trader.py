@@ -144,14 +144,30 @@ def buy(db_instance, ticker_symbol_or_id, amount_usd: float, thesis: str, exit_c
     if price <= 0:
         return {"ok": False, "error": "Не удалось получить цену, попробуй позже.", "listing_id": listing_id}
 
+    # Живая находка 2026-09-06: нельзя купить дробную акцию, а цена бумаги может
+    # превышать выделенный бюджет (пример -- AZO по ~$2965 при слоте $2000 в
+    # ПБумПолигон) -- было max(1, round(amount_usd/price)), что молча заводило
+    # 1 акцию по любой цене, даже в разы дороже budget. Явный отказ вместо
+    # тихого перерасхода -- вызывающая сторона (полигон/агент) сама решает, что
+    # делать дальше (пропустить кандидата, попросить больший бюджет и т.п.).
+    if price > amount_usd:
+        return {
+            "ok": False,
+            "error": f"Цена бумаги (${price:,.2f}) выше выделенного бюджета (${amount_usd:,.2f}) -- "
+                     f"покупка даже 1 акции превысила бы бюджет, план не создан.",
+            "listing_id": listing_id,
+        }
+
+    qty = max(1, round(amount_usd / price))
+    true_cost = qty * price
+
     cash_row = db_instance.execute_row(
         "SELECT cash_available FROM public.accounts WHERE portfolio_id = %s AND currency_id = 'USD';", (portfolio_id,)
     )
     cash_available = float((cash_row or {}).get("cash_available") or 0.0)
-    if amount_usd > cash_available:
-        return {"ok": False, "error": f"Недостаточно кэша: запрошено ${amount_usd:,.2f}, доступно ${cash_available:,.2f}."}
+    if true_cost > cash_available:
+        return {"ok": False, "error": f"Недостаточно кэша: нужно ${true_cost:,.2f} на {qty} акций, доступно ${cash_available:,.2f}."}
 
-    qty = max(1, round(amount_usd / price))
     s_id = _get_unallocated_strategy_id(db_instance, portfolio_id)
 
     result = db_instance.execute_query("""
