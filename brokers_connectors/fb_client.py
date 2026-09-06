@@ -156,6 +156,47 @@ class FreedomBrokerClient:
 
         return processed_orders
 
+    def get_trades_history(self, start_date: str, end_date: str, ticker: str = None) -> list:
+        """
+        Реальные исполненные сделки за период -- команда getTradesHistory (реализует
+        тот же API, что уже обёрнут в SDK `tradernet.TraderNetAPI.get_trades_history`,
+        см. https://freedom24.com/tradernet-api/get-trades-history). Комиссия --
+        брокерский факт, не хранится в БД UPort постоянно (принцип "снэпшот, не
+        архив", CLAUDE.md) -- этот метод существует именно для запроса НА ЛЕТУ,
+        см. analytics/commission_report.py (Claude/BACKLOG.md №88, 2026-09-06).
+
+        start_date/end_date -- 'YYYY-MM-DD'. ticker -- опционально, полный код
+        листинга брокера (например 'COPX.US'), без фильтра -- все сделки счёта.
+        """
+        params = {"beginDate": start_date, "endDate": end_date}
+        if ticker:
+            params["nt_ticker"] = ticker
+
+        raw_response = self.execute(command="getTradesHistory", params=params)
+
+        trades_node = (raw_response or {}).get("trades", {})
+        raw_trades = trades_node.get("trade", []) if isinstance(trades_node, dict) else []
+        if isinstance(raw_trades, dict):
+            raw_trades = [raw_trades]  # один-единственный результат брокер отдаёт объектом, не списком
+        if not isinstance(raw_trades, list):
+            return []
+
+        trades = []
+        for t in raw_trades:
+            trades.append({
+                "trade_id": str(t.get("id")),
+                "order_id": str(t.get("order_id")),
+                "ticker": t.get("instr_nm"),
+                "qty": float(t.get("q", 0)),
+                "price": float(t.get("p", 0)),
+                "trade_value_usd": float(t.get("v", 0)),
+                "commission_usd": float(t.get("commission", 0)),
+                "profit_usd": float(t.get("profit", 0)),
+                "currency_id": t.get("curr_c", "USD"),
+                "executed_at": t.get("date"),
+            })
+        return trades
+
     def get_security_info(self, ticker: str) -> dict:
         """
         Интерпретатор 'Туда': Запрашивает у брокера спецификацию тикера по СУП.

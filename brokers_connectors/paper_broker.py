@@ -58,7 +58,7 @@ def _try_fill(db_instance, row: dict, met: dict):
     # тот же класс бага, что уже чинили в database.py::get_test_capital_summary в тот же
     # день создания портфелей. Истинный признак -- portfolios.broker_id IS NULL.
     portfolio_row = db_instance.execute_row(
-        "SELECT broker_id FROM public.portfolios WHERE id = %s;", (portfolio_id,)
+        "SELECT broker_id, commission_config FROM public.portfolios WHERE id = %s;", (portfolio_id,)
     )
     if not portfolio_row or portfolio_row.get("broker_id") is not None:
         return  # эмулятор действует только на бумажных портфелях -- реальные не трогает
@@ -72,19 +72,29 @@ def _try_fill(db_instance, row: dict, met: dict):
     ticker_id = int(row["ticker_id"])
     is_buy = qty > 0
     cost = abs(qty) * price
+    # Комиссия бумажного портфеля (Claude/BACKLOG.md №88, реализовано 2026-09-06) --
+    # своё решение, не брокерский факт (в отличие от реальных портфелей, где комиссия
+    # берётся на лету через FreedomBrokerClient.get_trades_history, см.
+    # analytics/commission_report.py) -- поэтому считаем и СПИСЫВАЕМ сами, иначе
+    # бумажная доходность систематически завышена относительно любого бэктеста,
+    # который эту комиссию уже учитывал (найдено пользователем на живом примере
+    # П136/COPX.US -- эмулятор до этой правки вообще не знал о комиссии).
+    commission_usd = _compute_commission(portfolio_row.get("commission_config"), cost)
 
     if is_buy:
-        if not db_instance.reserve_cash(portfolio_id, cost):
+        total_cost = cost + commission_usd
+        if not db_instance.reserve_cash(portfolio_id, total_cost):
             logging.info(
                 f"ℹ️ [PaperBroker]: Недостаточно кэша для {row['symbol']} "
-                f"(портфель {portfolio_id}, нужно ${cost:,.2f}) -- пробую в следующем цикле."
+                f"(портфель {portfolio_id}, нужно ${total_cost:,.2f} с учётом комиссии ${commission_usd:,.2f}) "
+                f"-- пробую в следующем цикле."
             )
             return
         # Резерв и списание одним движением (см. докстринг файла -- упрощение этого
         # захода) -- лимитная заявка не может исполниться хуже своей цены, но здесь
         # met["suggested_price"] и есть цена исполнения, улучшения относительно
         # самого себя не бывает, actual_spent == reserved.
-        db_instance.release_reservation(portfolio_id, reserved_amount=cost, actual_spent=cost)
+        db_instance.release_reservation(portfolio_id, reserved_amount=total_cost, actual_spent=total_cost)
 
     strat_sync = SyncStrategyAssetFB(db_instance)
     old_qty = strat_sync.get_current_quantity(portfolio_id, listing_id)
@@ -101,7 +111,7 @@ def _try_fill(db_instance, row: dict, met: dict):
         )
         return
 
-    order_id = _write_synthetic_order(db_instance, portfolio_id, ticker_id, listing_id, qty, price)
+    order_id = _write_synthetic_order(db_instance, portfolio_id, ticker_id, listing_id, qty, price, commission_usd)
     # Апсертим НОВОЕ количество (даже 0 -- строка ЕЩЁ не удаляется) ДО distribute_asset_delta:
     # _apply_strategy_balance ищет asset_id через SELECT по (portfolio_id, listing_id) -- если
     # удалить строку раньше, для полного выхода поиск проваливается и allocated_quantity/
@@ -112,11 +122,13 @@ def _try_fill(db_instance, row: dict, met: dict):
     _upsert_asset_quantity(db_instance, portfolio_id, listing_id, old_qty, new_qty, price)
 
     if not is_buy:
-        # Продажа -- пополняет кэш, резервирование неприменимо (см. ветку BUY выше).
+        # Продажа -- пополняет кэш за вычетом комиссии, резервирование неприменимо
+        # (см. ветку BUY выше).
+        net_proceeds = cost - commission_usd
         db_instance.execute_query(
             "UPDATE public.accounts SET cash_available = cash_available + %s, last_updated = CURRENT_TIMESTAMP "
             "WHERE portfolio_id = %s AND currency_id = 'USD';",
-            (cost, portfolio_id)
+            (net_proceeds, portfolio_id)
         )
 
     strat_sync.distribute_asset_delta(
@@ -153,7 +165,25 @@ def _try_fill(db_instance, row: dict, met: dict):
     )
 
 
-def _write_synthetic_order(db_instance, portfolio_id: int, ticker_id: int, listing_id: int, qty: float, price: float) -> str:
+def _compute_commission(commission_config: dict | None, trade_value_usd: float) -> float:
+    """
+    Комиссия по одной сделке эмулятора (Claude/BACKLOG.md №88) -- pct_of_trade
+    (в процентах, не долях -- 0.12 значит 0.12%) + fixed_per_order_usd, тот же
+    тариф, что П10 у реального брокера. commission_config отсутствует (NULL,
+    портфель не бумажный или не заполнен) -- 0.0, ничего не додумываем.
+    monthly_fee_usd сознательно НЕ применяется здесь -- это периодический
+    платёж, не по-сделочный, реализация отдельным будильником, не сейчас
+    (см. докстринг add_commission_config.py -- сознательно узкий периметр).
+    """
+    if not commission_config:
+        return 0.0
+    pct = float(commission_config.get("pct_of_trade") or 0.0)
+    fixed = float(commission_config.get("fixed_per_order_usd") or 0.0)
+    return trade_value_usd * pct / 100.0 + fixed
+
+
+def _write_synthetic_order(db_instance, portfolio_id: int, ticker_id: int, listing_id: int, qty: float, price: float,
+                            commission_usd: float = 0.0) -> str:
     """
     Синтетическая строка public.orders -- см. Claude/BACKLOG.md №117 (Вопрос 3):
     broker_order_id = "TEST-<portfolio_id>-<id>", где <id> -- собственный
@@ -163,14 +193,17 @@ def _write_synthetic_order(db_instance, portfolio_id: int, ticker_id: int, listi
     oper: 1 = покупка, 3 = продажа (та же конвенция, что daily_digest.py читает
     из реальных приказов ФБ). type=1 -- рыночная (эмулятор сегодня исполняет
     атомарно по текущей цене, отдельного лимитного "type=2, стоит и ждёт" пока нет).
+    commission_usd (Claude/BACKLOG.md №88) -- заполняется ТОЛЬКО здесь, для
+    реальных ордеров (sync_account_fb.py) остаётся NULL: там комиссия -- брокерский
+    факт, берётся на лету через get_trades_history, не хранится постоянно.
     """
     result = db_instance.execute_query(
         """
-            INSERT INTO public.orders (portfolio_id, ticker_id, listing_id, status, oper, type, q, p, currency_id)
-            VALUES (%s, %s, %s, 'executed', %s, 1, %s, %s, 'USD')
+            INSERT INTO public.orders (portfolio_id, ticker_id, listing_id, status, oper, type, q, p, currency_id, commission_usd)
+            VALUES (%s, %s, %s, 'executed', %s, 1, %s, %s, 'USD', %s)
             RETURNING id;
         """,
-        (portfolio_id, ticker_id, listing_id, 1 if qty > 0 else 3, abs(qty), price)
+        (portfolio_id, ticker_id, listing_id, 1 if qty > 0 else 3, abs(qty), price, commission_usd)
     )
     order_pk = result[0]["id"] if isinstance(result, list) else result["id"]
     broker_order_id = f"TEST-{portfolio_id}-{order_pk}"
