@@ -5,6 +5,7 @@ import yfinance as yf
 from analytics.analytics_utils import TickerEvaluator
 from analytics import claude_paper_trader as cpt
 from analytics.price_move_watcher import send_alert_notification
+from brokers_connectors.paper_broker import _compute_commission
 
 """
 «ПБумПолигон» (Claude/BACKLOG.md №170, 2026-09-05) -- живой (не бэктест)
@@ -119,7 +120,29 @@ def _check_vix_gate(db_instance) -> bool:
     return not already_paused
 
 
+def _round_trip_commission_pct(commission_config: dict | None, position_value_usd: float) -> float:
+    """
+    Комиссия входа+выхода в % от суммы позиции -- та же формула одной ноги
+    (_compute_commission, brokers_connectors/paper_broker.py), применённая
+    дважды (реальный round-trip -- покупка И продажа, каждая своя комиссия).
+    Не берёт РЕАЛЬНУЮ уже списанную комиссию входа из orders.commission_usd
+    (это потребовало бы отдельного запроса и не даст комиссию ещё не
+    состоявшегося выхода) -- та же оценочная логика, что уже использовал сам
+    бэктест темы #167/#168 (COMMISSION_RT_PCT, фиксированная % от суммы слота,
+    не по факту каждой конкретной сделки).
+    """
+    if not commission_config or position_value_usd <= 0:
+        return 0.0
+    one_leg = _compute_commission(commission_config, position_value_usd)
+    return (2 * one_leg) / position_value_usd * 100.0
+
+
 def _check_exits(db_instance):
+    portfolio_row = db_instance.execute_row(
+        "SELECT commission_config FROM public.portfolios WHERE id = %s;", (POLYGON_PORTFOLIO_ID,)
+    )
+    commission_config = (portfolio_row or {}).get("commission_config")
+
     data = cpt.report(db_instance, POLYGON_PORTFOLIO_ID)
     for h in data["holdings"]:
         avg_price = float(h.get("avg_price") or 0)
@@ -127,14 +150,26 @@ def _check_exits(db_instance):
         if avg_price <= 0 or last_price <= 0:
             continue
         change_pct = (last_price - avg_price) / avg_price * 100.0
+        # Триггер SL/TP остаётся на ЧИСТОЙ цене (10%/10% откалиброваны бэктестом
+        # именно как ценовой порог, см. BACKLOG №173 -- комиссия там учтена ОТДЕЛЬНО
+        # от порога, не как буфер внутри него) -- net_pct только для честного
+        # текста лога/причины закрытия, не для самого решения "пора выходить".
+        position_value = float(h.get("quantity") or 0) * avg_price
+        net_pct = change_pct - _round_trip_commission_pct(commission_config, position_value)
         if change_pct <= -SL_PCT:
-            result = cpt.sell(db_instance, int(h["listing_id"]), f"Полигон: стоп-лосс {change_pct:+.1f}%", POLYGON_PORTFOLIO_ID)
+            result = cpt.sell(
+                db_instance, int(h["listing_id"]),
+                f"Полигон: стоп-лосс {net_pct:+.1f}% нетто (цена {change_pct:+.1f}%)", POLYGON_PORTFOLIO_ID
+            )
             if result.get("ok"):
-                logging.info(f"🔴 [Polygon]: SL сработал -- {h['symbol']} {change_pct:+.1f}%.")
+                logging.info(f"🔴 [Polygon]: SL сработал -- {h['symbol']} {net_pct:+.1f}% нетто (цена {change_pct:+.1f}%).")
         elif change_pct >= TP_PCT:
-            result = cpt.sell(db_instance, int(h["listing_id"]), f"Полигон: цель прибыли {change_pct:+.1f}%", POLYGON_PORTFOLIO_ID)
+            result = cpt.sell(
+                db_instance, int(h["listing_id"]),
+                f"Полигон: цель прибыли {net_pct:+.1f}% нетто (цена {change_pct:+.1f}%)", POLYGON_PORTFOLIO_ID
+            )
             if result.get("ok"):
-                logging.info(f"🟢 [Polygon]: TP сработал -- {h['symbol']} {change_pct:+.1f}%.")
+                logging.info(f"🟢 [Polygon]: TP сработал -- {h['symbol']} {net_pct:+.1f}% нетто (цена {change_pct:+.1f}%).")
 
 
 def _check_entries(db_instance, allow_buy: bool):
