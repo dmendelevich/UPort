@@ -67,7 +67,13 @@ LIMIT_VOL_RATIO = 1.0
 
 TARIFF_PCT = 0.0012        # П10: 0.12% от суммы сделки
 TARIFF_FIXED = 1.2         # $ за приказ
-COMMISSION_RT_PCT = (2 * (TARIFF_PCT * SLOT_USD + TARIFF_FIXED)) / SLOT_USD  # round-trip на $1000 слот
+# Живой баг, найден пользователем 2026-09-06 (вопрос "просадка 2022 из-за комиссий?"):
+# без *100 COMMISSION_RT_PCT -- это ДОЛЯ (0.0048 = 0.48%), а net_pct = gross_pct - COMMISSION_RT_PCT
+# вычитает её из gross_pct, который уже в ПРОЦЕНТНЫХ ПУНКТАХ (умножен на 100 в (exit-entry)/entry*100.0) --
+# разница в единицах в 100 раз, комиссия реально применялась в сотую долю от намеренного размера
+# ВО ВСЕЙ серии бэктестов #167-178. Прод (paper_broker.py::_compute_commission) НЕ затронут --
+# там pct хранится как ЧИСЛО-проценты (12 значит 12%) и делится на 100.0 в формуле, единицы верны.
+COMMISSION_RT_PCT = (2 * (TARIFF_PCT * SLOT_USD + TARIFF_FIXED)) / SLOT_USD * 100  # round-trip на $1000 слот, в процентных пунктах
 
 CACHE_DIR = Path(__file__).resolve().parent / '_cache'
 CACHE_DIR.mkdir(exist_ok=True)
