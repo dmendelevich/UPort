@@ -10,13 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent.resolve()))
 
 from database import db_sys
 from brokers_connectors.fb_client import FreedomBrokerClient
-from analytics.ladder_step_watcher import check_ladder_step_triggers
 from analytics.price_move_watcher import check_price_moves
-from analytics.capital_protection_watcher import check_capital_protection
-from analytics.portfolio_drawdown_watcher import check_portfolio_drawdown
-from brokers_connectors.paper_broker import run_paper_broker_cycle
-from analytics.auto_paper_trader import run_auto_paper_cycle
-from analytics.polygon_paper_trader import run_polygon_cycle
 
 def sync_quotes_fb_autonomous():
     """
@@ -121,69 +115,22 @@ def sync_quotes_fb_autonomous():
     except Exception as e:
         logging.error(f"❌ [REST FB CRITICAL ERROR]: Сбой пакетного апдейта котировок: {e}")
 
-    # Протухание приказов/алертов ушло из пуш-уведомлений цикла котировок в дайджест
-    # (analytics/order_alert_staleness.py, п.5 БЭКЛОГА, 2026-07-30) -- "медленное" событие,
-    # не требует немедленной реакции, пересчитывается заново при каждой сборке дайджеста.
-    # Готовность следующего шага лесенки остаётся здесь -- рыночно-зависимая проверка
-    # (см. Claude/09_pipeline_reconciliation.md). Сбой не должен ронять сам синк котировок.
-    try:
-        check_ladder_step_triggers(db_sys)
-    except Exception as ladder_err:
-        logging.error(f"⚠️ [REST FB]: Сбой проверки готовности следующего шага лесенки: {ladder_err}")
-
-    # Эмулятор брокера для бумажного портфеля (execution_mode='CONFIRM', Claude/BACKLOG.md
-    # №117/119/122/123) -- тот же тик, что и check_ladder_step_triggers выше (переиспользует
-    # тот же LadderStepWatcher), реальные портфели не трогает.
-    try:
-        run_paper_broker_cycle(db_sys)
-    except Exception as paper_broker_err:
-        logging.error(f"⚠️ [REST FB]: Сбой эмулятора брокера бумажного портфеля: {paper_broker_err}")
-
     # PriceMoveWatcher (см. Claude/05_strategy_screen_and_kubiki.md): резкое движение цены
-    # за окно времени -- та же причина вызова здесь, а не в дайджесте (рыночно-зависимо)
+    # за окно времени -- та же причина вызова здесь, а не в дайджесте (рыночно-зависимо).
+    # Единственный из вотчеров этого цикла, оставленный активным после закрытия трека
+    # активных стратегий (решено 2026-09-16) -- общий рыночный алерт, не завязан на
+    # правила конкретной стратегии, полезен и для fund-портфелей.
     try:
         check_price_moves(db_sys)
     except Exception as price_move_err:
         logging.error(f"⚠️ [REST FB]: Сбой проверки резких движений цены (PriceMoveWatcher): {price_move_err}")
 
-    # Защита капитала (см. Claude/19_price_move_protection_design.md, сигнал B) -- стоп-лосс/
-    # трейлинг-стоп, тот же рыночно-зависимый ритм, что и PriceMoveWatcher выше.
-    try:
-        check_capital_protection(db_sys)
-    except Exception as capital_protection_err:
-        logging.error(f"⚠️ [REST FB]: Сбой проверки защиты капитала (CapitalProtectionWatcher): {capital_protection_err}")
-
-    # Портфельный трейлинг-стоп прибыли (сигнал D, Claude/23_session_followups_2026-08-20.md) --
-    # тот же рыночно-зависимый ритм, что и сигналы A/B выше, но по total_capital ВСЕГО
-    # портфеля, не по отдельной позиции.
-    try:
-        check_portfolio_drawdown(db_sys)
-    except Exception as portfolio_drawdown_err:
-        logging.error(f"⚠️ [REST FB]: Сбой проверки портфельной просадки (PortfolioDrawdownWatcher): {portfolio_drawdown_err}")
-
-    # «ПБумАвто» (execution_mode='AUTO', Claude/BACKLOG.md №169, 2026-09-05) -- переехал
-    # сюда с суточного digest_clock_loop: покупка (CashDeploymentAdvisor), продажа
-    # (PositionExitEvaluator) и ребаланс (PortfolioRebalancer) для портфелей AUTO больше
-    # не ждут утреннего дайджеста -- та же причина, что и у сигналов A/B/D выше: правило
-    # выхода/входа само по себе не изменилось, изменилась только частота, с которой ему
-    # вообще дают шанс сработать (найдено при разборе give-back -- позиция могла пробить
-    # цель прибыли утром и просидеть непроданной до следующего дня без всякой причины,
-    # кроме частоты проверки). Пустой цикл (нечего исполнять) молчит и сейчас -- новых
-    # уведомлений на пустых тиках не прибавится, см. analytics/auto_paper_trader.py.
-    try:
-        run_auto_paper_cycle(db_sys)
-    except Exception as auto_paper_err:
-        logging.error(f"⚠️ [REST FB]: Сбой цикла ПБумАвто (AutoPaperTrader): {auto_paper_err}")
-
-    # «ПБумПолигон» (Claude/BACKLOG.md №170, 2026-09-05) -- живой стенд для находок тем
-    # #167/#168 (жёсткий SL/TP + VIX-предохранитель). Сознательно ОТДЕЛЬНЫЙ вызов, не
-    # часть run_auto_paper_cycle выше -- этот портфель execution_mode='ADVISORY', не
-    # 'AUTO', чтобы реальный трейлинг/confirm_days Револьверной его не касались (см.
-    # докстринг analytics/polygon_paper_trader.py).
-    try:
-        run_polygon_cycle(db_sys)
-    except Exception as polygon_err:
-        logging.error(f"⚠️ [REST FB]: Сбой цикла ПБумПолигон (PolygonPaperTrader): {polygon_err}")
+    # Лесенка входа/выхода (check_ladder_step_triggers), эмулятор брокера бумажных CONFIRM-
+    # портфелей (run_paper_broker_cycle), защита капитала (check_capital_protection),
+    # портфельный трейлинг-стоп (check_portfolio_drawdown), циклы ПБумАвто/ПБумПолигон
+    # (run_auto_paper_cycle/run_polygon_cycle) -- убраны отсюда 2026-09-16, см. тег
+    # v-active-strategies-final и BACKLOG.md: работа со стратегиями закрыта, все бумажные
+    # портфели заморожены (не удалены -- история результатов эксперимента остаётся в БД).
 
 if __name__ == "__main__":
     # Настройка базового логирования для возможности прямого автономного запуска файла
