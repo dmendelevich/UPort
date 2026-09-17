@@ -78,12 +78,19 @@ def _check_one_listing(db_instance, row: dict):
 
 
 def _get_watching_portfolios(db_instance, listing_id: int) -> list:
-    """Портфели, которые реально держат ИЛИ наблюдают этот листинг -- как у брокерских алертов."""
+    """
+    Портфели, которые реально держат ИЛИ наблюдают этот листинг -- как у брокерских алертов.
+    Бумажные портфели (`broker_id IS NULL`) исключены (Claude/BACKLOG.md, решено 2026-09-17) --
+    все 4 заморожены (BACKLOG.md №181), оповещать о резких движениях цены нечего действовать.
+    Тикер, которым НИ ОДИН реальный портфель не интересуется, просто не попадёт в список --
+    оповещения не будет вообще, даже если его держит/наблюдает бумажный портфель.
+    """
     rows = db_instance.execute_query("""
         SELECT DISTINCT p.id AS portfolio_id, p.name AS portfolio_name, u.telegram_id
         FROM public.portfolios p
         JOIN public.users u ON p.owner_id = u.id
-        WHERE p.id IN (
+        WHERE p.broker_id IS NOT NULL
+          AND p.id IN (
             SELECT portfolio_id FROM public.assets WHERE listing_id = %s AND quantity > 0
             UNION
             SELECT portfolio_id FROM public.watchlist WHERE listing_id = %s
